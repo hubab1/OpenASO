@@ -2,6 +2,10 @@
 
 ## 0.3.1 - 2026-05-08
 
+Add local MCP workflows for OpenASO, including tools for app discovery, keyword tracking, ranking refreshes, reviews, screenshots, competitors, and localization research. Also adds MCP server controls in Settings plus validation and tests.
+
+## 0.3.1 - 2026-05-08
+
 Add OpenASO MCP workflows.
 
 - Add a local MCP server for inspecting and updating OpenASO workspaces from compatible clients.
