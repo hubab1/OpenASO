@@ -70,6 +70,8 @@ struct SettingsView: View {
                 }
                 .id(AppleAdsSettingsFocusSection.dailyRefresh)
 
+                mcpSection
+
                 appleAdsSection
                 .id(AppleAdsSettingsFocusSection.webSession)
 
@@ -127,7 +129,61 @@ struct SettingsView: View {
         } header: {
             Text("Analytics")
         } footer: {
+            #if OPENASO_OSS_BUILD
+            Text("Off by default. When enabled, OpenASO sends anonymous product usage events to understand which features are used and how often. It does not collect identifying information or details about your apps, keywords, reviews, replies, credentials, search text, or countries.")
+            #else
             Text("OpenASO sends anonymous product usage events to understand which features are used and how often. It does not collect identifying information or details about your apps, keywords, reviews, replies, credentials, search text, or countries.")
+            #endif
+        }
+    }
+
+    private var mcpSection: some View {
+        Section {
+            MCPServerStatusRow(state: services.mcpServerController.state)
+
+            LabeledContent("HTTP Port") {
+                HStack(spacing: 8) {
+                    TextField("", value: mcpServerPortBinding, format: .number.grouping(.never))
+                        .font(.system(.body, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 82)
+
+                    Stepper(
+                        "HTTP Port",
+                        value: mcpServerPortBinding,
+                        in: MCPServerPort.minimum...MCPServerPort.maximum
+                    )
+                    .labelsHidden()
+                }
+            }
+            .disabled(mcpPortControlsDisabled)
+
+            HStack(spacing: 10) {
+                Button(mcpPrimaryActionTitle, action: toggleMCPServer)
+                    .disabled(services.mcpServerController.state.isBusy)
+
+                if services.mcpServerController.state.isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Spacer()
+            }
+
+            if let endpointURL = services.mcpServerController.state.endpointURL {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Endpoint")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(endpointURL.absoluteString)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+        } header: {
+            Text("MCP Server")
+        } footer: {
+            Text("Starts a local loopback MCP HTTP server for agents that can connect to an already-running app. Stop the server before changing the port. Stdio MCP clients should still launch the OpenASOMCP command-line target directly.")
         }
     }
 
@@ -505,6 +561,39 @@ struct SettingsView: View {
         }
     }
 
+    private var mcpPrimaryActionTitle: String {
+        switch services.mcpServerController.state {
+        case .stopped, .failed:
+            return "Start MCP Server"
+        case .starting:
+            return "Starting..."
+        case .running:
+            return "Stop MCP Server"
+        case .stopping:
+            return "Stopping..."
+        }
+    }
+
+    private var mcpServerPortBinding: Binding<Int> {
+        Binding {
+            services.settingsStore.mcpServerPort
+        } set: { port in
+            services.settingsStore.saveMCPServerPort(port)
+        }
+    }
+
+    private var mcpPortControlsDisabled: Bool {
+        services.mcpServerController.state.isRunning || services.mcpServerController.state.isBusy
+    }
+
+    private func toggleMCPServer() {
+        if services.mcpServerController.state.isRunning {
+            services.mcpServerController.stop()
+        } else {
+            services.mcpServerController.start()
+        }
+    }
+
     private func loadCredentials() {
         let credentials = services.appleAdsCredentialStore.apiCredentials
         clientID = credentials.clientID
@@ -707,5 +796,82 @@ struct SettingsView: View {
         }
 
         return .connected(updatedAt: services.appleAdsWebSessionStore.session?.updatedAt)
+    }
+}
+
+private struct MCPServerStatusRow: View {
+    let state: OpenASOMCPServerController.State
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body.weight(.medium))
+
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(tint)
+        }
+    }
+
+    private var title: String {
+        switch state {
+        case .stopped:
+            return "MCP server is stopped"
+        case .starting:
+            return "MCP server is starting"
+        case .running:
+            return "MCP server is running"
+        case .stopping:
+            return "MCP server is stopping"
+        case .failed:
+            return "MCP server failed to start"
+        }
+    }
+
+    private var detail: String {
+        switch state {
+        case .stopped:
+            return "Start it to accept local MCP HTTP connections."
+        case .starting:
+            return "Opening a local loopback server."
+        case .running(let endpointURL):
+            return endpointURL.absoluteString
+        case .stopping:
+            return "Closing the local server."
+        case .failed(let message):
+            return message
+        }
+    }
+
+    private var systemImage: String {
+        switch state {
+        case .stopped:
+            return "power"
+        case .starting, .stopping:
+            return "hourglass"
+        case .running:
+            return "point.3.connected.trianglepath.dotted"
+        case .failed:
+            return "exclamationmark.triangle"
+        }
+    }
+
+    private var tint: Color {
+        switch state {
+        case .stopped:
+            return .secondary
+        case .starting, .stopping:
+            return .orange
+        case .running:
+            return .green
+        case .failed:
+            return .red
+        }
     }
 }

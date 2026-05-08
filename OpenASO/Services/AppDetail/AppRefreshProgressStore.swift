@@ -140,7 +140,7 @@ struct AppRefreshProgress: Identifiable, Sendable {
 
 @MainActor
 @Observable
-final class AppRefreshProgressStore {
+final class AppRefreshProgressStore: Sendable {
     private(set) var activeRefresh: AppRefreshProgress?
     private(set) var pendingKeywordTrackCountsByAppStoreID: [Int64: Int] = [:]
 

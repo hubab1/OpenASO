@@ -13,6 +13,8 @@ struct ResolvedApp: Identifiable, Hashable, Sendable {
     let primaryGenreID: Int?
     let primaryGenreName: String?
     let supportedLanguageCodes: [String]
+    let sellerURLString: String?
+    let trackViewURLString: String?
     let screenshotURLs: [String]
     let ipadScreenshotURLs: [String]
     let appletvScreenshotURLs: [String]
@@ -31,6 +33,8 @@ struct ResolvedApp: Identifiable, Hashable, Sendable {
         primaryGenreID: Int? = nil,
         primaryGenreName: String? = nil,
         supportedLanguageCodes: [String] = [],
+        sellerURLString: String? = nil,
+        trackViewURLString: String? = nil,
         screenshotURLs: [String] = [],
         ipadScreenshotURLs: [String] = [],
         appletvScreenshotURLs: [String] = [],
@@ -48,6 +52,8 @@ struct ResolvedApp: Identifiable, Hashable, Sendable {
         self.primaryGenreID = primaryGenreID
         self.primaryGenreName = primaryGenreName
         self.supportedLanguageCodes = supportedLanguageCodes
+        self.sellerURLString = sellerURLString
+        self.trackViewURLString = trackViewURLString
         self.screenshotURLs = screenshotURLs
         self.ipadScreenshotURLs = ipadScreenshotURLs
         self.appletvScreenshotURLs = appletvScreenshotURLs

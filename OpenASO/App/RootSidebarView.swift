@@ -35,6 +35,8 @@ struct RootSidebarView: View {
     @State private var appPendingDeletion: TrackedApp?
     @State private var currentAlert: SidebarAlertContext?
     @State private var hoveredAppID: Int64?
+    @State private var isPresentingMCPServer = false
+    @State private var isMCPHovered = false
     @State private var isSettingsHovered = false
 
     private var unfiledApps: [TrackedApp] {
@@ -60,6 +62,12 @@ struct RootSidebarView: View {
                 selectedColorRaw: $selectedFolderColorRaw,
                 createAction: createFolder,
                 cancelAction: resetNewFolderForm
+            )
+        }
+        .sheet(isPresented: $isPresentingMCPServer) {
+            MCPServerSheet(
+                controller: services.mcpServerController,
+                settingsStore: services.settingsStore
             )
         }
         .alert("Rename Folder", isPresented: $isPresentingRenameFolder) {
@@ -239,6 +247,22 @@ struct RootSidebarView: View {
                     .stroke(Color.secondary.opacity(0.15))
             )
 
+            Button {
+                isPresentingMCPServer = true
+            } label: {
+                SidebarUtilityRow(
+                    title: "MCP Server",
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    state: services.mcpServerController.state,
+                    isHovered: isMCPHovered
+                )
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .onHover { isMCPHovered = $0 }
+            .animation(.easeInOut(duration: 0.12), value: isMCPHovered)
+            .help(mcpHelpText)
+
             SettingsLink {
                 HStack {
                     Label("Settings", systemImage: "gearshape")
@@ -351,6 +375,21 @@ struct RootSidebarView: View {
 
     private var pendingDeletionTitle: String {
         folderPendingDeletion == nil ? "Delete App?" : "Delete Folder?"
+    }
+
+    private var mcpHelpText: String {
+        switch services.mcpServerController.state {
+        case .running(let endpointURL):
+            return "MCP server running at \(endpointURL.absoluteString)"
+        case .starting:
+            return "MCP server is starting"
+        case .stopping:
+            return "MCP server is stopping"
+        case .failed(let message):
+            return "MCP server failed: \(message)"
+        case .stopped:
+            return "Open MCP server controls"
+        }
     }
 
     private var suggestedFolderName: String {
@@ -606,6 +645,98 @@ struct RootSidebarView: View {
             }
         )
         return try modelContext.fetch(descriptor)
+    }
+}
+
+private struct SidebarUtilityRow: View {
+    let title: String
+    let systemImage: String
+    let state: OpenASOMCPServerController.State?
+    let isHovered: Bool
+
+    var body: some View {
+        HStack {
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if let state {
+                MCPServerStateAccessory(state: state)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isHovered ? Color.primary.opacity(0.06) : Color.clear)
+        }
+        .contentShape(.rect)
+    }
+}
+
+private struct MCPServerStateAccessory: View {
+    let state: OpenASOMCPServerController.State
+
+    var body: some View {
+        Group {
+            if state.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+        }
+        .frame(width: 16, height: 16)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var systemImage: String {
+        switch state {
+        case .running:
+            return "circle.fill"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .stopped:
+            return "circle"
+        case .starting, .stopping:
+            return "circle.dotted"
+        }
+    }
+
+    private var tint: Color {
+        switch state {
+        case .running:
+            return .green
+        case .failed:
+            return .red
+        case .starting, .stopping:
+            return .orange
+        case .stopped:
+            return .secondary
+        }
+    }
+
+    private var accessibilityLabel: String {
+        switch state {
+        case .running:
+            return "MCP server running"
+        case .failed:
+            return "MCP server failed"
+        case .starting:
+            return "MCP server starting"
+        case .stopping:
+            return "MCP server stopping"
+        case .stopped:
+            return "MCP server stopped"
+        }
     }
 }
 

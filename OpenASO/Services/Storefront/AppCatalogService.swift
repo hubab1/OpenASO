@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-final class AppCatalogService: @unchecked Sendable {
+final class AppCatalogService: Sendable {
     private let appResolver: any AppResolver
 
     init(appResolver: any AppResolver) {

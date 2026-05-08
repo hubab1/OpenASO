@@ -61,6 +61,16 @@
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
       allowLocationSimulation = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "572848118C1EED1650280174"
+            BuildableName = "OpenASO.app"
+            BlueprintName = "OpenASO"
+            ReferencedContainer = "container:OpenASO.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "OPENASO_ENV_FILE"
@@ -77,17 +87,17 @@
             value = "development"
             isEnabled = "YES">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "POSTHOG_PROJECT_TOKEN"
+            value = "phc_ogHMQ779ESRv4K6VPdRLuRG5kjuP4oTV3SeFU6n4qWre"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "POSTHOG_HOST"
+            value = "https://ph.openaso.thirdtechapps.com"
+            isEnabled = "YES">
+         </EnvironmentVariable>
       </EnvironmentVariables>
-      <BuildableProductRunnable
-         runnableDebuggingMode = "0">
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "572848118C1EED1650280174"
-            BuildableName = "OpenASO.app"
-            BlueprintName = "OpenASO"
-            ReferencedContainer = "container:OpenASO.xcodeproj">
-         </BuildableReference>
-      </BuildableProductRunnable>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

@@ -19,6 +19,27 @@ APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 cd "$ROOT_DIR"
 
+load_dotenv_key() {
+  local key="$1"
+  local line value
+
+  line="$(grep -E "^${key}=" "$ROOT_DIR/.env" 2>/dev/null | tail -n 1 || true)"
+  [[ -n "$line" ]] || return 0
+
+  value="${line#*=}"
+  value="${value%$'\r'}"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  export "$key=$value"
+}
+
+if [[ -f "$ROOT_DIR/.env" ]]; then
+  load_dotenv_key "POSTHOG_PROJECT_TOKEN"
+  load_dotenv_key "POSTHOG_HOST"
+fi
+
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 build_app() {
@@ -32,7 +53,11 @@ build_app() {
 }
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  if [[ -n "${POSTHOG_PROJECT_TOKEN:-}" || -n "${POSTHOG_HOST:-}" ]]; then
+    "$APP_BINARY" >/dev/null 2>&1 &
+  else
+    /usr/bin/open -n "$APP_BUNDLE"
+  fi
 }
 
 case "$MODE" in

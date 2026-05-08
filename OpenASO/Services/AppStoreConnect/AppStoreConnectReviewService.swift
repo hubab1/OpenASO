@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 @MainActor
-final class AppStoreConnectReviewService {
+final class AppStoreConnectReviewService: Sendable {
     nonisolated private let httpClient: HTTPClient
     private let credentialStore: AppStoreConnectCredentialStore
 
@@ -185,7 +185,7 @@ final class AppStoreConnectReviewService {
     }
 
     nonisolated private static func decodeReviewPage(data: Data, appStoreID: Int64) throws -> AppStoreConnectReviewPage {
-        let payload = try Self.decoder.decode(AppStoreConnectReviewsResponse.self, from: data)
+        let payload = try Self.decode(AppStoreConnectReviewsResponse.self, from: data)
         let responsesByReviewID = payload.responsesByReviewID
         let reviews: [AppStorefrontReviewResult] = payload.data.compactMap { review in
             guard let rating = review.attributes.rating else { return nil }
@@ -233,7 +233,7 @@ final class AppStoreConnectReviewService {
         request.timeoutInterval = 20
 
         let data = try await validatedData(for: request, using: httpClient)
-        let response = try Self.decoder.decode(AppStoreConnectAppsResponse.self, from: data)
+        let response = try Self.decode(AppStoreConnectAppsResponse.self, from: data)
         guard let app = response.data.first else {
             throw OpenASOError.appNotFound
         }
@@ -326,7 +326,7 @@ final class AppStoreConnectReviewService {
     ) async throws -> AppStoreConnectReviewResponseValue {
         let request = try makeReplyRequest(reviewID: reviewID, body: body, credentials: credentials)
         let data = try await validatedData(for: request, using: httpClient)
-        let payload = try Self.decoder.decode(AppStoreConnectReviewResponseEnvelope.self, from: data)
+        let payload = try Self.decode(AppStoreConnectReviewResponseEnvelope.self, from: data)
         return AppStoreConnectReviewResponseValue(
             id: payload.data.id,
             body: payload.data.attributes.responseBody ?? body,
@@ -514,11 +514,15 @@ final class AppStoreConnectReviewService {
         return url
     }
 
-    nonisolated private static let decoder: JSONDecoder = {
+    nonisolated private static func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws -> Value {
+        try makeDecoder().decode(type, from: data)
+    }
+
+    nonisolated private static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
-    }()
+    }
 }
 
 struct AppStoreConnectApp: Decodable, Equatable, Sendable {

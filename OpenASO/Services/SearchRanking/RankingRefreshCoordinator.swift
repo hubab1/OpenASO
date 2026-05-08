@@ -8,6 +8,20 @@ struct RankingRefreshRequest: Sendable {
     let storefront: String
     let platform: AppPlatform
 
+    init(
+        identityKey: String,
+        queryKey: String,
+        term: String,
+        storefront: String,
+        platform: AppPlatform
+    ) {
+        self.identityKey = identityKey
+        self.queryKey = queryKey
+        self.term = term
+        self.storefront = storefront
+        self.platform = platform
+    }
+
     init(track: TrackedAppKeyword) {
         self.identityKey = track.identityKey
         self.queryKey = track.queryKey
@@ -62,7 +76,7 @@ struct RankingStatsRebuildRequest: Hashable, Sendable {
     }
 }
 
-final class RankingRefreshCoordinator {
+final class RankingRefreshCoordinator: Sendable {
     private let rankingProvider: any SearchRankingProvider
     private let appCatalogService: AppCatalogService
     private let analyticsService: AnalyticsService

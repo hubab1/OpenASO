@@ -84,6 +84,8 @@ private struct ITunesAppPayload: Decodable {
     let primaryGenreId: Int?
     let primaryGenreName: String?
     let languageCodesISO2A: [String]?
+    let sellerUrl: String?
+    let trackViewUrl: String?
     let screenshotUrls: [String]?
     let ipadScreenshotUrls: [String]?
     let appletvScreenshotUrls: [String]?
@@ -102,6 +104,8 @@ private struct ITunesAppPayload: Decodable {
             primaryGenreID: primaryGenreId,
             primaryGenreName: primaryGenreName,
             supportedLanguageCodes: languageCodesISO2A ?? [],
+            sellerURLString: sellerUrl,
+            trackViewURLString: trackViewUrl,
             screenshotURLs: screenshotUrls ?? [],
             ipadScreenshotURLs: ipadScreenshotUrls ?? [],
             appletvScreenshotURLs: appletvScreenshotUrls ?? [],

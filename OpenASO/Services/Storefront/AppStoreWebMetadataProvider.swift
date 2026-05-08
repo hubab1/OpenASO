@@ -46,7 +46,7 @@ struct AppStoreWebScreenshot: Sendable, Equatable {
     let height: Int?
 }
 
-final class AppStoreWebMetadataProvider: @unchecked Sendable {
+final class AppStoreWebMetadataProvider: Sendable {
     private let httpClient: any HTTPClient
 
     init(httpClient: any HTTPClient) {

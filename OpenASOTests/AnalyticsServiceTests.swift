@@ -20,6 +20,25 @@ struct AnalyticsServiceTests {
     }
 
     @Test
+    func settingsStorePersistsAndNormalizesMCPServerPort() {
+        let defaults = UserDefaults(suiteName: "mcp-port-settings-\(UUID().uuidString)")!
+        let store = AppSettingsStore(defaults: defaults)
+
+        #expect(store.mcpServerPort == MCPServerPort.defaultValue)
+
+        store.saveMCPServerPort(52_345)
+        #expect(AppSettingsStore(defaults: defaults).mcpServerPort == 52_345)
+
+        store.saveMCPServerPort(1)
+        #expect(store.mcpServerPort == MCPServerPort.minimum)
+        #expect(AppSettingsStore(defaults: defaults).mcpServerPort == MCPServerPort.minimum)
+
+        store.saveMCPServerPort(70_000)
+        #expect(store.mcpServerPort == MCPServerPort.maximum)
+        #expect(AppSettingsStore(defaults: defaults).mcpServerPort == MCPServerPort.maximum)
+    }
+
+    @Test
     func disabledAnalyticsNoOpsAndUpdatesOptOut() {
         let defaults = UserDefaults(suiteName: "analytics-disabled-\(UUID().uuidString)")!
         let store = AppSettingsStore(defaults: defaults)

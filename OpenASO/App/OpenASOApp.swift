@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
@@ -10,6 +11,10 @@ struct OpenASOApp: App {
     private let modelContainer: ModelContainer
 
     init() {
+        if Self.shouldRunMCPStdio {
+            Self.runMCPStdioAndExit()
+        }
+
         let modelContainer = Self.makeModelContainer()
         let services = AppServices.appLaunch(modelContainer: modelContainer)
         self.modelContainer = modelContainer
@@ -23,6 +28,28 @@ struct OpenASOApp: App {
         } catch {
             fatalError("Failed to create model container: \(error.localizedDescription)")
         }
+    }
+
+    private static var shouldRunMCPStdio: Bool {
+        ProcessInfo.processInfo.arguments.contains("--mcp-stdio")
+    }
+
+    private static func runMCPStdioAndExit() -> Never {
+        Task.detached {
+            let exitCode: Int32
+            do {
+                try await OpenASOMCPRuntime.runStdio(
+                    configuration: OpenASOMCPServerConfiguration(version: "1.5.0")
+                )
+                exitCode = 0
+            } catch {
+                FileHandle.standardError.write(Data("OpenASO MCP server failed: \(error)\n".utf8))
+                exitCode = 1
+            }
+            Foundation.exit(exitCode)
+        }
+
+        dispatchMain()
     }
 
     var body: some Scene {

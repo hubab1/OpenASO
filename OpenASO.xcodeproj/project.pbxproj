@@ -8,32 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		04E8C4E18F1A4D519C0A1101 /* Storefront/AppCatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1105 /* Storefront/AppCatalogService.swift */; };
-		A0BEEF000000000000000001 /* Storefront/AppStoreWebMetadataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1107 /* Storefront/AppStoreWebMetadataProvider.swift */; };
-		A0BEEF000000000000000010 /* Storefront/ScreenshotDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */; };
-		A0BEEF000000000000000011 /* Storefront/ScreenshotDownloadProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000013 /* Storefront/ScreenshotDownloadProgressStore.swift */; };
-		A0BEEF000000000000000014 /* ScreenshotDownloadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */; };
 		04E8C4E18F1A4D519C0A1102 /* Storefront/AppIconStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1106 /* Storefront/AppIconStore.swift */; };
 		04E8C4E18F1A4D519C0A1104 /* AppIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1108 /* AppIconView.swift */; };
-		BEEF00000000000000000002 /* KeywordQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000001 /* KeywordQuery.swift */; };
-		BEEF00000000000000000006 /* StoreApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000005 /* StoreApp.swift */; };
-		BEEF00000000000000000018 /* AppStorefrontMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000017 /* AppStorefrontMetadata.swift */; };
-		BEEF0000000000000000001A /* AppStoreScreenshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000019 /* AppStoreScreenshot.swift */; };
-		BEEF00000000000000000008 /* KeywordDailyMetric.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000007 /* KeywordDailyMetric.swift */; };
-		BEEF0000000000000000000A /* KeywordRankingCrawl.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000009 /* KeywordRankingCrawl.swift */; };
-		BEEF0000000000000000000C /* KeywordAppRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000B /* KeywordAppRanking.swift */; };
-		BEEF0000000000000000000E /* AppDailyRating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000D /* AppDailyRating.swift */; };
-		BEEF00000000000000000010 /* LatestAppRating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000F /* LatestAppRating.swift */; };
-		BEEF00000000000000000012 /* TrackedAppKeyword.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000011 /* TrackedAppKeyword.swift */; };
-		BEEF00000000000000000014 /* TrackedKeywordDailyRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000013 /* TrackedKeywordDailyRanking.swift */; };
-		BEEF00000000000000000016 /* TrackedKeywordRankedResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000015 /* TrackedKeywordRankedResult.swift */; };
 		04E8C4E18F1A4D519C0A110A /* AppleAds/AppleAdsCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A110C /* AppleAds/AppleAdsCredentials.swift */; };
 		04E8C4E18F1A4D519C0A110B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A110D /* SettingsView.swift */; };
 		04E8C4E18F1A4D519C0A110E /* AppleAds/AppleSearchAdsJWT.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A110F /* AppleAds/AppleSearchAdsJWT.swift */; };
 		04E8C4E18F1A4D519C0A1110 /* KeywordMetricsSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1114 /* KeywordMetricsSource.swift */; };
 		04E8C4E18F1A4D519C0A1111 /* AppleAds/KeywordMetricsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */; };
 		04E8C4E18F1A4D519C0A1112 /* SearchRanking/KeywordSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */; };
-		04E8C4E18F1A4D519C0A1140 /* AppDetail/AppDetailRefreshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1141 /* AppDetail/AppDetailRefreshService.swift */; };
-		04E8C4E18F1A4D519C0A1142 /* AppDetail/AppRefreshProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1143 /* AppDetail/AppRefreshProgressStore.swift */; };
 		04E8C4E18F1A4D519C0A1123 /* AppleAds/AppleAdsWebSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1124 /* AppleAds/AppleAdsWebSession.swift */; };
 		04E8C4E18F1A4D519C0A1125 /* script/apple_ads_web_session.js in Resources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1126 /* script/apple_ads_web_session.js */; };
 		04E8C4E18F1A4D519C0A1127 /* KeywordMetricsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1128 /* KeywordMetricsServiceTests.swift */; };
@@ -44,8 +26,8 @@
 		04E8C4E18F1A4D519C0A1138 /* AppleAdsSettingsConnectionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1139 /* AppleAdsSettingsConnectionState.swift */; };
 		04E8C4E18F1A4D519C0A113A /* AppleAdsSettingsStatusRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A113B /* AppleAdsSettingsStatusRows.swift */; };
 		04E8C4E18F1A4D519C0A113C /* SettingsViewPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A113D /* SettingsViewPreviews.swift */; };
-		D30000000000000000000002 /* AppNamespace.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AppNamespace.swift */; };
-		A10000000000000000000002 /* OpenASOSchemaV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* OpenASOSchemaV1.swift */; };
+		04E8C4E18F1A4D519C0A1140 /* AppDetail/AppDetailRefreshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1141 /* AppDetail/AppDetailRefreshService.swift */; };
+		04E8C4E18F1A4D519C0A1142 /* AppDetail/AppRefreshProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1143 /* AppDetail/AppRefreshProgressStore.swift */; };
 		05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */; };
 		0A1B2C3D4E5F678901234505 /* AppKeywordStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F678901234506 /* AppKeywordStats.swift */; };
 		0A1B2C3D4E5F678901234509 /* RatingsReviews/AppStorefrontRatingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F67890123450A /* RatingsReviews/AppStorefrontRatingService.swift */; };
@@ -68,6 +50,9 @@
 		3FBAFA6ACAF90A7959DC4053 /* RankingRefreshCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BC7973645CC5F20071230DE /* RankingRefreshCoordinatorTests.swift */; };
 		43AE454C23461BBBC44D01DA /* RankingMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF42BE79CA0AE7107E410C7E /* RankingMatcherTests.swift */; };
 		453E1E4BE015A629E5B3F7B5 /* Storefront/StorefrontCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B399F08A360281DA901E4457 /* Storefront/StorefrontCatalog.swift */; };
+		4D4350544553545300000002 /* OpenASOMCPServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D4350544553545300000001 /* OpenASOMCPServiceTests.swift */; };
+		4D4350545345525600000002 /* OpenASOMCPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D4350545345525600000001 /* OpenASOMCPServerTests.swift */; };
+		4D4350545345525600000003 /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = C0DEFACE0000000000000109 /* MCP */; };
 		52A1A64F1D49D89D9B5DD204 /* AppPlatform.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC65F472D8AF2FC4DE4E8BD8 /* AppPlatform.swift */; };
 		59E573ACDBBB76A905B92574 /* AddKeywordsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E87EC021EFE3EDFB1445FFA7 /* AddKeywordsSheet.swift */; };
 		5B3ACA5345C1963D7B861055 /* SearchRanking/SearchRankingProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F48387102DE88B407695C3 /* SearchRanking/SearchRankingProvider.swift */; };
@@ -76,6 +61,7 @@
 		766FE01C27334F5387A7E797 /* PreviewAppDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB55596DB73489FB40D836C /* PreviewAppDependencies.swift */; };
 		8BFC241AE4FEFAF749D3BE5A /* AppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D89E788AED9CC1E4FD78B3D /* AppServices.swift */; };
 		8ED05A47F845B42089077D3F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8DD5ED26436229FF7472E342 /* Assets.xcassets */; };
+		91029AB42FAE58B1001431EE /* AppIconDev.icon in Resources */ = {isa = PBXBuildFile; fileRef = 91029AB32FAE58B1001431EE /* AppIconDev.icon */; };
 		911101D62F9C3562004DFA8A /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 911101D52F9C3562004DFA8A /* AppIcon.icon */; };
 		93C1A9E62DF448B89A6B5510 /* Resources/storefronts.json in Resources */ = {isa = PBXBuildFile; fileRef = 93C1A9E52DF448B89A6B5510 /* Resources/storefronts.json */; };
 		99A4FE5166338C3329CF94EE /* TrackedApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B088B3166AF98160A612326C /* TrackedApp.swift */; };
@@ -83,6 +69,10 @@
 		9D53BDA1AB6F2313D0BFE2BA /* TrackedKeywordDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E539E28041AF31B5E3E321 /* TrackedKeywordDetailView.swift */; };
 		9F18F6F8A4D64BE38FBED4A8 /* KeywordTableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E564C613BC84E13B31CB08D /* KeywordTableView.swift */; };
 		A08A2D06F81C49F4A34FB388 /* KeywordTrendSparklineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08A2D05F81C49F4A34FB388 /* KeywordTrendSparklineView.swift */; };
+		A0BEEF000000000000000001 /* Storefront/AppStoreWebMetadataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1107 /* Storefront/AppStoreWebMetadataProvider.swift */; };
+		A0BEEF000000000000000010 /* Storefront/ScreenshotDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */; };
+		A0BEEF000000000000000011 /* Storefront/ScreenshotDownloadProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000013 /* Storefront/ScreenshotDownloadProgressStore.swift */; };
+		A0BEEF000000000000000014 /* ScreenshotDownloadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */; };
 		A0D71B4C0000000000000004 /* AppDetailToolbarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000001 /* AppDetailToolbarViews.swift */; };
 		A0D71B4C0000000000000006 /* AppRatingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000003 /* AppRatingsView.swift */; };
 		A0D71B4C0000000000000009 /* AppDetailSupportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000007 /* AppDetailSupportTypes.swift */; };
@@ -95,6 +85,7 @@
 		A0D71B4C0000000000000017 /* KeywordRankingChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000018 /* KeywordRankingChartView.swift */; };
 		A0D71B4C0000000000000019 /* AppDetailPreviewFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C000000000000001A /* AppDetailPreviewFixtures.swift */; };
 		A0D71B4C000000000000001B /* AppDetailCSVTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C000000000000001C /* AppDetailCSVTransfer.swift */; };
+		A10000000000000000000002 /* OpenASOSchemaV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* OpenASOSchemaV1.swift */; };
 		A20000000000000000000001 /* KeywordTableCells.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* KeywordTableCells.swift */; };
 		A20000000000000000000002 /* KeywordNotesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* KeywordNotesSheet.swift */; };
 		A20000000000000000000003 /* KeywordRankingListSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* KeywordRankingListSheet.swift */; };
@@ -126,15 +117,78 @@
 		A90000000000000000000005 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000006 /* Sparkle */; };
 		AA0000000000000000000002 /* AppleAdsConnectionStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000001 /* AppleAdsConnectionStateTests.swift */; };
 		AB171C45C65C542EFCD3CEBD /* SearchRanking/ITunesSearchFallbackProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEB53B31A2B107CEE141F744 /* SearchRanking/ITunesSearchFallbackProvider.swift */; };
+		BEEF00000000000000000002 /* KeywordQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000001 /* KeywordQuery.swift */; };
+		BEEF00000000000000000006 /* StoreApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000005 /* StoreApp.swift */; };
+		BEEF00000000000000000008 /* KeywordDailyMetric.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000007 /* KeywordDailyMetric.swift */; };
+		BEEF0000000000000000000A /* KeywordRankingCrawl.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000009 /* KeywordRankingCrawl.swift */; };
+		BEEF0000000000000000000C /* KeywordAppRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000B /* KeywordAppRanking.swift */; };
+		BEEF0000000000000000000E /* AppDailyRating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000D /* AppDailyRating.swift */; };
+		BEEF00000000000000000010 /* LatestAppRating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000F /* LatestAppRating.swift */; };
+		BEEF00000000000000000012 /* TrackedAppKeyword.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000011 /* TrackedAppKeyword.swift */; };
+		BEEF00000000000000000014 /* TrackedKeywordDailyRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000013 /* TrackedKeywordDailyRanking.swift */; };
+		BEEF00000000000000000016 /* TrackedKeywordRankedResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000015 /* TrackedKeywordRankedResult.swift */; };
+		BEEF00000000000000000018 /* AppStorefrontMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000017 /* AppStorefrontMetadata.swift */; };
+		BEEF0000000000000000001A /* AppStoreScreenshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000019 /* AppStoreScreenshot.swift */; };
 		C0DEC0DE0000000000000002 /* CustomSegmentedPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000001 /* CustomSegmentedPicker.swift */; };
 		C0DEC0DE0000000000000004 /* PinIconButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000003 /* PinIconButton.swift */; };
 		C0DEC0DE0000000000000006 /* IconButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000005 /* IconButton.swift */; };
 		C0DEC0DE0000000000000008 /* Tooltip.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000007 /* Tooltip.swift */; };
 		C0DEC0DE000000000000000A /* TertiaryActionButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000009 /* TertiaryActionButton.swift */; };
+		C0DEC0DE0000000000000012 /* MCPServerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000011 /* MCPServerSheet.swift */; };
+		C0DEFACE0000000000000102 /* MCP/OpenASOMCPDTOs.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000101 /* MCP/OpenASOMCPDTOs.swift */; };
+		C0DEFACE0000000000000104 /* MCP/OpenASOMCPService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000103 /* MCP/OpenASOMCPService.swift */; };
+		C0DEFACE0000000000000106 /* MCP/OpenASOMCPValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000105 /* MCP/OpenASOMCPValidation.swift */; };
+		C0DEFACE0000000000000108 /* MCP/OpenASOMCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000107 /* MCP/OpenASOMCPServer.swift */; };
+		C0DEFACE000000000000010A /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = C0DEFACE0000000000000109 /* MCP */; };
+		C0DEFACE000000000000010E /* MCP/OpenASOMCPRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE000000000000010D /* MCP/OpenASOMCPRuntime.swift */; };
+		C0DEFACE0000000000000110 /* MCP/OpenASOMCPServerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE000000000000010F /* MCP/OpenASOMCPServerController.swift */; };
+		C15A00000000000000000009 /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = C0DEFACE0000000000000109 /* MCP */; };
+		C15A0000000000000000000A /* MCP/OpenASOMCPMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15A00000000000000000001 /* MCP/OpenASOMCPMain.swift */; };
+		C15A00000000000000000101 /* MCP/OpenASOMCPDTOs.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000101 /* MCP/OpenASOMCPDTOs.swift */; };
+		C15A00000000000000000102 /* MCP/OpenASOMCPService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000103 /* MCP/OpenASOMCPService.swift */; };
+		C15A00000000000000000103 /* MCP/OpenASOMCPValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000105 /* MCP/OpenASOMCPValidation.swift */; };
+		C15A00000000000000000104 /* MCP/OpenASOMCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE0000000000000107 /* MCP/OpenASOMCPServer.swift */; };
+		C15A00000000000000000105 /* MCP/OpenASOMCPRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEFACE000000000000010D /* MCP/OpenASOMCPRuntime.swift */; };
+		C15A00000000000000000106 /* AppNamespace.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AppNamespace.swift */; };
+		C15A00000000000000000107 /* OpenASOSchemaV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* OpenASOSchemaV1.swift */; };
+		C15A00000000000000000108 /* Persistence/BackgroundModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000002 /* Persistence/BackgroundModelStore.swift */; };
+		C15A00000000000000000109 /* Persistence/ModelContainerFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000004 /* Persistence/ModelContainerFactory.swift */; };
+		C15A0000000000000000010A /* OpenASOError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9838D42ED1A3EA1E6DDDD68C /* OpenASOError.swift */; };
+		C15A0000000000000000010B /* AppPlatform.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC65F472D8AF2FC4DE4E8BD8 /* AppPlatform.swift */; };
+		C15A0000000000000000010C /* RankingSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B98B0F5A49E13B4633818A9 /* RankingSource.swift */; };
+		C15A0000000000000000010D /* Storefront.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECBEF6240F66A5F359B09D41 /* Storefront.swift */; };
+		C15A0000000000000000010E /* AppFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F678901234510 /* AppFolder.swift */; };
+		C15A0000000000000000010F /* AppKeywordStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F678901234506 /* AppKeywordStats.swift */; };
+		C15A00000000000000000110 /* AppStorefrontReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F678901234512 /* AppStorefrontReview.swift */; };
+		C15A00000000000000000111 /* StoreApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000005 /* StoreApp.swift */; };
+		C15A00000000000000000112 /* AppStorefrontMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000017 /* AppStorefrontMetadata.swift */; };
+		C15A00000000000000000113 /* AppStoreScreenshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000019 /* AppStoreScreenshot.swift */; };
+		C15A00000000000000000114 /* KeywordQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000001 /* KeywordQuery.swift */; };
+		C15A00000000000000000115 /* KeywordDailyMetric.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000007 /* KeywordDailyMetric.swift */; };
+		C15A00000000000000000116 /* KeywordRankingCrawl.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000009 /* KeywordRankingCrawl.swift */; };
+		C15A00000000000000000117 /* KeywordAppRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000B /* KeywordAppRanking.swift */; };
+		C15A00000000000000000118 /* AppDailyRating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000D /* AppDailyRating.swift */; };
+		C15A00000000000000000119 /* LatestAppRating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF0000000000000000000F /* LatestAppRating.swift */; };
+		C15A0000000000000000011A /* TrackedAppKeyword.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000011 /* TrackedAppKeyword.swift */; };
+		C15A0000000000000000011B /* TrackedKeywordDailyRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000013 /* TrackedKeywordDailyRanking.swift */; };
+		C15A0000000000000000011C /* TrackedKeywordRankedResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEF00000000000000000015 /* TrackedKeywordRankedResult.swift */; };
+		C15A0000000000000000011D /* TrackedApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B088B3166AF98160A612326C /* TrackedApp.swift */; };
+		C15A0000000000000000011E /* Networking/HTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8F922DEEB1FCD8E26B1A64A /* Networking/HTTPClient.swift */; };
+		C15A0000000000000000011F /* SearchRanking/AppResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA05C59C087130E05FF3D085 /* SearchRanking/AppResolver.swift */; };
+		C15A00000000000000000120 /* SearchRanking/SearchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1EE58C790084CF7A83CA8A /* SearchRanking/SearchModels.swift */; };
+		C15A00000000000000000121 /* SearchRanking/DefaultAppResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 465129A02F247ED683558D8B /* SearchRanking/DefaultAppResolver.swift */; };
+		C15A00000000000000000122 /* Storefront/AppCatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1105 /* Storefront/AppCatalogService.swift */; };
+		C15A00000000000000000123 /* Storefront/AppStoreWebMetadataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1107 /* Storefront/AppStoreWebMetadataProvider.swift */; };
+		C15A00000000000000000124 /* Storefront/ScreenshotDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */; };
+		C15A00000000000000000125 /* RatingsReviews/AppStorefrontRatingTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70100000000000000000002 /* RatingsReviews/AppStorefrontRatingTypes.swift */; };
+		C15A00000000000000000126 /* RatingsReviews/AppStorefrontRatingParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70100000000000000000004 /* RatingsReviews/AppStorefrontRatingParser.swift */; };
+		C15A00000000000000000127 /* KeywordMetricsSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1114 /* KeywordMetricsSource.swift */; };
+		C15A00000000000000000128 /* Storefront/StorefrontCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B399F08A360281DA901E4457 /* Storefront/StorefrontCatalog.swift */; };
 		C5A400000000000000000001 /* CSVFormats.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A400000000000000000002 /* CSVFormats.swift */; };
 		C5A400000000000000000003 /* CSVFormatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A400000000000000000004 /* CSVFormatsTests.swift */; };
 		C70260E8797CC353D9AD1B3A /* SearchRanking/SearchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1EE58C790084CF7A83CA8A /* SearchRanking/SearchModels.swift */; };
 		CB1733C5A8778748B70BA4FD /* AppDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378F7AF5B5856F0183D027B4 /* AppDetailView.swift */; };
+		D30000000000000000000002 /* AppNamespace.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AppNamespace.swift */; };
 		D6807507E1AF0AB52CB2C7E2 /* SearchRanking/DefaultAppResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 465129A02F247ED683558D8B /* SearchRanking/DefaultAppResolver.swift */; };
 		EF3B2BA43807572789A250A7 /* AddAppSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCCBBF8A3FABA145BF5122ED /* AddAppSheet.swift */; };
 		FC2B65186E0CA31841938E40 /* Storefront.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECBEF6240F66A5F359B09D41 /* Storefront.swift */; };
@@ -157,30 +211,13 @@
 		04E8C4E18F1A4D519C0A1105 /* Storefront/AppCatalogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/AppCatalogService.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1106 /* Storefront/AppIconStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/AppIconStore.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1107 /* Storefront/AppStoreWebMetadataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/AppStoreWebMetadataProvider.swift; sourceTree = "<group>"; };
-		A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/ScreenshotDownloadService.swift; sourceTree = "<group>"; };
-		A0BEEF000000000000000013 /* Storefront/ScreenshotDownloadProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/ScreenshotDownloadProgressStore.swift; sourceTree = "<group>"; };
-		A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotDownloadServiceTests.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1108 /* AppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconView.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000001 /* KeywordQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordQuery.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000005 /* StoreApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreApp.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000017 /* AppStorefrontMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStorefrontMetadata.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000019 /* AppStoreScreenshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreScreenshot.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000007 /* KeywordDailyMetric.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordDailyMetric.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000009 /* KeywordRankingCrawl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingCrawl.swift; sourceTree = "<group>"; };
-		BEEF0000000000000000000B /* KeywordAppRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordAppRanking.swift; sourceTree = "<group>"; };
-		BEEF0000000000000000000D /* AppDailyRating.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDailyRating.swift; sourceTree = "<group>"; };
-		BEEF0000000000000000000F /* LatestAppRating.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatestAppRating.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000011 /* TrackedAppKeyword.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedAppKeyword.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000013 /* TrackedKeywordDailyRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordDailyRanking.swift; sourceTree = "<group>"; };
-		BEEF00000000000000000015 /* TrackedKeywordRankedResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordRankedResult.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A110C /* AppleAds/AppleAdsCredentials.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsCredentials.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A110D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A110F /* AppleAds/AppleSearchAdsJWT.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleSearchAdsJWT.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1114 /* KeywordMetricsSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMetricsSource.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/KeywordMetricsService.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordSuggestionService.swift; sourceTree = "<group>"; };
-		04E8C4E18F1A4D519C0A1141 /* AppDetail/AppDetailRefreshService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetail/AppDetailRefreshService.swift; sourceTree = "<group>"; };
-		04E8C4E18F1A4D519C0A1143 /* AppDetail/AppRefreshProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetail/AppRefreshProgressStore.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1124 /* AppleAds/AppleAdsWebSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsWebSession.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1126 /* script/apple_ads_web_session.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = script/apple_ads_web_session.js; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1128 /* KeywordMetricsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMetricsServiceTests.swift; sourceTree = "<group>"; };
@@ -191,7 +228,8 @@
 		04E8C4E18F1A4D519C0A1139 /* AppleAdsSettingsConnectionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsSettingsConnectionState.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A113B /* AppleAdsSettingsStatusRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsSettingsStatusRows.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A113D /* SettingsViewPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewPreviews.swift; sourceTree = "<group>"; };
-		A10000000000000000000001 /* OpenASOSchemaV1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV1.swift; sourceTree = "<group>"; };
+		04E8C4E18F1A4D519C0A1141 /* AppDetail/AppDetailRefreshService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetail/AppDetailRefreshService.swift; sourceTree = "<group>"; };
+		04E8C4E18F1A4D519C0A1143 /* AppDetail/AppRefreshProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetail/AppRefreshProgressStore.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F678901234506 /* AppKeywordStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKeywordStats.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F67890123450A /* RatingsReviews/AppStorefrontRatingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RatingsReviews/AppStorefrontRatingService.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F67890123450E /* AppStorefrontRatingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStorefrontRatingServiceTests.swift; sourceTree = "<group>"; };
@@ -210,6 +248,8 @@
 		378F7AF5B5856F0183D027B4 /* AppDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailView.swift; sourceTree = "<group>"; };
 		465129A02F247ED683558D8B /* SearchRanking/DefaultAppResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/DefaultAppResolver.swift; sourceTree = "<group>"; };
 		4980369A7326B82ED173C90B /* MockHTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHTTPClient.swift; sourceTree = "<group>"; };
+		4D4350544553545300000001 /* OpenASOMCPServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOMCPServiceTests.swift; sourceTree = "<group>"; };
+		4D4350545345525600000001 /* OpenASOMCPServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOMCPServerTests.swift; sourceTree = "<group>"; };
 		521B4EBEC0EC5B7902728E9E /* OpenASO.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenASO.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C5530D41B3742698F02134C /* Credentials/KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Credentials/KeychainService.swift; sourceTree = "<group>"; };
 		5D89E788AED9CC1E4FD78B3D /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
@@ -218,11 +258,15 @@
 		88F93BD35C340B950DE2A5A8 /* OpenASOApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOApp.swift; sourceTree = "<group>"; };
 		8C6BDA000FFE3FC055867E78 /* ITunesSearchFallbackProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ITunesSearchFallbackProviderTests.swift; sourceTree = "<group>"; };
 		8DD5ED26436229FF7472E342 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		91029AB32FAE58B1001431EE /* AppIconDev.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIconDev.icon; sourceTree = "<group>"; };
 		911101D52F9C3562004DFA8A /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		92798A850EAA13FEE5812E4E /* OpenASOTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenASOTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		93C1A9E52DF448B89A6B5510 /* Resources/storefronts.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Resources/storefronts.json; sourceTree = "<group>"; };
 		9838D42ED1A3EA1E6DDDD68C /* OpenASOError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOError.swift; sourceTree = "<group>"; };
 		A08A2D05F81C49F4A34FB388 /* KeywordTrendSparklineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTrendSparklineView.swift; sourceTree = "<group>"; };
+		A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/ScreenshotDownloadService.swift; sourceTree = "<group>"; };
+		A0BEEF000000000000000013 /* Storefront/ScreenshotDownloadProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/ScreenshotDownloadProgressStore.swift; sourceTree = "<group>"; };
+		A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotDownloadServiceTests.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000001 /* AppDetailToolbarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailToolbarViews.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000003 /* AppRatingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRatingsView.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000007 /* AppDetailSupportTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailSupportTypes.swift; sourceTree = "<group>"; };
@@ -235,6 +279,7 @@
 		A0D71B4C0000000000000018 /* KeywordRankingChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingChartView.swift; sourceTree = "<group>"; };
 		A0D71B4C000000000000001A /* AppDetailPreviewFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailPreviewFixtures.swift; sourceTree = "<group>"; };
 		A0D71B4C000000000000001C /* AppDetailCSVTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailCSVTransfer.swift; sourceTree = "<group>"; };
+		A10000000000000000000001 /* OpenASOSchemaV1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV1.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* KeywordTableCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTableCells.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* KeywordNotesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordNotesSheet.swift; sourceTree = "<group>"; };
 		A20000000000000000000013 /* KeywordRankingListSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingListSheet.swift; sourceTree = "<group>"; };
@@ -264,8 +309,6 @@
 		A80000000000000000000004 /* AnalyticsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsServiceTests.swift; sourceTree = "<group>"; };
 		A90000000000000000000002 /* Updates/SparkleUpdaterController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Updates/SparkleUpdaterController.swift; sourceTree = "<group>"; };
 		A90000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		D30000000000000000000001 /* AppNamespace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNamespace.swift; sourceTree = "<group>"; };
-		D30000000000000000000005 /* OpenASO.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenASO.entitlements; sourceTree = "<group>"; };
 		AA0000000000000000000001 /* AppleAdsConnectionStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsConnectionStateTests.swift; sourceTree = "<group>"; };
 		AF42BE79CA0AE7107E410C7E /* RankingMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingMatcherTests.swift; sourceTree = "<group>"; };
 		B088B3166AF98160A612326C /* TrackedApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedApp.swift; sourceTree = "<group>"; };
@@ -275,13 +318,36 @@
 		B8B0B017D61A316FA58E2040 /* RootSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootSidebarView.swift; sourceTree = "<group>"; };
 		BC65F472D8AF2FC4DE4E8BD8 /* AppPlatform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPlatform.swift; sourceTree = "<group>"; };
 		BCCBBF8A3FABA145BF5122ED /* AddAppSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddAppSheet.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000001 /* KeywordQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordQuery.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000005 /* StoreApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreApp.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000007 /* KeywordDailyMetric.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordDailyMetric.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000009 /* KeywordRankingCrawl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingCrawl.swift; sourceTree = "<group>"; };
+		BEEF0000000000000000000B /* KeywordAppRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordAppRanking.swift; sourceTree = "<group>"; };
+		BEEF0000000000000000000D /* AppDailyRating.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDailyRating.swift; sourceTree = "<group>"; };
+		BEEF0000000000000000000F /* LatestAppRating.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatestAppRating.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000011 /* TrackedAppKeyword.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedAppKeyword.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000013 /* TrackedKeywordDailyRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordDailyRanking.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000015 /* TrackedKeywordRankedResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordRankedResult.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000017 /* AppStorefrontMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStorefrontMetadata.swift; sourceTree = "<group>"; };
+		BEEF00000000000000000019 /* AppStoreScreenshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreScreenshot.swift; sourceTree = "<group>"; };
 		C0DEC0DE0000000000000001 /* CustomSegmentedPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomSegmentedPicker.swift; sourceTree = "<group>"; };
 		C0DEC0DE0000000000000003 /* PinIconButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinIconButton.swift; sourceTree = "<group>"; };
 		C0DEC0DE0000000000000005 /* IconButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconButton.swift; sourceTree = "<group>"; };
 		C0DEC0DE0000000000000007 /* Tooltip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tooltip.swift; sourceTree = "<group>"; };
 		C0DEC0DE0000000000000009 /* TertiaryActionButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TertiaryActionButton.swift; sourceTree = "<group>"; };
+		C0DEC0DE0000000000000011 /* MCPServerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerSheet.swift; sourceTree = "<group>"; };
+		C0DEFACE0000000000000101 /* MCP/OpenASOMCPDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/OpenASOMCPDTOs.swift; sourceTree = "<group>"; };
+		C0DEFACE0000000000000103 /* MCP/OpenASOMCPService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/OpenASOMCPService.swift; sourceTree = "<group>"; };
+		C0DEFACE0000000000000105 /* MCP/OpenASOMCPValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/OpenASOMCPValidation.swift; sourceTree = "<group>"; };
+		C0DEFACE0000000000000107 /* MCP/OpenASOMCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/OpenASOMCPServer.swift; sourceTree = "<group>"; };
+		C0DEFACE000000000000010D /* MCP/OpenASOMCPRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/OpenASOMCPRuntime.swift; sourceTree = "<group>"; };
+		C0DEFACE000000000000010F /* MCP/OpenASOMCPServerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/OpenASOMCPServerController.swift; sourceTree = "<group>"; };
+		C15A00000000000000000001 /* MCP/OpenASOMCPMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/OpenASOMCPMain.swift; sourceTree = "<group>"; };
+		C15A00000000000000000002 /* OpenASOMCP */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = OpenASOMCP; sourceTree = BUILT_PRODUCTS_DIR; };
 		C5A400000000000000000002 /* CSVFormats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVFormats.swift; sourceTree = "<group>"; };
 		C5A400000000000000000004 /* CSVFormatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVFormatsTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000001 /* AppNamespace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNamespace.swift; sourceTree = "<group>"; };
+		D30000000000000000000005 /* OpenASO.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenASO.entitlements; sourceTree = "<group>"; };
 		D8F922DEEB1FCD8E26B1A64A /* Networking/HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/HTTPClient.swift; sourceTree = "<group>"; };
 		DEB53B31A2B107CEE141F744 /* SearchRanking/ITunesSearchFallbackProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/ITunesSearchFallbackProvider.swift; sourceTree = "<group>"; };
 		E87EC021EFE3EDFB1445FFA7 /* AddKeywordsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddKeywordsSheet.swift; sourceTree = "<group>"; };
@@ -297,6 +363,7 @@
 			files = (
 				A80000000000000000000005 /* PostHog in Frameworks */,
 				A90000000000000000000005 /* Sparkle in Frameworks */,
+				C0DEFACE000000000000010A /* MCP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -304,6 +371,15 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4D4350545345525600000003 /* MCP in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C15A00000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C15A00000000000000000009 /* MCP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -324,6 +400,8 @@
 				B16D1F1F736DDAB911B87E77 /* DefaultAppResolverTests.swift */,
 				8C6BDA000FFE3FC055867E78 /* ITunesSearchFallbackProviderTests.swift */,
 				04E8C4E18F1A4D519C0A1128 /* KeywordMetricsServiceTests.swift */,
+				4D4350545345525600000001 /* OpenASOMCPServerTests.swift */,
+				4D4350544553545300000001 /* OpenASOMCPServiceTests.swift */,
 				A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */,
 				A63CBBCCA79CA32CCB5BFE4F /* TrackedAppKeywordIdentityTests.swift */,
 				4980369A7326B82ED173C90B /* MockHTTPClient.swift */,
@@ -351,6 +429,7 @@
 			children = (
 				C10000000000000000000001 /* AppDetail */,
 				C10000000000000000000005 /* AppManagement */,
+				C0DEC0DE0000000000000010 /* MCP */,
 				C10000000000000000000006 /* Settings */,
 			);
 			path = Features;
@@ -386,6 +465,13 @@
 				D8F922DEEB1FCD8E26B1A64A /* Networking/HTTPClient.swift */,
 				DEB53B31A2B107CEE141F744 /* SearchRanking/ITunesSearchFallbackProvider.swift */,
 				5C5530D41B3742698F02134C /* Credentials/KeychainService.swift */,
+				C0DEFACE0000000000000101 /* MCP/OpenASOMCPDTOs.swift */,
+				C0DEFACE0000000000000103 /* MCP/OpenASOMCPService.swift */,
+				C0DEFACE0000000000000105 /* MCP/OpenASOMCPValidation.swift */,
+				C0DEFACE0000000000000107 /* MCP/OpenASOMCPServer.swift */,
+				C0DEFACE000000000000010D /* MCP/OpenASOMCPRuntime.swift */,
+				C0DEFACE000000000000010F /* MCP/OpenASOMCPServerController.swift */,
+				C15A00000000000000000001 /* MCP/OpenASOMCPMain.swift */,
 				A0D71B4C0000000000000012 /* SearchRanking/KeywordInsightsService.swift */,
 				04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */,
 				04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */,
@@ -417,6 +503,7 @@
 			children = (
 				521B4EBEC0EC5B7902728E9E /* OpenASO.app */,
 				92798A850EAA13FEE5812E4E /* OpenASOTests.xctest */,
+				C15A00000000000000000002 /* OpenASOMCP */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -523,6 +610,14 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
+		C0DEC0DE0000000000000010 /* MCP */ = {
+			isa = PBXGroup;
+			children = (
+				C0DEC0DE0000000000000011 /* MCPServerSheet.swift */,
+			);
+			path = MCP;
+			sourceTree = "<group>";
+		};
 		C5A400000000000000000005 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
@@ -575,6 +670,7 @@
 				D30000000000000000000005 /* OpenASO.entitlements */,
 				93C1A9E52DF448B89A6B5510 /* Resources/storefronts.json */,
 				911101D52F9C3562004DFA8A /* AppIcon.icon */,
+				91029AB32FAE58B1001431EE /* AppIconDev.icon */,
 			);
 			path = OpenASO;
 			sourceTree = "<group>";
@@ -599,10 +695,30 @@
 			packageProductDependencies = (
 				A80000000000000000000006 /* PostHog */,
 				A90000000000000000000006 /* Sparkle */,
+				C0DEFACE0000000000000109 /* MCP */,
 			);
 			productName = OpenASO;
 			productReference = 521B4EBEC0EC5B7902728E9E /* OpenASO.app */;
 			productType = "com.apple.product-type.application";
+		};
+		C15A00000000000000000005 /* OpenASOMCP */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C15A00000000000000000006 /* Build configuration list for PBXNativeTarget "OpenASOMCP" */;
+			buildPhases = (
+				C15A00000000000000000003 /* Sources */,
+				C15A00000000000000000004 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OpenASOMCP;
+			packageProductDependencies = (
+				C0DEFACE0000000000000109 /* MCP */,
+			);
+			productName = OpenASOMCP;
+			productReference = C15A00000000000000000002 /* OpenASOMCP */;
+			productType = "com.apple.product-type.tool";
 		};
 		F2536CA1B0F0F2F45D6E20A1 /* OpenASOTests */ = {
 			isa = PBXNativeTarget;
@@ -618,6 +734,7 @@
 			);
 			name = OpenASOTests;
 			packageProductDependencies = (
+				C0DEFACE0000000000000109 /* MCP */,
 			);
 			productName = OpenASOTests;
 			productReference = 92798A850EAA13FEE5812E4E /* OpenASOTests.xctest */;
@@ -645,12 +762,14 @@
 			packageReferences = (
 				A80000000000000000000007 /* XCRemoteSwiftPackageReference "posthog-ios" */,
 				A90000000000000000000007 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				C0DEFACE000000000000010B /* XCRemoteSwiftPackageReference "swift-sdk" */,
 			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				572848118C1EED1650280174 /* OpenASO */,
 				F2536CA1B0F0F2F45D6E20A1 /* OpenASOTests */,
+				C15A00000000000000000005 /* OpenASOMCP */,
 			);
 		};
 /* End PBXProject section */
@@ -662,6 +781,7 @@
 			files = (
 				8ED05A47F845B42089077D3F /* Assets.xcassets in Resources */,
 				04E8C4E18F1A4D519C0A1125 /* script/apple_ads_web_session.js in Resources */,
+				91029AB42FAE58B1001431EE /* AppIconDev.icon in Resources */,
 				911101D62F9C3562004DFA8A /* AppIcon.icon in Resources */,
 				93C1A9E62DF448B89A6B5510 /* Resources/storefronts.json in Resources */,
 			);
@@ -775,6 +895,13 @@
 				A50000000000000000000001 /* PaginatedList.swift in Sources */,
 				FEAE526BDAAC6C7B67A731ED /* OpenASOApp.swift in Sources */,
 				A30000000000000000000003 /* Persistence/ModelContainerFactory.swift in Sources */,
+				C0DEFACE0000000000000102 /* MCP/OpenASOMCPDTOs.swift in Sources */,
+				C0DEC0DE0000000000000012 /* MCPServerSheet.swift in Sources */,
+				C0DEFACE0000000000000104 /* MCP/OpenASOMCPService.swift in Sources */,
+				C0DEFACE0000000000000106 /* MCP/OpenASOMCPValidation.swift in Sources */,
+				C0DEFACE0000000000000108 /* MCP/OpenASOMCPServer.swift in Sources */,
+				C0DEFACE000000000000010E /* MCP/OpenASOMCPRuntime.swift in Sources */,
+				C0DEFACE0000000000000110 /* MCP/OpenASOMCPServerController.swift in Sources */,
 				0EBC5115A0746B143811F971 /* OpenASOError.swift in Sources */,
 				766FE01C27334F5387A7E797 /* PreviewAppDependencies.swift in Sources */,
 				C0DEC0DE0000000000000006 /* IconButton.swift in Sources */,
@@ -827,12 +954,62 @@
 				3A3B766B1E13C1E131179C31 /* DefaultAppResolverTests.swift in Sources */,
 				A301EA7838159D6EE3E53FD0 /* ITunesSearchFallbackProviderTests.swift in Sources */,
 				04E8C4E18F1A4D519C0A1127 /* KeywordMetricsServiceTests.swift in Sources */,
+				4D4350545345525600000002 /* OpenASOMCPServerTests.swift in Sources */,
+				4D4350544553545300000002 /* OpenASOMCPServiceTests.swift in Sources */,
 				A0BEEF000000000000000014 /* ScreenshotDownloadServiceTests.swift in Sources */,
 				FE86E03B40393EF38C032A45 /* TrackedAppKeywordIdentityTests.swift in Sources */,
 				0FCA11A424784491606B13B7 /* MockHTTPClient.swift in Sources */,
 				43AE454C23461BBBC44D01DA /* RankingMatcherTests.swift in Sources */,
 				3FBAFA6ACAF90A7959DC4053 /* RankingRefreshCoordinatorTests.swift in Sources */,
 				A60000000000000000000003 /* ReviewTranslationIntegrationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C15A00000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C15A0000000000000000000A /* MCP/OpenASOMCPMain.swift in Sources */,
+				C15A00000000000000000101 /* MCP/OpenASOMCPDTOs.swift in Sources */,
+				C15A00000000000000000102 /* MCP/OpenASOMCPService.swift in Sources */,
+				C15A00000000000000000103 /* MCP/OpenASOMCPValidation.swift in Sources */,
+				C15A00000000000000000104 /* MCP/OpenASOMCPServer.swift in Sources */,
+				C15A00000000000000000105 /* MCP/OpenASOMCPRuntime.swift in Sources */,
+				C15A00000000000000000106 /* AppNamespace.swift in Sources */,
+				C15A00000000000000000107 /* OpenASOSchemaV1.swift in Sources */,
+				C15A00000000000000000108 /* Persistence/BackgroundModelStore.swift in Sources */,
+				C15A00000000000000000109 /* Persistence/ModelContainerFactory.swift in Sources */,
+				C15A0000000000000000010A /* OpenASOError.swift in Sources */,
+				C15A0000000000000000010B /* AppPlatform.swift in Sources */,
+				C15A0000000000000000010C /* RankingSource.swift in Sources */,
+				C15A0000000000000000010D /* Storefront.swift in Sources */,
+				C15A0000000000000000010E /* AppFolder.swift in Sources */,
+				C15A0000000000000000010F /* AppKeywordStats.swift in Sources */,
+				C15A00000000000000000110 /* AppStorefrontReview.swift in Sources */,
+				C15A00000000000000000111 /* StoreApp.swift in Sources */,
+				C15A00000000000000000112 /* AppStorefrontMetadata.swift in Sources */,
+				C15A00000000000000000113 /* AppStoreScreenshot.swift in Sources */,
+				C15A00000000000000000114 /* KeywordQuery.swift in Sources */,
+				C15A00000000000000000115 /* KeywordDailyMetric.swift in Sources */,
+				C15A00000000000000000116 /* KeywordRankingCrawl.swift in Sources */,
+				C15A00000000000000000117 /* KeywordAppRanking.swift in Sources */,
+				C15A00000000000000000118 /* AppDailyRating.swift in Sources */,
+				C15A00000000000000000119 /* LatestAppRating.swift in Sources */,
+				C15A0000000000000000011A /* TrackedAppKeyword.swift in Sources */,
+				C15A0000000000000000011B /* TrackedKeywordDailyRanking.swift in Sources */,
+				C15A0000000000000000011C /* TrackedKeywordRankedResult.swift in Sources */,
+				C15A0000000000000000011D /* TrackedApp.swift in Sources */,
+				C15A0000000000000000011E /* Networking/HTTPClient.swift in Sources */,
+				C15A0000000000000000011F /* SearchRanking/AppResolver.swift in Sources */,
+				C15A00000000000000000120 /* SearchRanking/SearchModels.swift in Sources */,
+				C15A00000000000000000121 /* SearchRanking/DefaultAppResolver.swift in Sources */,
+				C15A00000000000000000122 /* Storefront/AppCatalogService.swift in Sources */,
+				C15A00000000000000000123 /* Storefront/AppStoreWebMetadataProvider.swift in Sources */,
+				C15A00000000000000000124 /* Storefront/ScreenshotDownloadService.swift in Sources */,
+				C15A00000000000000000127 /* KeywordMetricsSource.swift in Sources */,
+				C15A00000000000000000125 /* RatingsReviews/AppStorefrontRatingTypes.swift in Sources */,
+				C15A00000000000000000126 /* RatingsReviews/AppStorefrontRatingParser.swift in Sources */,
+				C15A00000000000000000128 /* Storefront/StorefrontCatalog.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -869,7 +1046,7 @@
 		3C38D131DA48E7054E453EFC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconDev;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -894,10 +1071,10 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.3.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso.dev;
-				PRODUCT_NAME = OpenASO;
 				POSTHOG_HOST = "";
 				POSTHOG_PROJECT_TOKEN = "";
+				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso.dev;
+				PRODUCT_NAME = OpenASO;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SPARKLE_PUBLIC_ED_KEY = "xsgoQKk5jiYfvYi/gHktpKwavWbKzxVCd6O+xP2eqUs=";
@@ -978,9 +1155,9 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.2;
 			};
 			name = Release;
@@ -1053,6 +1230,48 @@
 			};
 			name = Debug;
 		};
+		C15A00000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/PackageFrameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso.mcp;
+				PRODUCT_NAME = OpenASOMCP;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG OPENASO_OSS_BUILD";
+				SWIFT_VERSION = 6.2;
+			};
+			name = Debug;
+		};
+		C15A00000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/PackageFrameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso.mcp;
+				PRODUCT_NAME = OpenASOMCP;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = OPENASO_OSS_BUILD;
+				SWIFT_VERSION = 6.2;
+			};
+			name = Release;
+		};
 		D21AF5F5AA7D4B4208CF3D3D /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1082,10 +1301,10 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.3.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso;
-				PRODUCT_NAME = OpenASO;
 				POSTHOG_HOST = "";
 				POSTHOG_PROJECT_TOKEN = "";
+				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso;
+				PRODUCT_NAME = OpenASO;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SPARKLE_PUBLIC_ED_KEY = "xsgoQKk5jiYfvYi/gHktpKwavWbKzxVCd6O+xP2eqUs=";
@@ -1110,6 +1329,15 @@
 			buildConfigurations = (
 				B2F09BCE86146415A8ACECE0 /* Debug */,
 				94323EB727B3059AA7313B90 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C15A00000000000000000006 /* Build configuration list for PBXNativeTarget "OpenASOMCP" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C15A00000000000000000007 /* Debug */,
+				C15A00000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -1142,6 +1370,14 @@
 				minimumVersion = 2.9.1;
 			};
 		};
+		C0DEFACE000000000000010B /* XCRemoteSwiftPackageReference "swift-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/modelcontextprotocol/swift-sdk.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.11.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1154,6 +1390,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A90000000000000000000007 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		C0DEFACE0000000000000109 /* MCP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0DEFACE000000000000010B /* XCRemoteSwiftPackageReference "swift-sdk" */;
+			productName = MCP;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

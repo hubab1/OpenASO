@@ -32,6 +32,7 @@ final class AppServices {
     let refreshCoordinator: RankingRefreshCoordinator
     let appDetailRefreshService: AppDetailRefreshService?
     let refreshProgressStore: AppRefreshProgressStore
+    let mcpServerController: OpenASOMCPServerController
     private(set) var backgroundModelStore: BackgroundModelStore?
     private(set) var backgroundModelStoreRevision = 0
 
@@ -245,6 +246,36 @@ final class AppServices {
         self.refreshCoordinator = refreshCoordinator
         self.appDetailRefreshService = appDetailRefreshService
         self.refreshProgressStore = refreshProgressStore
+        self.mcpServerController = OpenASOMCPServerController(portProvider: {
+            settingsStore.mcpServerPort
+        }) {
+            guard let backgroundModelStore else {
+                throw OpenASOError.providerUnavailable("OpenASO MCP needs an initialized workspace store.")
+            }
+
+            let mcpService = OpenASOMCPService(
+                backgroundModelStore: backgroundModelStore,
+                appResolver: resolver,
+                appCatalogService: catalogService,
+                httpClient: httpClient,
+                screenshotDownloadService: screenshotDownloadService,
+                rankingProvider: rankingProvider,
+                rankingRefreshCoordinator: refreshCoordinator,
+                reviewService: appStorefrontReviewService,
+                keywordMetricsService: keywordMetricsService,
+                popularityContextAppStoreIDProvider: {
+                    settingsStore.popularityContextAppStoreID
+                },
+                appleAdsWebSessionProvider: {
+                    appleAdsWebSessionStore.session
+                }
+            )
+
+            return await OpenASOMCPServerFactory(
+                service: mcpService,
+                configuration: OpenASOMCPServerConfiguration(version: "1.5.0")
+            ).makeServer()
+        }
         self.backgroundModelStore = backgroundModelStore
         self.backgroundModelStoreRevision = backgroundModelStore == nil ? 0 : 1
     }

@@ -97,7 +97,7 @@ struct AppDetailRefreshResult: Sendable {
     let firstError: OpenASOError?
 }
 
-final class AppDetailRefreshService: @unchecked Sendable {
+final class AppDetailRefreshService: Sendable {
     private static let rankingFetchConcurrency = 4
     private static let rankingPersistenceBatchSize = 5
 

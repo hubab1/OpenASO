@@ -51,7 +51,7 @@ struct ScreenshotDownloadResult: Sendable {
     }
 }
 
-final class ScreenshotDownloadService: @unchecked Sendable {
+final class ScreenshotDownloadService: Sendable {
     typealias DataProvider = @Sendable (URL) async throws -> (Data, URLResponse)
     typealias ProgressHandler = @Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void
 
