@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 - 2026-05-09
+
+OpenASO 0.3.2 makes keyword research more accurate when you track App Store performance across iPhone, iPad, and Mac.  You can now choose the target device when adding keywords, keep platform context through CSV imports and exports, and filter refreshes around the device results you care about. Keyword tables and charts also do a better job of showing platform-specific ranking history, reducing duplicate-looking data when the same keyword is tracked in multiple contexts.  This release also improves refresh reliability by queueing overlapping app refreshes, prevents duplicate CSV import processing, and adds a new OpenASO ASO skill for evidence-led audits, keyword research, metadata recommendations, screenshot planning, competitor review, and localization work.
+
 ## 0.3.1 - 2026-05-08
 
 Add local MCP workflows for OpenASO, including tools for app discovery, keyword tracking, ranking refreshes, reviews, screenshots, competitors, and localization research. Also adds MCP server controls in Settings plus validation and tests.
