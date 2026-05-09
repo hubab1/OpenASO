@@ -1,0 +1,7 @@
+interface:
+  display_name: "OpenASO ASO"
+  short_description: "ASO workflows powered by OpenASO evidence"
+  default_prompt: "Use $openaso-aso to audit this app's ASO using OpenASO MCP evidence before recommending changes."
+
+policy:
+  allow_implicit_invocation: true

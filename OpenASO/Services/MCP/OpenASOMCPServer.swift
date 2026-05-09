@@ -9,7 +9,7 @@ struct OpenASOMCPServerConfiguration: Sendable {
     init(
         name: String = "OpenASO",
         version: String = "0.1.0",
-        instructions: String = "Inspect and update a local OpenASO ASO workspace through structured tools, resources, and prompts."
+        instructions: String = "Use OpenASO as the evidence layer for ASO work: gather local and live app metadata, rankings, keyword metrics, reviews, screenshots, competitors, freshness warnings, and localization context through tools before recommending actions. Keep refreshes bounded, continue with partial results when providers cap or fail, and label unsupported or missing data such as downloads, revenue, conversion rate, hidden keyword fields, paid campaign performance, and exact App Store Connect analytics instead of inventing it."
     ) {
         self.name = name
         self.version = version
@@ -563,7 +563,11 @@ private extension OpenASOMCPServerFactory {
         prompt("keyword_research_brief", "Inspect app metadata, current keywords, scored keyword buckets, competitors, website markdown, screenshots, popularity, and ranking gaps before recommending keywords."),
         prompt("competitor_landscape", "Combine tracked rankings, derived competitors, ranked apps, screenshots, and reviews for a competitor landscape."),
         prompt("localization_opportunity_analysis", "Use localization research context, screenshot OCR, and metadata comparisons to recommend languages and localization scope."),
-        prompt("aso_action_plan", "Produce prioritized ASO actions across keywords, metadata hypotheses, review-derived fixes, screenshot observations, and competitor monitoring.")
+        prompt("aso_action_plan", "Produce prioritized ASO actions across keywords, metadata hypotheses, review-derived fixes, screenshot observations, and competitor monitoring."),
+        prompt("aso_audit_scorecard", "Score ASO health from OpenASO evidence, then return quick wins, high-impact changes, and strategic recommendations."),
+        prompt("metadata_optimization_package", "Generate App Store metadata recommendations from verified keywords, review language, competitor positioning, and Apple field rules."),
+        prompt("screenshot_optimization_plan", "Use target and competitor screenshot evidence to build a 10-slot App Store screenshot strategy and creative test hypotheses."),
+        prompt("store_listing_test_plan", "Create PPO and custom product page test plans from OpenASO evidence while requesting ASC-only inputs when needed.")
     ]
 
     static func promptTemplate(named name: String, arguments: [String: String]?) -> GetPrompt.Result? {
@@ -573,23 +577,29 @@ private extension OpenASOMCPServerFactory {
         switch name {
         case "review_theme_analysis":
             body = """
-            For appStoreID \(appStoreID), check freshness with get_app_overview, then use list_reviews for \(storefronts). Refresh reviews when data is missing or stale.
-            Summarize praise, complaints, feature requests, regressions, pricing objections, trust concerns, version-specific issues, and repeated language users use to describe value.
-            Separate product issues from ASO messaging opportunities. Include review counts or representative evidence themes rather than isolated anecdotes.
+            For appStoreID \(appStoreID), start with get_app_overview to inspect reviewSummary and freshnessWarnings, then use list_reviews for \(storefronts). Refresh reviews only when data is missing or stale, using a bounded recent sample before considering download_all_reviews.
+            Summarize praise, complaints, feature requests, regressions, pricing objections, trust concerns, version-specific issues, competitor mentions, and repeated language users use to describe value.
+            Separate product issues from ASO messaging opportunities. Include review counts, rating ranges, versions, storefronts, and representative evidence themes rather than isolated anecdotes.
+            When drafting review responses, use a HEAR structure: hear the specific issue, empathize briefly, state the action or limitation, and route to support or a fix. Do not ask users to change ratings or offer incentives.
+            Label missing or unsupported data explicitly, including response-rate history, exact rating prompt timing, retention analytics, downloads, revenue, and App Store Connect conversion metrics.
             """
         case "keyword_research_brief":
             body = """
-            For appStoreID \(appStoreID), inspect get_app_overview, list_keywords, score_keywords, list_competitors, list_screenshots, and any available website markdown.
-            Use staged, bounded discovery: start with current evidence, then run suggest_keywords for the top 1-2 storefronts or a small seed limit before broadening. Continue with partial results when a tool returns verification_budget_exceeded or per-keyword errors.
+            For appStoreID \(appStoreID), inspect get_app_overview, list_keywords, score_keywords, list_competitors, list_reviews, list_screenshots, and any available website markdown before recommending keywords.
+            Use staged, bounded discovery: start with current evidence, then run suggest_keywords or discover_keyword_landscape for the top 1-2 storefronts or a small seed limit before broadening. Continue with partial results when a tool returns verification_budget_exceeded or per-keyword errors.
             Classify keywords as defend, attack, long-tail, brand, experimental, or noisy. Drop generic fragments and irrelevant phrases unless ranking evidence proves relevance.
-            Recommend keywords only after separating hypotheses from verified ranking/popularity evidence. Prioritize terms with direct user intent, competitor overlap, and review-language support.
+            Apply opportunity scoring as a rubric, not a substitute for evidence: weigh popularity, rankability/difficulty or result count, relevance, current rank, competitor overlap, and review-language support.
+            Recommend keywords only after separating hypotheses from verified ranking/popularity evidence. Prioritize terms with direct download intent and avoid broad phrases that do not describe the app's core value.
+            For iOS metadata recommendations, avoid repeating words across title, subtitle, and hidden keyword field, prefer singular keyword-field terms, use comma-separated values without spaces, and do not include competitor brands, app name, category names, or unsupported claims.
             """
         case "competitor_landscape":
             body = """
             For appStoreID \(appStoreID), use list_competitors and shared keyword evidence for \(storefronts). Refresh rankings first when shared evidence is missing or stale.
             Keep live refreshes bounded: prefer refresh_keyword_rankings with a small limit and use get_ranked_apps_for_keyword for specific high-value keywords instead of broad unconstrained crawls.
-            Separate direct competitors from incidental ranking matches. Compare competitors by shared keyword count, average rank, best rank, rating count, review themes, pricing complaints, and metadata positioning.
-            For screenshots, inspect first-screenshot hook, social proof, feature clarity, visual contrast, proof claims, app UI visibility, and screenshot ordering. Export screenshots when visual analysis is requested.
+            Separate direct competitors from incidental ranking matches. Compare competitors by shared keyword count, average rank, best rank, rating count, review themes, pricing complaints, metadata positioning, and first-3 screenshot strategy.
+            For screenshots, inspect first-screenshot hook, social proof, benefit clarity, visual contrast, proof claims, app UI visibility, and screenshot ordering. Export screenshots when visual analysis is requested.
+            Use competitor reviews as evidence of unmet needs, switching triggers, table-stakes features, and messaging opportunities. Use refresh_competitor_reviews in a bounded way when stored reviews are missing.
+            Label unavailable market intelligence such as downloads, revenue, paid campaign spend, and exact conversion rates instead of estimating it from ratings or rank alone.
             """
         case "localization_opportunity_analysis":
             body = """
@@ -597,14 +607,51 @@ private extension OpenASOMCPServerFactory {
             Narrow storefronts when researching visually or when refreshing missing metadata. If a broad localization request returns partial data, continue with the strongest storefronts and clearly label missing metadata, screenshots, or review coverage.
             Use OCR and visual interpretation on screenshot URLs or exported screenshot files to determine whether screenshot copy and creative are localized, market-specific, or unchanged from the US baseline.
             Compare App Store title, subtitle, and description differences against the US baseline. Use supported language codes only as evidence of in-app localization availability, not as proof of localized App Store metadata.
+            Treat localized keywords as market-specific research, not translations of English terms. Use local competitor metadata, local review language, and live keyword/ranking checks before proposing localized title, subtitle, or keyword-field terms.
+            Prioritize markets with a clear mix of opportunity, competitive localization gaps, implementation effort, revenue fit, and app-language support. Label revenue potential as a hypothesis unless the user provides ASC revenue by country.
             Recommend languages/storefronts with confidence and required scope: metadata_only, metadata_and_screenshots, or full_app_localization. Include competitor evidence and call out missing data separately from weak opportunity.
             """
         case "aso_action_plan":
             body = """
             For appStoreID \(appStoreID), produce prioritized ASO actions using get_app_overview, score_keywords, list_competitors, review themes, screenshot evidence, and ranking freshness.
             Prefer actionable partial evidence over repeated broad calls: if a crawl times out or returns a capped verification error, finish the plan with the evidence already gathered and list the next bounded query to run.
-            Group actions by impact and confidence: keyword tracking, metadata hypotheses, screenshot tests, review-derived product fixes, and competitor monitoring.
+            Group actions by impact, effort, confidence, and evidence source: keyword tracking, metadata hypotheses, screenshot tests, review-derived product fixes, localization opportunities, and competitor monitoring.
             Explicitly identify noisy keywords to remove or de-prioritize, defend keywords where the app already ranks well, and attack keywords where competitors rank strongly.
+            Apply ASO rubrics from domain knowledge only after OpenASO evidence is gathered. Mark unsupported inputs such as downloads, revenue, conversion rate, paid campaign performance, hidden keyword field contents, and exact App Store Connect analytics as missing or user-provided.
+            Return concise next steps with bounded follow-up tool calls, not broad crawls.
+            """
+        case "aso_audit_scorecard":
+            body = """
+            For appStoreID \(appStoreID), create an ASO health audit from OpenASO evidence. Start with get_app_overview, then inspect score_keywords, list_keywords, list_reviews, list_screenshots, and list_competitors for \(storefronts). Refresh rankings, reviews, or keyword metrics only when overview freshnessWarnings show stale or missing evidence, and keep refreshes bounded.
+            Score these factors on a 0-10 scale and compute a weighted 100-point score: title, subtitle, keyword coverage, description/conversion copy, screenshots, ratings and reviews, icon/search-result signal when available, keyword rankings, competitor position, and conversion/testing readiness.
+            Use ASO rubrics as analysis criteria: Apple title and subtitle are 30 characters, hidden keyword field is 100 characters when user-provided, descriptions are conversion-oriented on iOS, first screenshots drive product-page comprehension, ratings below strong category norms can hurt conversion, and keyword rank/relevance matter more than raw keyword volume.
+            Separate verified evidence from hypotheses. Label unsupported or missing data explicitly, especially downloads, revenue, exact conversion rate, impressions, hidden keyword field contents, paid campaign data, and ASC analytics.
+            Return an ASO Score Card, Quick Wins, High-Impact Changes, Strategic Recommendations, and a Competitor Comparison table with evidence notes.
+            """
+        case "metadata_optimization_package":
+            body = """
+            For appStoreID \(appStoreID), build metadata recommendations from OpenASO evidence. Inspect get_app_overview, list_keywords, score_keywords, list_competitors, list_reviews, and any available website markdown for \(storefronts). Use suggest_keywords or discover_keyword_landscape only as a bounded expansion step after reviewing existing evidence.
+            Produce title, subtitle, keyword-field, description, promotional-text, and What's New recommendations where evidence supports them. Use 30 characters for title, 30 for subtitle, 100 for the iOS keyword field when the user wants hidden keywords, 170 for promotional text, and 4000 for description and release notes.
+            Build a keyword coverage matrix. Avoid repeating keyword words across title, subtitle, and keyword field; prefer singular keyword-field terms; use comma-separated keyword-field values without spaces; avoid app name, category names, competitor brands, "app", "free", and unsupported claims in the keyword field.
+            Use review language and competitor positioning to improve conversion copy, but keep keyword recommendations tied to verified rankings, popularity metrics, competitor overlap, direct user intent, or clearly labeled hypotheses.
+            If current hidden keyword field, conversion rate, downloads, revenue, or ASC product-page metrics are unavailable, ask the user for them or label them missing rather than inferring them from public metadata.
+            Return a recommended metadata package, two alternatives, character counts, keyword coverage, before/after comparison, rationale, and evidence gaps.
+            """
+        case "screenshot_optimization_plan":
+            body = """
+            For appStoreID \(appStoreID), create a screenshot optimization plan from OpenASO evidence. Inspect get_app_overview, list_screenshots, list_reviews, score_keywords, and list_competitors for \(storefronts). Use export_screenshots or export_competitor_screenshots when visual/OCR analysis is requested or screenshot URLs are insufficient.
+            Analyze screenshots with App Store creative rubrics: slot 1 must explain the core benefit quickly, slots 2-3 should prove core value, slots 4-7 can show feature breadth, slots 8-9 can show trust or differentiation, and slot 10 can reinforce a call to action. Prefer benefit-driven overlay copy, visible real UI, high contrast, and localized copy where relevant.
+            Compare competitors by first-screenshot hook, screenshot count, visual clarity, proof/social claims, feature order, market-specific localization, and whether app UI is visible enough to understand.
+            Mine review themes and keyword intent for what users need to see before downloading. Separate creative hypotheses from screenshot evidence and avoid claims that OpenASO cannot verify.
+            Return a 10-slot screenshot plan with headline/caption ideas, screen to show, evidence source, competitor contrast, localization notes, and candidate PPO/CPP test hypotheses.
+            """
+        case "store_listing_test_plan":
+            body = """
+            For appStoreID \(appStoreID), design App Store Product Page Optimization and custom product page tests from OpenASO evidence. Inspect get_app_overview, score_keywords, list_reviews, list_screenshots, and list_competitors for \(storefronts) before proposing tests.
+            Prioritize hypotheses from evidence: first screenshot clarity, screenshot order, benefit framing, social proof, icon/search-result distinctiveness when visible, localized screenshots, metadata positioning, and review-derived objections.
+            Respect Apple testing limits: PPO can test app icon, screenshots, and app preview videos, not title, subtitle, keyword field, or description. CPPs can target audiences with custom screenshots, app previews, and promotional text, but are not randomized organic A/B tests.
+            Ask for ASC-only inputs needed for sample sizing and interpretation: impressions, conversion rate, product page views, traffic source, country split, current test duration, confidence, and variant metrics. Label these missing if not provided; do not infer exact conversion or download lift from OpenASO public data.
+            Return a test roadmap with hypothesis, variants, primary metric, evidence source, required ASC inputs, minimum detectable effect assumptions if user supplies baseline traffic, and the next OpenASO evidence refresh to run after the test.
             """
         default:
             return nil
