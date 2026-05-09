@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-enum TrendDateRange: CaseIterable, Identifiable {
+enum TrendDateRange: CaseIterable, Identifiable, Sendable {
     case last7Days
     case last30Days
     case last90Days
@@ -22,16 +22,33 @@ enum TrendDateRange: CaseIterable, Identifiable {
         }
     }
 
-    var cutoffDate: Date? {
+    var compactTitle: String {
         switch self {
         case .last7Days:
-            return Calendar.current.date(byAdding: .day, value: -7, to: .now)
+            "7D"
         case .last30Days:
-            return Calendar.current.date(byAdding: .day, value: -30, to: .now)
+            "30D"
         case .last90Days:
-            return Calendar.current.date(byAdding: .day, value: -90, to: .now)
+            "90D"
         case .allTime:
-            return nil
+            "All"
+        }
+    }
+
+    var cutoffDate: Date? {
+        cutoffDate(relativeTo: .now, calendar: .current)
+    }
+
+    func cutoffDate(relativeTo now: Date, calendar: Calendar) -> Date? {
+        switch self {
+        case .last7Days:
+            calendar.date(byAdding: .day, value: -7, to: now)
+        case .last30Days:
+            calendar.date(byAdding: .day, value: -30, to: now)
+        case .last90Days:
+            calendar.date(byAdding: .day, value: -90, to: now)
+        case .allTime:
+            nil
         }
     }
 }

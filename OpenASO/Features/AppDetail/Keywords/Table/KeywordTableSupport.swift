@@ -431,6 +431,25 @@ struct KeywordWorkspaceRow: Identifiable {
         return "±0"
     }
 
+    var trendAccessibilityText: String {
+        guard let trendDelta else {
+            return "Not enough history to determine a ranking trend."
+        }
+
+        if trendDelta > 0 {
+            let positionLabel = trendDelta == 1 ? "position" : "positions"
+            return "Up \(trendDelta) \(positionLabel)."
+        }
+
+        if trendDelta < 0 {
+            let amount = abs(trendDelta)
+            let positionLabel = amount == 1 ? "position" : "positions"
+            return "Down \(amount) \(positionLabel)."
+        }
+
+        return "Ranking unchanged."
+    }
+
     var trendColor: Color {
         guard let trendDelta else {
             return .secondary
@@ -495,7 +514,7 @@ struct KeywordWorkspaceRow: Identifiable {
     }
 }
 
-struct KeywordRankingCrawlSummary: Identifiable {
+struct KeywordRankingCrawlSummary: Identifiable, Equatable, Sendable {
     let id: String
     let rank: Int?
     let searchedAt: Date
