@@ -1,6 +1,6 @@
 ---
 name: openaso-aso
-description: Use when performing App Store Optimization work with OpenASO MCP data: ASO audits, keyword research, metadata optimization, screenshot strategy, review analysis, competitor research, localization planning, or store listing test plans. Prefer OpenASO evidence-gathering tools first, then apply ASO frameworks as analysis rubrics.
+description: "Use when performing App Store Optimization work with OpenASO MCP data: ASO audits, keyword research, metadata optimization, screenshot strategy, review analysis, competitor research, localization planning, or store listing test plans. Prefer OpenASO evidence-gathering tools first, then apply ASO frameworks as analysis rubrics."
 ---
 
 # OpenASO ASO
