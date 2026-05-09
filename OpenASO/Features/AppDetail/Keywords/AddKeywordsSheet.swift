@@ -16,6 +16,7 @@ struct AddKeywordsSheet: View {
     let queueKeywordAdd: (KeywordAddRequest) -> Void
 
     @State private var keywordInput = ""
+    @State private var selectedPlatform: AppPlatform
     @State private var selectedStorefrontCodes: Set<String> = ["us"]
     @State private var storefrontSearchText = ""
     @State private var errorMessage: String?
@@ -39,9 +40,11 @@ struct AddKeywordsSheet: View {
             },
             sort: [
                 SortDescriptor(\TrackedAppKeyword.storefront, order: .forward),
+                SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward),
                 SortDescriptor(\TrackedAppKeyword.term, order: .forward)
             ]
         )
+        _selectedPlatform = State(initialValue: trackedApp.defaultPlatform)
         _selectedStorefrontCodes = State(initialValue: [Self.defaultStorefrontCode(from: initialStorefrontCode)])
     }
 
@@ -53,6 +56,15 @@ struct AddKeywordsSheet: View {
 
             Text("Paste one keyword per line or separate them with commas. Each keyword will be tracked for every selected country.")
                 .foregroundStyle(.secondary)
+
+            Picker("Device", selection: $selectedPlatform) {
+                ForEach(AppPlatform.allCases) { platform in
+                    Label(platform.displayName, systemImage: platform.keywordSheetSystemImage)
+                        .tag(platform)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(isInputLocked)
 
             TextEditor(text: $keywordInput)
                 .font(.body.monospaced())
@@ -129,7 +141,7 @@ struct AddKeywordsSheet: View {
     }
 
     private var keywordCountsByStorefront: [String: Int] {
-        Dictionary(grouping: trackedKeywords, by: \.storefront)
+        Dictionary(grouping: trackedKeywords.filter { $0.platform == selectedPlatform }, by: \.storefront)
             .mapValues(\.count)
     }
 
@@ -195,10 +207,12 @@ struct AddKeywordsSheet: View {
         }
 
         let storefrontCodes = selectedStorefrontCodes
+        let platform = selectedPlatform
         if isRefreshInProgress {
             queueKeywordAdd(KeywordAddRequest(
                 keywords: keywords,
-                storefrontCodes: storefrontCodes
+                storefrontCodes: storefrontCodes,
+                platform: platform
             ))
             errorMessage = nil
             statusMessage = "Queued. These keywords will be added after the current refresh finishes."
@@ -206,10 +220,10 @@ struct AddKeywordsSheet: View {
             return
         }
 
-        addTracks(keywords: keywords, storefrontCodes: storefrontCodes)
+        addTracks(keywords: keywords, storefrontCodes: storefrontCodes, platform: platform)
     }
 
-    private func addTracks(keywords: [String], storefrontCodes: Set<String>) {
+    private func addTracks(keywords: [String], storefrontCodes: Set<String>, platform: AppPlatform) {
         isSubmitting = true
         errorMessage = nil
         statusMessage = nil
@@ -228,7 +242,7 @@ struct AddKeywordsSheet: View {
 
         for storefrontCode in storefrontCodes.sorted() {
             for keyword in keywords {
-                let identityKey = duplicateKey(term: keyword, storefront: storefrontCode)
+                let identityKey = duplicateKey(term: keyword, storefront: storefrontCode, platform: platform)
 
                 guard !mutableExistingKeys.contains(identityKey) else { continue }
 
@@ -237,7 +251,7 @@ struct AddKeywordsSheet: View {
                     query = try KeywordQuery.fetchOrInsert(
                         term: keyword,
                         storefront: storefrontCode,
-                        platform: .iphone,
+                        platform: platform,
                         in: modelContext
                     )
                 } catch {
@@ -249,7 +263,7 @@ struct AddKeywordsSheet: View {
                 let track = TrackedAppKeyword(
                     term: keyword,
                     storefront: storefrontCode,
-                    platform: .iphone,
+                    platform: platform,
                     trackedApp: trackedApp,
                     query: query
                 )
@@ -314,10 +328,11 @@ struct AddKeywordsSheet: View {
         }
     }
 
-    private func duplicateKey(term: String, storefront: String) -> String {
+    private func duplicateKey(term: String, storefront: String, platform: AppPlatform) -> String {
         [
             term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            platform.rawValue
         ].joined(separator: "::")
     }
 
@@ -330,7 +345,7 @@ struct AddKeywordsSheet: View {
         )
         return Set(
             try modelContext.fetch(descriptor)
-                .map { duplicateKey(term: $0.term, storefront: $0.storefront) }
+                .map { duplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform) }
         )
     }
 
@@ -361,6 +376,20 @@ struct AddKeywordsSheet: View {
 struct KeywordAddRequest {
     let keywords: [String]
     let storefrontCodes: Set<String>
+    let platform: AppPlatform
+}
+
+private extension AppPlatform {
+    var keywordSheetSystemImage: String {
+        switch self {
+        case .iphone:
+            return "iphone"
+        case .ipad:
+            return "ipad"
+        case .mac:
+            return "macbook"
+        }
+    }
 }
 
 private struct AddKeywordsStorefrontSearchField: View {

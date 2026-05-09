@@ -14,6 +14,7 @@ struct TrackedKeywordDetailView: View {
     let onRefresh: () -> Void
 
     @State private var isImportingCSV = false
+    @State private var isProcessingCSVImport = false
     @State private var isExportingCSV = false
     @State private var exportDocument = CSVDocument(text: "")
     @State private var transferAlert: TrackedKeywordTransferAlert?
@@ -65,10 +66,14 @@ struct TrackedKeywordDetailView: View {
                     }
 
                     Button {
+                        guard !isProcessingCSVImport, !isImportingCSV else {
+                            return
+                        }
                         isImportingCSV = true
                     } label: {
                         Label("Import CSV", systemImage: "square.and.arrow.down")
                     }
+                    .disabled(isProcessingCSVImport || isImportingCSV)
                 } label: {
                     Label("Import/Export", systemImage: "arrow.up.arrow.down.document")
                 }
@@ -333,6 +338,14 @@ struct TrackedKeywordDetailView: View {
     }
 
     private func importCSV(from result: Result<[URL], Error>) {
+        guard !isProcessingCSVImport else {
+            return
+        }
+        isProcessingCSVImport = true
+        defer {
+            isProcessingCSVImport = false
+        }
+
         do {
             guard let url = try result.get().first else {
                 return
@@ -356,7 +369,8 @@ struct TrackedKeywordDetailView: View {
                 didAccessSecurityScopedResource: didAccess
             ))
             #endif
-            let summary = try importRows(from: csv)
+            let rows = try TrackedKeywordCSVFormat.decode(csv)
+            let summary = importRows(rows)
             #if DEBUG
             print("[CSVImportDebug] importResult inserted=\(summary.insertedCount) skippedExisting=\(summary.skippedExistingCount) skippedDuplicates=\(summary.skippedDuplicateCount) skippedInvalid=\(summary.skippedInvalidCount) createdApps=\(summary.createdAppCount) importedApps=\(summary.importedAppIDs.count)")
             #endif
@@ -380,26 +394,35 @@ struct TrackedKeywordDetailView: View {
         }
     }
 
-    private func importRows(from csv: String) throws -> TrackedKeywordCSVImportSummary {
-        let rows = try TrackedKeywordCSVFormat.decode(csv)
+    private func importRows(_ rows: [TrackedKeywordCSVRow]) -> TrackedKeywordCSVImportSummary {
         var seenCSVKeys: Set<String> = []
-        var existingKeys = Set(
-            try fetchAllTrackedKeywords()
-                .map {
-                    importDuplicateKey(
-                        appStoreID: $0.appStoreID,
-                        term: $0.term,
-                        storefront: $0.storefront,
-                        platform: $0.platform
-                    )
-                }
-        )
-        var trackedAppsByID = Dictionary(uniqueKeysWithValues: try fetchTrackedApps().map { ($0.appStoreID, $0) })
-        var nextSidebarSortOrder = trackedAppsByID.values
+        var existingKeys: Set<String>
+        var trackedAppsByAppStoreID: [Int64: TrackedApp]
+        do {
+            existingKeys = Set(
+                try fetchAllTrackedKeywords()
+                    .map {
+                        importDuplicateKey(
+                            appStoreID: $0.appStoreID,
+                            term: $0.term,
+                            storefront: $0.storefront,
+                            platform: $0.platform
+                        )
+                    }
+            )
+            trackedAppsByAppStoreID = Dictionary(uniqueKeysWithValues: try fetchTrackedApps().map { ($0.appStoreID, $0) })
+        } catch {
+            var summary = TrackedKeywordCSVImportSummary()
+            summary.failedRowCount = rows.count
+            return summary
+        }
+        var nextSidebarSortOrder = trackedAppsByAppStoreID.values
             .filter { $0.folder == nil }
             .map(\.sidebarSortOrder)
             .max()
             .map { $0 + 1 } ?? 0
+        var queriesByKey: [String: KeywordQuery] = [:]
+        var metricsByQueryKey: [String: KeywordDailyMetric] = [:]
         var summary = TrackedKeywordCSVImportSummary()
 
         for row in rows {
@@ -416,24 +439,8 @@ struct TrackedKeywordDetailView: View {
                 continue
             }
 
-            let appForRow: TrackedApp
-            if let existingApp = trackedAppsByID[rowAppStoreID] {
-                appForRow = existingApp
-                updateTrackedApp(existingApp, from: row)
-            } else {
-                let createdApp = try createTrackedApp(
-                    from: row,
-                    appStoreID: rowAppStoreID,
-                    defaultPlatform: rowPlatform ?? trackedApp.defaultPlatform,
-                    sidebarSortOrder: nextSidebarSortOrder
-                )
-                nextSidebarSortOrder += 1
-                trackedAppsByID[rowAppStoreID] = createdApp
-                appForRow = createdApp
-                summary.createdAppCount += 1
-            }
-
-            let platform = rowPlatform ?? appForRow.defaultPlatform
+            let platform = rowPlatform ?? trackedApp.defaultPlatform
+            let existingApp = trackedAppsByAppStoreID[rowAppStoreID]
             let duplicateKey = importDuplicateKey(
                 appStoreID: rowAppStoreID,
                 term: keyword,
@@ -450,33 +457,72 @@ struct TrackedKeywordDetailView: View {
                 continue
             }
 
-            let query = try KeywordQuery.fetchOrInsert(
-                term: keyword,
-                storefront: storefront,
-                platform: platform,
-                in: modelContext
-            )
-            let importedTrack = TrackedAppKeyword(
-                term: keyword,
-                storefront: storefront,
-                platform: platform,
-                trackedApp: appForRow,
-                query: query
-            )
-            importedTrack.notes = row.note
+            do {
+                let queryKey = KeywordQuery.makeQueryKey(term: keyword, storefront: storefront, platform: platform)
+                let query: KeywordQuery
+                if let cachedQuery = queriesByKey[queryKey] {
+                    query = cachedQuery
+                } else {
+                    query = try KeywordQuery.fetchOrInsert(
+                        term: keyword,
+                        storefront: storefront,
+                        platform: platform,
+                        in: modelContext
+                    )
+                    queriesByKey[queryKey] = query
+                }
 
-            appForRow.keywordTracks.append(importedTrack)
-            modelContext.insert(importedTrack)
-            applyImportedValues(from: row, to: importedTrack)
-            insertMetrics(from: row, for: importedTrack)
+                let appForRow: TrackedApp
+                if let existingApp {
+                    appForRow = existingApp
+                    updateTrackedApp(existingApp, from: row)
+                } else {
+                    let createdApp = try createTrackedApp(
+                        from: row,
+                        appStoreID: rowAppStoreID,
+                        defaultPlatform: platform,
+                        sidebarSortOrder: nextSidebarSortOrder
+                    )
+                    nextSidebarSortOrder += 1
+                    trackedAppsByAppStoreID[createdApp.appStoreID] = createdApp
+                    appForRow = createdApp
+                    summary.createdAppCount += 1
+                }
 
-            existingKeys.insert(duplicateKey)
-            summary.importedTracks.append(importedTrack)
-            summary.importedAppIDs.insert(rowAppStoreID)
-            summary.insertedCount += 1
+                let importedTrack = TrackedAppKeyword(
+                    term: keyword,
+                    storefront: storefront,
+                    platform: platform,
+                    trackedApp: appForRow,
+                    query: query
+                )
+                importedTrack.notes = row.note
+
+                appForRow.keywordTracks.append(importedTrack)
+                modelContext.insert(importedTrack)
+                applyImportedValues(from: row, to: importedTrack)
+                insertMetrics(from: row, for: importedTrack, metricsByQueryKey: &metricsByQueryKey)
+
+                existingKeys.insert(duplicateKey)
+                summary.importedTracks.append(importedTrack)
+                summary.importedAppIDs.insert(rowAppStoreID)
+                summary.insertedCount += 1
+            } catch {
+                summary.failedRowCount += 1
+            }
         }
 
-        try modelContext.save()
+        if summary.insertedCount > 0 || summary.createdAppCount > 0 {
+            do {
+                try modelContext.save()
+            } catch {
+                summary.failedRowCount += summary.insertedCount
+                summary.importedTracks.removeAll()
+                summary.importedAppIDs.removeAll()
+                summary.insertedCount = 0
+                summary.createdAppCount = 0
+            }
+        }
         return summary
     }
 
@@ -544,7 +590,9 @@ struct TrackedKeywordDetailView: View {
 
     private func fetchTrackedApps() throws -> [TrackedApp] {
         let descriptor = FetchDescriptor<TrackedApp>(
-            sortBy: [SortDescriptor(\TrackedApp.appStoreID, order: .forward)]
+            sortBy: [
+                SortDescriptor(\TrackedApp.appStoreID, order: .forward)
+            ]
         )
         return try modelContext.fetch(descriptor)
     }
@@ -569,7 +617,6 @@ struct TrackedKeywordDetailView: View {
             resultCount: resultCount,
             keywordTrack: importedTrack
         )
-        importedTrack.snapshots.append(snapshot)
         modelContext.insert(snapshot)
     }
 
@@ -612,21 +659,32 @@ struct TrackedKeywordDetailView: View {
         }
     }
 
-    private func insertMetrics(from row: TrackedKeywordCSVRow, for importedTrack: TrackedAppKeyword) {
+    private func insertMetrics(
+        from row: TrackedKeywordCSVRow,
+        for importedTrack: TrackedAppKeyword,
+        metricsByQueryKey: inout [String: KeywordDailyMetric]
+    ) {
         guard Int(row.popularity) != nil || Int(row.difficulty) != nil else {
             return
         }
 
-        let metrics = existingMetrics(for: importedTrack) ?? KeywordDailyMetric(
-            queryKey: importedTrack.queryKey,
-            keyword: importedTrack.term,
-            storefront: importedTrack.storefront,
-            platform: importedTrack.platform,
-            popularityScore: nil,
-            difficultyScore: nil,
-            source: .appleAdsPopularity,
-            updatedAt: .distantPast
-        )
+        let queryKey = importedTrack.queryKey
+        let metrics: KeywordDailyMetric
+        if let cachedMetrics = metricsByQueryKey[queryKey] {
+            metrics = cachedMetrics
+        } else {
+            metrics = existingMetrics(for: importedTrack) ?? KeywordDailyMetric(
+                queryKey: queryKey,
+                keyword: importedTrack.term,
+                storefront: importedTrack.storefront,
+                platform: importedTrack.platform,
+                popularityScore: nil,
+                difficultyScore: nil,
+                source: .appleAdsPopularity,
+                updatedAt: .distantPast
+            )
+            metricsByQueryKey[queryKey] = metrics
+        }
 
         metrics.keyword = importedTrack.term
         metrics.storefront = importedTrack.storefront
@@ -669,16 +727,17 @@ struct TrackedKeywordCSVImportSummary {
     var skippedDuplicateCount = 0
     var skippedExistingCount = 0
     var skippedInvalidCount = 0
+    var failedRowCount = 0
     var createdAppCount = 0
     var importedAppIDs: Set<Int64> = []
     var importedTracks: [TrackedAppKeyword] = []
 
     var skippedRowsMessage: String {
-        "Skipped \(skippedExistingCount) already tracked, \(skippedDuplicateCount) duplicate CSV, and \(skippedInvalidCount) invalid row\(skippedInvalidCount == 1 ? "" : "s")."
+        "Skipped \(skippedExistingCount) already tracked, \(skippedDuplicateCount) duplicate CSV, \(skippedInvalidCount) invalid row\(skippedInvalidCount == 1 ? "" : "s"), and \(failedRowCount) failed row\(failedRowCount == 1 ? "" : "s")."
     }
 
     var nothingImportedMessage: String {
-        if skippedExistingCount == 0, skippedDuplicateCount == 0, skippedInvalidCount == 0 {
+        if skippedExistingCount == 0, skippedDuplicateCount == 0, skippedInvalidCount == 0, failedRowCount == 0 {
             return "No keyword rows were found in the CSV."
         }
         return "No new keyword tracks were imported. \(skippedRowsMessage)"

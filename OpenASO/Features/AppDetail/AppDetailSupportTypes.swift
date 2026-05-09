@@ -63,6 +63,7 @@ enum AppDetailWorkspaceView: String, CaseIterable, Identifiable {
 
 struct KeywordWorkspaceState {
     var selectedDateRange = TrendDateRange.last7Days
+    var selectedPlatformFilter = PlatformFilter.all
     var popularityFilterRange = MetricFilterRange.popularity.defaultRange
     var difficultyFilterRange = MetricFilterRange.difficulty.defaultRange
     var positionFilterRange = MetricFilterRange.position.defaultRange
@@ -70,11 +71,61 @@ struct KeywordWorkspaceState {
     var showsOnlyChangedKeywords = false
 
     mutating func resetFilters() {
+        selectedPlatformFilter = .all
         popularityFilterRange = MetricFilterRange.popularity.defaultRange
         difficultyFilterRange = MetricFilterRange.difficulty.defaultRange
         positionFilterRange = MetricFilterRange.position.defaultRange
         changeFilterRange = MetricFilterRange.change.defaultRange
         showsOnlyChangedKeywords = false
+    }
+}
+
+enum PlatformFilter: Identifiable, Equatable, Hashable, CaseIterable {
+    case all
+    case platform(AppPlatform)
+
+    static var allCases: [PlatformFilter] {
+        [.all] + AppPlatform.allCases.map(PlatformFilter.platform)
+    }
+
+    var id: String {
+        switch self {
+        case .all:
+            return "all"
+        case .platform(let platform):
+            return platform.rawValue
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All Devices"
+        case .platform(let platform):
+            return platform.displayName
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all:
+            return "rectangle.stack"
+        case .platform(.iphone):
+            return "iphone"
+        case .platform(.ipad):
+            return "ipad"
+        case .platform(.mac):
+            return "macbook"
+        }
+    }
+
+    func matches(_ platform: AppPlatform) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .platform(let selectedPlatform):
+            return selectedPlatform == platform
+        }
     }
 }
 

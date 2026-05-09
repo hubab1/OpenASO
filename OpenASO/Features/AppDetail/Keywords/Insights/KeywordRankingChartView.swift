@@ -114,7 +114,7 @@ struct KeywordRankingChartView: View {
     }
 
     private static func makeChartData(for series: [KeywordRankingChartSeries]) -> KeywordRankingChartData {
-        let validSeries = series.map { keywordSeries in
+        let validSeries = mergeDuplicateSeries(series.map { keywordSeries in
             let sortedPoints = keywordSeries.points
                 .filter { $0.rank > 0 }
                 .sorted { $0.date < $1.date }
@@ -123,9 +123,10 @@ struct KeywordRankingChartView: View {
                 id: keywordSeries.id,
                 keyword: keywordSeries.keyword,
                 contextLabel: keywordSeries.contextLabel,
+                platform: keywordSeries.platform,
                 points: sortedPoints
             )
-        }
+        })
 
         let latestDataDate = validSeries
             .flatMap(\.points)
@@ -139,6 +140,7 @@ struct KeywordRankingChartView: View {
                     id: keywordSeries.id,
                     keyword: keywordSeries.keyword,
                     contextLabel: keywordSeries.contextLabel,
+                    platform: keywordSeries.platform,
                     points: pointsExtending(normalizedDailyPoints(keywordSeries.points), to: endDate)
                 )
             }
@@ -170,6 +172,7 @@ struct KeywordRankingChartView: View {
 
         let seriesIDs = rankedSeries.map(\.id)
         let keywordColors = seriesIDs.indices.map { color(for: $0) }
+        let showsPlatformIndicators = Set(rankedSeries.map(\.platform)).count > 1
 
         return KeywordRankingChartData(
             chartPoints: chartPoints,
@@ -177,19 +180,44 @@ struct KeywordRankingChartView: View {
                 KeywordRankingChartLegendItem(
                     id: keywordSeries.id,
                     keyword: keywordSeries.keyword,
-                    contextLabel: keywordSeries.contextLabel
+                    contextLabel: keywordSeries.contextLabel,
+                    platform: showsPlatformIndicators ? keywordSeries.platform : nil
                 )
             },
-            latestRankBySeriesID: Dictionary(uniqueKeysWithValues: latestChartPoints.map { ($0.seriesID, $0.rank) }),
+            latestRankBySeriesID: Dictionary(latestChartPoints.map { ($0.seriesID, $0.rank) }, uniquingKeysWith: { _, latest in latest }),
             latestPointIDs: Set(latestChartPoints.map(\.id)),
             latestPointCount: latestChartPoints.count,
             seriesIDs: seriesIDs,
             keywordColors: keywordColors,
-            colorBySeriesID: Dictionary(uniqueKeysWithValues: zip(seriesIDs, keywordColors)),
+            colorBySeriesID: Dictionary(zip(seriesIDs, keywordColors), uniquingKeysWith: { first, _ in first }),
             yScaleDomain: yScaleDomain(for: chartPoints),
             xScaleDomain: xScaleDomain(for: chartPoints),
             yAxisValues: yAxisValues(for: chartPoints)
         )
+    }
+
+    private static func mergeDuplicateSeries(_ series: [KeywordRankingChartSeries]) -> [KeywordRankingChartSeries] {
+        var mergedSeries: [KeywordRankingChartSeries] = []
+        var indexBySeriesID: [String: Int] = [:]
+
+        for keywordSeries in series {
+            guard let existingIndex = indexBySeriesID[keywordSeries.id] else {
+                indexBySeriesID[keywordSeries.id] = mergedSeries.count
+                mergedSeries.append(keywordSeries)
+                continue
+            }
+
+            let existingSeries = mergedSeries[existingIndex]
+            mergedSeries[existingIndex] = KeywordRankingChartSeries(
+                id: existingSeries.id,
+                keyword: existingSeries.keyword,
+                contextLabel: existingSeries.contextLabel,
+                platform: existingSeries.platform,
+                points: existingSeries.points + keywordSeries.points
+            )
+        }
+
+        return mergedSeries
     }
 
     private static func pointsExtending(
@@ -360,6 +388,7 @@ extension KeywordRankingChartView {
                     id: keywordSeries.queryKey,
                     keyword: keywordSeries.keyword,
                     contextLabel: keywordSeries.storefront.uppercased(),
+                    platform: keywordSeries.platform,
                     points: points
                 )
             }
@@ -380,12 +409,20 @@ struct KeywordRankingChartSeries: Identifiable {
     let id: String
     let keyword: String
     let contextLabel: String?
+    let platform: AppPlatform
     let points: [Point]
 
-    init(id: String? = nil, keyword: String, contextLabel: String? = nil, points: [Point]) {
+    init(
+        id: String? = nil,
+        keyword: String,
+        contextLabel: String? = nil,
+        platform: AppPlatform = .iphone,
+        points: [Point]
+    ) {
         self.id = id ?? keyword
         self.keyword = keyword
         self.contextLabel = contextLabel
+        self.platform = platform
         self.points = points
     }
 }
@@ -419,6 +456,7 @@ private struct KeywordRankingChartLegendItem: Identifiable {
     let id: String
     let keyword: String
     let contextLabel: String?
+    let platform: AppPlatform?
 }
 
 private struct KeywordRankingChartLegend: View {
@@ -452,6 +490,14 @@ private struct KeywordRankingChartLegend: View {
                                     .font(.caption2.weight(.medium))
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
+                            }
+
+                            if let platform = item.platform {
+                                Image(systemName: platform.keywordChartSystemImage)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.tertiary)
+                                    .imageScale(.small)
+                                    .accessibilityLabel(platform.displayName)
                             }
 
                             Spacer(minLength: 4)
@@ -514,7 +560,7 @@ private struct KeywordRankingChartLegend: View {
     }
 
     private func accessibilityLabel(for item: KeywordRankingChartLegendItem, index: Int) -> String {
-        let name = [item.keyword, item.contextLabel].compactMap { $0 }.joined(separator: ", ")
+        let name = [item.keyword, item.contextLabel, item.platform?.displayName].compactMap { $0 }.joined(separator: ", ")
 
         if let rank = latestRankBySeriesID[item.id] {
             return "\(name), rank \(rank), \(legendColorName(for: index))"
@@ -525,6 +571,19 @@ private struct KeywordRankingChartLegend: View {
 
     private func legendColorName(for index: Int) -> String {
         "series \(index + 1)"
+    }
+}
+
+private extension AppPlatform {
+    var keywordChartSystemImage: String {
+        switch self {
+        case .iphone:
+            return "iphone"
+        case .ipad:
+            return "ipad"
+        case .mac:
+            return "macbook"
+        }
     }
 }
 

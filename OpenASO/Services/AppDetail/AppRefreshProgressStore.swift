@@ -143,6 +143,7 @@ struct AppRefreshProgress: Identifiable, Sendable {
 final class AppRefreshProgressStore: Sendable {
     private(set) var activeRefresh: AppRefreshProgress?
     private(set) var pendingKeywordTrackCountsByAppStoreID: [Int64: Int] = [:]
+    private(set) var pendingAppRefreshCount = 0
 
     @ObservationIgnored
     private var clearTask: Task<Void, Never>?
@@ -158,6 +159,14 @@ final class AppRefreshProgressStore: Sendable {
 
     func clearPendingKeywordAdditions(appStoreID: Int64) {
         pendingKeywordTrackCountsByAppStoreID[appStoreID] = nil
+    }
+
+    func queuePendingAppRefresh() {
+        pendingAppRefreshCount += 1
+    }
+
+    func beginPendingAppRefresh() {
+        pendingAppRefreshCount = max(0, pendingAppRefreshCount - 1)
     }
 
     func beginRefresh(_ request: AppDetailRefreshRequest) {

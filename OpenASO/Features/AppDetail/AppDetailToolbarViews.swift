@@ -88,6 +88,7 @@ struct AppDetailFilterToolbarItems: View {
         AppDetailDateRangeToolbarMenu(selectedDateRange: $keywordWorkspaceState.selectedDateRange)
 
         AppDetailFilterButton(
+            selectedPlatformFilter: $keywordWorkspaceState.selectedPlatformFilter,
             popularityFilterRange: $keywordWorkspaceState.popularityFilterRange,
             difficultyFilterRange: $keywordWorkspaceState.difficultyFilterRange,
             positionFilterRange: $keywordWorkspaceState.positionFilterRange,
@@ -150,6 +151,7 @@ struct AppDetailImportExportToolbarMenu: View {
     let exportAction: () -> Void
     let exportHistoryAction: () -> Void
     let importAction: () -> Void
+    let isImportDisabled: Bool
 
     var body: some View {
         Menu {
@@ -164,6 +166,7 @@ struct AppDetailImportExportToolbarMenu: View {
             Button(action: importAction) {
                 Label("Import CSV", systemImage: "square.and.arrow.down")
             }
+            .disabled(isImportDisabled)
         } label: {
             Label("Import/Export", systemImage: "square.and.arrow.up")
                 .labelStyle(.iconOnly)
@@ -203,6 +206,7 @@ struct AppDetailAddKeywordsToolbarButton: View {
 }
 
 private struct AppDetailFilterButton: View {
+    @Binding var selectedPlatformFilter: PlatformFilter
     @Binding var popularityFilterRange: ClosedRange<Double>
     @Binding var difficultyFilterRange: ClosedRange<Double>
     @Binding var positionFilterRange: ClosedRange<Double>
@@ -224,6 +228,7 @@ private struct AppDetailFilterButton: View {
         .help("Filters")
         .popover(isPresented: $isShowingFilters, arrowEdge: .bottom) {
             AppDetailFilterPopover(
+                selectedPlatformFilter: $selectedPlatformFilter,
                 popularityFilterRange: $popularityFilterRange,
                 difficultyFilterRange: $difficultyFilterRange,
                 positionFilterRange: $positionFilterRange,
@@ -239,7 +244,8 @@ private struct AppDetailFilterButton: View {
     }
 
     private var hasActiveFilters: Bool {
-        !MetricFilterRange.popularity.isDefault(popularityFilterRange)
+        selectedPlatformFilter != .all
+            || !MetricFilterRange.popularity.isDefault(popularityFilterRange)
             || !MetricFilterRange.difficulty.isDefault(difficultyFilterRange)
             || !MetricFilterRange.position.isDefault(positionFilterRange)
             || !MetricFilterRange.change.isDefault(changeFilterRange)
@@ -248,6 +254,7 @@ private struct AppDetailFilterButton: View {
 }
 
 private struct AppDetailFilterPopover: View {
+    @Binding var selectedPlatformFilter: PlatformFilter
     @Binding var popularityFilterRange: ClosedRange<Double>
     @Binding var difficultyFilterRange: ClosedRange<Double>
     @Binding var positionFilterRange: ClosedRange<Double>
@@ -261,6 +268,15 @@ private struct AppDetailFilterPopover: View {
             Text("Filters")
                 .font(.headline)
 
+            Picker("Device", selection: $selectedPlatformFilter) {
+                ForEach(PlatformFilter.allCases) { filter in
+                    Label(filter.title, systemImage: filter.systemImage)
+                        .tag(filter)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Divider()
             FilterRangeSlider(range: $popularityFilterRange, configuration: .popularity)
             Divider()
             FilterRangeSlider(range: $difficultyFilterRange, configuration: .difficulty)

@@ -215,6 +215,7 @@ struct RootSidebarView: View {
             if let activeRefresh = services.refreshProgressStore.activeRefresh {
                 SidebarRefreshProgressView(
                     refresh: activeRefresh,
+                    pendingAppRefreshCount: services.refreshProgressStore.pendingAppRefreshCount,
                     pendingKeywordTrackCount: services.refreshProgressStore.pendingKeywordTrackCount
                 )
             }
@@ -299,7 +300,9 @@ struct RootSidebarView: View {
     }
 
     private func appRow(for trackedApp: TrackedApp) -> some View {
-        let keywordTrackCount = keywordTrackCountsByAppStoreID[trackedApp.appStoreID, default: 0]
+        let appStoreID = trackedApp.appStoreID
+        let draggableID = String(appStoreID)
+        let keywordTrackCount = keywordTrackCountsByAppStoreID[appStoreID, default: 0]
 
         return HStack(spacing: 12) {
             AppIconView(
@@ -313,11 +316,7 @@ struct RootSidebarView: View {
                     .font(.headline)
                     .lineLimit(1)
 
-                HStack(spacing: 8) {
-                    Text(trackedApp.defaultPlatform.displayName)
-                    Text("•")
-                    Text("\(keywordTrackCount) keywords")
-                }
+                Text("\(keywordTrackCount) keywords")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             }
@@ -326,7 +325,7 @@ struct RootSidebarView: View {
 
             PinIconButton(
                 isPinned: trackedApp.isPinned,
-                isVisible: trackedApp.isPinned || hoveredAppID == trackedApp.appStoreID,
+                isVisible: trackedApp.isPinned || hoveredAppID == appStoreID,
                 size: 26
             ) {
                 togglePinned(trackedApp)
@@ -334,9 +333,9 @@ struct RootSidebarView: View {
         }
         .padding(.vertical, 4)
         .onHover { isHovering in
-            hoveredAppID = isHovering ? trackedApp.appStoreID : nil
+            hoveredAppID = isHovering ? appStoreID : nil
         }
-        .draggable(String(trackedApp.appStoreID))
+        .draggable(draggableID)
         .dropDestination(for: String.self) { items, _ in
             moveDraggedApps(items, to: trackedApp.folder, before: trackedApp)
         }
@@ -344,7 +343,7 @@ struct RootSidebarView: View {
             Button("Update App Info") {
                 updateAppInfo(for: trackedApp, storefrontCode: nil)
             }
-            .disabled(updatingAppInfoIDs.contains(trackedApp.appStoreID))
+            .disabled(updatingAppInfoIDs.contains(appStoreID))
 
             Button("Open in App Store") {
                 openInAppStore(trackedApp)
@@ -360,7 +359,7 @@ struct RootSidebarView: View {
 
             if trackedApp.folder != nil {
                 Button("Remove from Folder") {
-                    _ = moveDraggedApps([String(trackedApp.appStoreID)], to: nil, before: nil)
+                    _ = moveDraggedApps([draggableID], to: nil, before: nil)
                 }
             }
 
@@ -430,7 +429,12 @@ struct RootSidebarView: View {
                 }
 
                 if first.sidebarSortOrder == second.sidebarSortOrder {
-                    return first.name.localizedCaseInsensitiveCompare(second.name) == .orderedAscending
+                    let nameComparison = first.name.localizedCaseInsensitiveCompare(second.name)
+                    if nameComparison != .orderedSame {
+                        return nameComparison == .orderedAscending
+                    }
+
+                    return first.appStoreID < second.appStoreID
                 }
                 return first.sidebarSortOrder < second.sidebarSortOrder
             }
@@ -470,13 +474,15 @@ struct RootSidebarView: View {
     }
 
     private func moveDraggedApps(_ draggedAppIDs: [String], to folder: AppFolder?, before targetApp: TrackedApp?) -> Bool {
-        let appStoreIDs = draggedAppIDs.compactMap(Int64.init)
-        guard !appStoreIDs.isEmpty else {
+        guard !draggedAppIDs.isEmpty else {
             return false
         }
 
-        let draggedApps = appStoreIDs.compactMap { appStoreID in
-            trackedApps.first { $0.appStoreID == appStoreID }
+        let draggedApps = draggedAppIDs.compactMap { draggedAppID -> TrackedApp? in
+            guard let appStoreID = Int64(draggedAppID) else {
+                return nil
+            }
+            return trackedApps.first { $0.appStoreID == appStoreID }
         }
         guard !draggedApps.isEmpty else {
             return false
@@ -484,11 +490,11 @@ struct RootSidebarView: View {
 
         var destinationApps = sortedApps(in: folder)
             .filter { destinationApp in
-                !draggedApps.contains { $0.appStoreID == destinationApp.appStoreID }
+                !draggedApps.contains { $0.persistentModelID == destinationApp.persistentModelID }
             }
 
         let insertionIndex: Int
-        if let targetApp, let targetIndex = destinationApps.firstIndex(where: { $0.appStoreID == targetApp.appStoreID }) {
+        if let targetApp, let targetIndex = destinationApps.firstIndex(where: { $0.persistentModelID == targetApp.persistentModelID }) {
             insertionIndex = targetIndex
         } else {
             insertionIndex = destinationApps.endIndex
@@ -748,6 +754,7 @@ private struct SidebarAlertContext: Identifiable {
 
 private struct SidebarRefreshProgressView: View {
     let refresh: AppRefreshProgress
+    let pendingAppRefreshCount: Int
     let pendingKeywordTrackCount: Int
 
     private var progressValue: Double {
@@ -785,6 +792,7 @@ private struct SidebarRefreshProgressView: View {
                 SidebarRefreshProgressRow(title: "Keywords & Metrics", progress: refresh.keywordAndMetricsProgress)
                 SidebarRefreshProgressRow(title: "Ratings", progress: refresh.ratingsProgress)
                 SidebarRefreshProgressRow(title: "Reviews", progress: refresh.reviewsProgress)
+                SidebarPendingAppRefreshesRow(appCount: pendingAppRefreshCount)
                 SidebarPendingKeywordAdditionsRow(trackCount: pendingKeywordTrackCount)
             }
 
@@ -886,6 +894,31 @@ private struct SidebarRefreshProgressView: View {
             return "Imported keyword update failed"
         case .refreshingRatings, .refreshingReviews:
             return refresh.phase.title
+        }
+    }
+}
+
+private struct SidebarPendingAppRefreshesRow: View {
+    let appCount: Int
+
+    var body: some View {
+        if appCount > 0 {
+            HStack(spacing: 8) {
+                Image(systemName: "clock")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+
+                Text("Queued app refreshes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 6)
+
+                Text("\(appCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

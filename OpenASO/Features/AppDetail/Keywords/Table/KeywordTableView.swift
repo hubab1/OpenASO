@@ -48,6 +48,10 @@ struct KeywordTableView: View {
         sortedTableRows.map(\.row)
     }
 
+    private var showsPlatformColumn: Bool {
+        Set(rows.map { $0.track.platform }).count > 1
+    }
+
     private var selectedChartKeywordKeys: Set<String> {
         guard let savedSelection = chartSelections[chartSelectionAppKey] else {
             return Set(defaultChartKeywordKeys)
@@ -104,6 +108,7 @@ struct KeywordTableView: View {
                         id: row.track.identityKey,
                         keyword: row.track.term,
                         contextLabel: row.storefront?.flagEmoji ?? row.track.storefront.uppercased(),
+                        platform: row.track.platform,
                         points: points
                     )
                 )
@@ -145,6 +150,13 @@ struct KeywordTableView: View {
                         KeywordStoreCell(row: tableRow.row)
                     }
                     .width(min: 100, ideal: 148)
+
+                    if showsPlatformColumn {
+                        TableColumn("Platform", value: \.platformSortValue) { tableRow in
+                            KeywordPlatformCell(platform: tableRow.row.track.platform)
+                        }
+                        .width(min: 92, ideal: 104, max: 116)
+                    }
 
                     TableColumn("Popularity", value: \.popularitySortValue) { tableRow in
                         KeywordPopularityCell(row: tableRow.row) {
@@ -478,10 +490,50 @@ private struct KeywordTablePresentationRow: Identifiable {
     var keywordSortValue: String { row.keywordSortValue }
     var lastUpdatedSortValue: Date { row.lastUpdatedSortValue }
     var storefrontSortValue: String { row.storefrontSortValue }
+    var platformSortValue: Int { row.track.platform.tableSortValue }
     var popularitySortValue: Int { row.popularitySortValue }
     var positionSortValue: Int { row.positionSortValue }
     var trendSortValue: Int { row.trendSortValue }
     var chartSelectionSortValue: Int { isSelectedForChart ? 0 : 1 }
+}
+
+private struct KeywordPlatformCell: View {
+    let platform: AppPlatform
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: platform.keywordTableSystemImage)
+                .frame(width: 16, alignment: .center)
+
+            Text(platform.displayName)
+        }
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
+}
+
+private extension AppPlatform {
+    var keywordTableSystemImage: String {
+        switch self {
+        case .iphone:
+            return "iphone"
+        case .ipad:
+            return "ipad"
+        case .mac:
+            return "macbook"
+        }
+    }
+
+    var tableSortValue: Int {
+        switch self {
+        case .iphone:
+            return 0
+        case .ipad:
+            return 1
+        case .mac:
+            return 2
+        }
+    }
 }
 
 private struct KeywordTableSummaryHeader: View {

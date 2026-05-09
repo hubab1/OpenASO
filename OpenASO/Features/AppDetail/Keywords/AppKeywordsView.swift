@@ -11,6 +11,7 @@ struct AppKeywordsView: View {
     let searchText: String
     let selectedStorefrontFilter: StorefrontFilter
     let selectedDateRange: TrendDateRange
+    let selectedPlatformFilter: PlatformFilter
     let popularityFilterRange: ClosedRange<Double>
     let difficultyFilterRange: ClosedRange<Double>
     let positionFilterRange: ClosedRange<Double>
@@ -29,6 +30,7 @@ struct AppKeywordsView: View {
         searchText: String,
         selectedStorefrontFilter: StorefrontFilter,
         selectedDateRange: TrendDateRange,
+        selectedPlatformFilter: PlatformFilter,
         popularityFilterRange: ClosedRange<Double>,
         difficultyFilterRange: ClosedRange<Double>,
         positionFilterRange: ClosedRange<Double>,
@@ -41,6 +43,7 @@ struct AppKeywordsView: View {
         self.searchText = searchText
         self.selectedStorefrontFilter = selectedStorefrontFilter
         self.selectedDateRange = selectedDateRange
+        self.selectedPlatformFilter = selectedPlatformFilter
         self.popularityFilterRange = popularityFilterRange
         self.difficultyFilterRange = difficultyFilterRange
         self.positionFilterRange = positionFilterRange
@@ -80,6 +83,7 @@ struct AppKeywordsView: View {
             String(refreshToken),
             String(services.backgroundModelStoreRevision),
             String(trackedApp.appStoreID),
+            selectedPlatformFilter.id,
             tracksSignature,
             selectedDateRange.id,
             searchText.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -111,6 +115,7 @@ struct AppKeywordsView: View {
         [
             String(refreshToken),
             selectedDateRange.id,
+            selectedPlatformFilter.id,
             rows.map(\.track.identityKey).joined(separator: "|")
         ].joined(separator: "::")
     }
@@ -208,7 +213,9 @@ struct AppKeywordsView: View {
     private func updateKeywordRows() async {
         let signature = rowReloadSignature
         do {
-            let searchFilteredTracks = tracks.filter(matchesSearch)
+            let searchFilteredTracks = tracks
+                .filter(matchesPlatform)
+                .filter(matchesSearch)
             let loadedMetrics = try await loadMetricsSnapshots(for: searchFilteredTracks.map(\.queryKey))
             metricsByQueryKey = loadedMetrics
             let filteredTracks = searchFilteredTracks.filter(matchesMetrics)
@@ -246,6 +253,10 @@ struct AppKeywordsView: View {
         }
 
         return track.term.localizedStandardContains(trimmedSearch)
+    }
+
+    private func matchesPlatform(for track: TrackedAppKeyword) -> Bool {
+        selectedPlatformFilter.matches(track.platform)
     }
 
     private func reloadInsights(visibleTracks: [TrackedAppKeyword]) async {
@@ -580,6 +591,7 @@ private struct AppKeywordsPreviewHarness: View {
             searchText: "",
             selectedStorefrontFilter: .all,
             selectedDateRange: .last30Days,
+            selectedPlatformFilter: .all,
             popularityFilterRange: MetricFilterRange.popularity.defaultRange,
             difficultyFilterRange: MetricFilterRange.difficulty.defaultRange,
             positionFilterRange: MetricFilterRange.position.defaultRange,

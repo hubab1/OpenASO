@@ -97,10 +97,59 @@ struct AppDetailRefreshResult: Sendable {
     let firstError: OpenASOError?
 }
 
+private actor AppDetailRefreshQueue {
+    private struct Job: Sendable {
+        let request: AppDetailRefreshRequest
+        let operation: @Sendable (AppDetailRefreshRequest) async -> AppDetailRefreshResult
+        let continuation: CheckedContinuation<AppDetailRefreshResult, Never>
+    }
+
+    private var pendingJobs: [Job] = []
+    private var isDraining = false
+
+    func enqueue(
+        _ request: AppDetailRefreshRequest,
+        operation: @escaping @Sendable (AppDetailRefreshRequest) async -> AppDetailRefreshResult
+    ) async -> AppDetailRefreshResult {
+        await withCheckedContinuation { continuation in
+            pendingJobs.append(Job(
+                request: request,
+                operation: operation,
+                continuation: continuation
+            ))
+            startDrainingIfNeeded()
+        }
+    }
+
+    private func startDrainingIfNeeded() {
+        guard !isDraining else { return }
+        isDraining = true
+        Task {
+            await drain()
+        }
+    }
+
+    private func nextJob() -> Job? {
+        guard !pendingJobs.isEmpty else {
+            isDraining = false
+            return nil
+        }
+        return pendingJobs.removeFirst()
+    }
+
+    private func drain() async {
+        while let job = nextJob() {
+            let result = await job.operation(job.request)
+            job.continuation.resume(returning: result)
+        }
+    }
+}
+
 final class AppDetailRefreshService: Sendable {
     private static let rankingFetchConcurrency = 4
     private static let rankingPersistenceBatchSize = 5
 
+    private let refreshQueue = AppDetailRefreshQueue()
     private let backgroundModelStore: BackgroundModelStore
     private let refreshCoordinator: RankingRefreshCoordinator
     private let keywordMetricsService: KeywordMetricsService
@@ -131,6 +180,14 @@ final class AppDetailRefreshService: Sendable {
     }
 
     func refresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
+        await progressStore?.queuePendingAppRefresh()
+        return await refreshQueue.enqueue(request) { [self] request in
+            await progressStore?.beginPendingAppRefresh()
+            return await performRefresh(request)
+        }
+    }
+
+    private func performRefresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
         await progressStore?.beginRefresh(request)
         let keywordOutcomes: [KeywordBackgroundRefreshOutcome]
         let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]

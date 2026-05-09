@@ -670,6 +670,114 @@ struct RankingRefreshCoordinatorTests {
 }
 
 @MainActor
+struct AppDetailRefreshServiceQueueTests {
+    @Test
+    func refreshSerializesConcurrentAppRefreshRequests() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        modelContext.insert(StoreApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "First App",
+            sellerName: nil,
+            iconURLString: nil,
+            defaultPlatform: .iphone
+        ))
+        modelContext.insert(StoreApp(
+            appStoreID: 2,
+            bundleID: nil,
+            name: "Second App",
+            sellerName: nil,
+            iconURLString: nil,
+            defaultPlatform: .iphone
+        ))
+        try modelContext.save()
+
+        let httpClient = ControlledRatingsHTTPClient()
+        let progressStore = AppRefreshProgressStore()
+        let service = AppDetailRefreshService(
+            backgroundModelStore: BackgroundModelStore(modelContainer: container),
+            refreshCoordinator: RankingRefreshCoordinator(
+                rankingProvider: StubRankingProvider(page: SearchRankingPage(items: [], source: .iTunesFallback)),
+                appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+            ),
+            keywordMetricsService: KeywordMetricsService(
+                httpClient: httpClient,
+                credentialStore: AppleAdsCredentialStore(
+                    defaults: makeDefaults(),
+                    keychain: InMemoryKeychainService(),
+                    loadsEnvironmentCredentials: false
+                ),
+                settingsStore: AppSettingsStore(defaults: makeDefaults()),
+                webSessionStore: AppleAdsWebSessionStore(defaults: makeDefaults(), keychain: InMemoryKeychainService())
+            ),
+            appStorefrontRatingService: AppStorefrontRatingService(
+                httpClient: httpClient,
+                retryPolicy: AppStorefrontRatingRetryPolicy(maxAttempts: 1, baseDelaySeconds: 0, maxDelaySeconds: 0)
+            ),
+            appStorefrontReviewService: AppStorefrontReviewService(httpClient: httpClient),
+            appStoreConnectReviewService: AppStoreConnectReviewService(
+                httpClient: httpClient,
+                credentialStore: AppStoreConnectCredentialStore(defaults: makeDefaults(), keychain: InMemoryKeychainService())
+            ),
+            progressStore: progressStore
+        )
+
+        let firstTask = Task {
+            await service.refresh(Self.request(appStoreID: 1, appName: "First App"))
+        }
+        await httpClient.waitForRequestCount(1)
+        #expect(progressStore.pendingAppRefreshCount == 0)
+
+        let secondTask = Task {
+            await service.refresh(Self.request(appStoreID: 2, appName: "Second App"))
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await httpClient.requestedAppStoreIDs() == [1])
+        #expect(progressStore.pendingAppRefreshCount == 1)
+
+        await httpClient.complete(appStoreID: 1)
+        let firstResult = await firstTask.value
+        #expect(firstResult.firstError == nil)
+        #expect(firstResult.ratingOutcomes.map { $0.storefront } == ["us"])
+
+        await httpClient.waitForRequestCount(2)
+        #expect(await httpClient.requestedAppStoreIDs() == [1, 2])
+        #expect(progressStore.pendingAppRefreshCount == 0)
+
+        await httpClient.complete(appStoreID: 2)
+        let secondResult = await secondTask.value
+        #expect(secondResult.firstError == nil)
+        #expect(secondResult.ratingOutcomes.map { $0.storefront } == ["us"])
+    }
+
+    private static func request(appStoreID: Int64, appName: String) -> AppDetailRefreshRequest {
+        AppDetailRefreshRequest(
+            app: AppDetailRefreshAppSnapshot(
+                appStoreID: appStoreID,
+                bundleID: nil,
+                name: appName,
+                subtitle: nil,
+                sellerName: nil,
+                defaultPlatform: .iphone
+            ),
+            workspace: .ratings,
+            storefrontSelection: .storefront(code: "us"),
+            trackIdentityKeys: [],
+            trigger: "after_add_app",
+            refreshKeywords: false,
+            refreshMetrics: false,
+            refreshRatings: true,
+            refreshReviews: false,
+            recordsRatingsReviewsRefresh: false,
+            popularityContextAppStoreID: nil,
+            appleAdsWebSession: nil,
+            appStoreConnectCredentials: AppStoreConnectCredentials(issuerID: "", keyID: "", privateKey: "")
+        )
+    }
+}
+
+@MainActor
 private final class StubRankingProvider: SearchRankingProvider {
     var page: SearchRankingPage
     private(set) var searchCount = 0
@@ -699,6 +807,64 @@ private final class StubAppResolver: AppResolver {
 
     func searchApps(named query: String, storefrontCode: String, limit: Int) async throws -> [ResolvedApp] {
         []
+    }
+}
+
+private actor ControlledRatingsHTTPClient: HTTPClient {
+    private var requestedIDs: [Int64] = []
+    private var pendingResponses: [Int64: CheckedContinuation<(Data, URLResponse), any Error>] = [:]
+    private var requestCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let appStoreID = Self.appStoreID(from: request)
+        requestedIDs.append(appStoreID)
+        resumeSatisfiedWaiters()
+
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingResponses[appStoreID] = continuation
+        }
+    }
+
+    func requestedAppStoreIDs() -> [Int64] {
+        requestedIDs
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        guard requestedIDs.count < count else { return }
+
+        await withCheckedContinuation { continuation in
+            requestCountWaiters.append((count, continuation))
+        }
+    }
+
+    func complete(appStoreID: Int64) {
+        guard let continuation = pendingResponses.removeValue(forKey: appStoreID) else { return }
+        let url = URL(string: "https://itunes.apple.com/lookup?id=\(appStoreID)&country=us")!
+        let data = Data(#"{"results":[{"trackId":\#(appStoreID),"userRatingCount":42,"averageUserRating":4.5}]}"#.utf8)
+        continuation.resume(returning: (
+            data,
+            makeHTTPURLResponse(url: url, statusCode: 200)
+        ))
+    }
+
+    private func resumeSatisfiedWaiters() {
+        let readyWaiters = requestCountWaiters.filter { requestedIDs.count >= $0.count }
+        requestCountWaiters.removeAll { requestedIDs.count >= $0.count }
+        for waiter in readyWaiters {
+            waiter.continuation.resume()
+        }
+    }
+
+    private static func appStoreID(from request: URLRequest) -> Int64 {
+        guard
+            let url = request.url,
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let id = components.queryItems?.first(where: { $0.name == "id" })?.value,
+            let appStoreID = Int64(id)
+        else {
+            return 0
+        }
+        return appStoreID
     }
 }
 
