@@ -32,6 +32,7 @@ struct SettingsView: View {
     @State private var ascConnectionState: AppStoreConnectConnectionState = .notConnected
     @State private var ascStatus: VerificationStatus?
     @State private var isASCPrivateKeyDropTargeted = false
+    @State private var isShowingAppStoreConnectHelp = false
 
     init(
         validatesOnAppear: Bool = false,
@@ -190,6 +191,17 @@ struct SettingsView: View {
     private var appStoreConnectSection: some View {
         Section {
             AppStoreConnectConnectionStatusRow(state: ascConnectionState)
+
+            Button {
+                isShowingAppStoreConnectHelp = true
+            } label: {
+                Label("How to create your API key", systemImage: "questionmark.circle")
+                    .font(.callout)
+            }
+            .buttonStyle(.link)
+            .popover(isPresented: $isShowingAppStoreConnectHelp, arrowEdge: .top) {
+                AppStoreConnectAPIKeyHelpPopover()
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Issuer ID")
@@ -872,6 +884,60 @@ private struct MCPServerStatusRow: View {
             return .green
         case .failed:
             return .red
+        }
+    }
+}
+
+private struct AppStoreConnectAPIKeyHelpPopover: View {
+    private static let appStoreConnectKeysURL = URL(string: "https://appstoreconnect.apple.com/access/integrations/api")!
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Create an App Store Connect API Key", systemImage: "key.fill")
+                .font(.headline)
+                .foregroundStyle(.primary)
+
+            Text("OpenASO needs three values from a Team API key generated in App Store Connect. The key is only downloadable once, so keep the .p8 file in a safe place.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                stepRow(number: 1, text: "Sign in to App Store Connect with an Account Holder or Admin Apple ID.")
+                stepRow(number: 2, text: "Go to Users and Access → Integrations → App Store Connect API → Team Keys.")
+                stepRow(number: 3, text: "Click the + button, name the key, and pick a role (Admin or Developer is recommended).")
+                stepRow(number: 4, text: "Press Generate, then download the .p8 file. You can only download it once.")
+                stepRow(number: 5, text: "Copy the Issuer ID shown at the top of the Team Keys page.")
+                stepRow(number: 6, text: "Copy the Key ID from the row of the key you just created.")
+                stepRow(number: 7, text: "Paste the Issuer ID and Key ID below, then drop the .p8 file (or paste its contents) into the private key field.")
+            }
+
+            Divider()
+
+            Link(destination: Self.appStoreConnectKeysURL) {
+                Label("Open App Store Connect Keys", systemImage: "arrow.up.right.square")
+            }
+
+            Text("OpenASO stores the private key in the macOS Keychain and never sends it anywhere besides Apple's servers.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .frame(width: 420, alignment: .leading)
+    }
+
+    private func stepRow(number: Int, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(number).")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, alignment: .trailing)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
