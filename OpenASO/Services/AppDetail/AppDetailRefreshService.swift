@@ -146,8 +146,9 @@ private actor AppDetailRefreshQueue {
 }
 
 final class AppDetailRefreshService: Sendable {
-    private static let rankingFetchConcurrency = 4
+    private static let rankingFetchConcurrency = 1
     private static let rankingPersistenceBatchSize = 5
+    private static let rankingFetchDelayNanoseconds: UInt64 = 3_000_000_000
 
     private let refreshQueue = AppDetailRefreshQueue()
     private let backgroundModelStore: BackgroundModelStore
@@ -382,6 +383,9 @@ final class AppDetailRefreshService: Sendable {
                         await flushPendingPageResults()
                     }
                 case .failure(let error):
+                    if case .rateLimited = error {
+                        try? await Task.sleep(nanoseconds: 60_000_000_000)
+                    }
                     try? await backgroundModelStore.write { modelContext in
                         _ = try refreshCoordinator.recordRefreshFailure(
                             identityKey: rankingRequest.identityKey,
@@ -405,6 +409,9 @@ final class AppDetailRefreshService: Sendable {
                     failureCount: failureCount + missingFailureCount
                 )
 
+                if nextRequestIndex < rankingRequests.count {
+                    try? await Task.sleep(nanoseconds: Self.rankingFetchDelayNanoseconds)
+                }
                 enqueueNextFetchIfPossible()
             }
         }

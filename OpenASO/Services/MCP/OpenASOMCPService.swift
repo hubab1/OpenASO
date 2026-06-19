@@ -824,7 +824,10 @@ final class OpenASOMCPService: Sendable {
     }
 
     var fetched: [(RankingRefreshRequest, SearchRankingPage?, OpenASOError?)] = []
-    for request in requestBatch.requests {
+    for (index, request) in requestBatch.requests.enumerated() {
+      if index > 0 {
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+      }
       do {
         let page = try await Self.withRankingSearchTimeout {
           try await provider.search(
@@ -836,6 +839,9 @@ final class OpenASOMCPService: Sendable {
         }
         fetched.append((request, page, nil))
       } catch {
+        if case .rateLimited = OpenASOError.map(error) {
+          try? await Task.sleep(nanoseconds: 60_000_000_000)
+        }
         fetched.append((request, nil, OpenASOError.map(error)))
       }
     }
