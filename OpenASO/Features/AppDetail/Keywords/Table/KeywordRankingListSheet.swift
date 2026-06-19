@@ -300,7 +300,7 @@ struct KeywordRankingListSheet: View {
         let exportApps = sortedRows
             .prefix(10)
             .map(KeywordRankingScreenshotExportApp.init)
-        let exporter = KeywordRankingScreenshotExportService(
+        nonisolated(unsafe) let exporter = KeywordRankingScreenshotExportService(
             downloader: services.screenshotDownloadService
         )
         let title = "\(keyword) \(storefrontCode.uppercased()) screenshots"
