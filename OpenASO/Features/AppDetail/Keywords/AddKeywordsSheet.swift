@@ -630,6 +630,7 @@ struct ManageKeywordListsSheet: View {
     @State private var editingEntry: KeywordListEditingEntry?
     @State private var resetConfirmation: KeywordListResetConfirmation?
     @State private var errorMessage: String?
+    @State private var isShowingApplySheet = false
 
     init(trackedApp: TrackedApp) {
         self.trackedApp = trackedApp
@@ -703,6 +704,12 @@ struct ManageKeywordListsSheet: View {
                 secondaryButton: .cancel()
             )
         }
+        .sheet(isPresented: $isShowingApplySheet) {
+            GlobalKeywordApplySheet(
+                templates: globalKeywordTemplates,
+                defaultPlatform: trackedApp.defaultPlatform
+            )
+        }
     }
 
     private var localKeywordList: some View {
@@ -757,6 +764,13 @@ struct ManageKeywordListsSheet: View {
                 } label: {
                     Label("Add Global Keyword", systemImage: "plus")
                 }
+                Button {
+                    isShowingApplySheet = true
+                } label: {
+                    Label("Apply to Apps", systemImage: "square.and.arrow.down.on.square")
+                }
+                .disabled(globalKeywordTemplates.isEmpty)
+                .help("Add the global keywords to every tracked app for chosen countries")
                 Button(role: .destructive) {
                     resetConfirmation = .global(count: globalKeywordTemplates.count)
                 } label: {
@@ -1014,6 +1028,254 @@ struct ManageKeywordListsSheet: View {
         return options.sorted { lhs, rhs in
             lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
         }
+    }
+}
+
+private struct GlobalKeywordApplySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AppServices.self) private var services
+
+    @Query(sort: [SortDescriptor(\Storefront.name, order: .forward)])
+    private var storefronts: [Storefront]
+
+    @Query(sort: [SortDescriptor(\TrackedApp.name, order: .forward)])
+    private var trackedApps: [TrackedApp]
+
+    let templates: [GlobalTrackedKeywordTemplate]
+
+    @State private var selectedStorefrontCodes: Set<String> = ["us"]
+    @State private var selectedPlatform: AppPlatform
+    @State private var removesKeywordsMissingFromGlobalList = false
+    @State private var storefrontSearchText = ""
+    @State private var statusMessage: String?
+    @State private var errorMessage: String?
+    @State private var isApplying = false
+
+    init(templates: [GlobalTrackedKeywordTemplate], defaultPlatform: AppPlatform) {
+        self.templates = templates
+        _selectedPlatform = State(initialValue: defaultPlatform)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Apply Global Keywords to All Apps")
+                .font(.title3)
+                .bold()
+
+            Text(
+                "Adds the \(templates.count.formatted()) global keywords to every tracked app (\(trackedApps.count.formatted()) apps) for the selected countries and device. Existing keywords are kept unless you enable replace."
+            )
+            .foregroundStyle(.secondary)
+
+            Picker("Device", selection: $selectedPlatform) {
+                ForEach(AppPlatform.allCases) { platform in
+                    Label(platform.displayName, systemImage: platform.keywordSheetSystemImage)
+                        .tag(platform)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(isApplying)
+
+            Text("Countries")
+                .font(.headline)
+
+            AddKeywordsStorefrontSearchField(storefrontSearchText: $storefrontSearchText)
+                .disabled(isApplying)
+
+            List(filteredStorefronts, id: \.code) { storefront in
+                Toggle(isOn: storefrontBinding(for: storefront.code)) {
+                    Text(storefront.title)
+                }
+            }
+            .frame(minHeight: 200)
+            .disabled(isApplying)
+
+            Toggle(
+                "Replace: remove keywords in the selected countries and device that are not in the global list",
+                isOn: $removesKeywordsMissingFromGlobalList
+            )
+            .disabled(isApplying)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+            } else if let statusMessage {
+                Text(statusMessage)
+                    .foregroundStyle(.secondary)
+            } else if removesKeywordsMissingFromGlobalList {
+                Text("Ranking history for removed keywords is deleted.")
+                    .foregroundStyle(.orange)
+            }
+
+            HStack {
+                Spacer()
+                Button(statusMessage == nil ? "Cancel" : "Done") {
+                    dismiss()
+                }
+                Button(removesKeywordsMissingFromGlobalList ? "Replace Keywords" : "Add Keywords") {
+                    apply()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    isApplying || templates.isEmpty || selectedStorefrontCodes.isEmpty
+                        || trackedApps.isEmpty
+                )
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 560, minHeight: 640)
+    }
+
+    private var filteredStorefronts: [Storefront] {
+        let normalizedSearch = storefrontSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSearch.isEmpty else { return storefronts }
+        return storefronts.filter { storefront in
+            storefront.title.localizedCaseInsensitiveContains(normalizedSearch)
+                || storefront.code.localizedCaseInsensitiveContains(normalizedSearch)
+        }
+    }
+
+    private func storefrontBinding(for code: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedStorefrontCodes.contains(code) },
+            set: { isSelected in
+                if isSelected {
+                    selectedStorefrontCodes.insert(code)
+                } else {
+                    selectedStorefrontCodes.remove(code)
+                }
+            }
+        )
+    }
+
+    private func apply() {
+        isApplying = true
+        errorMessage = nil
+        statusMessage = nil
+
+        let storefrontCodes = selectedStorefrontCodes
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+            .sorted()
+        let storefrontCodeSet = Set(storefrontCodes)
+        let terms = templates.map(\.term)
+        let globalTermKeys = Set(terms.map(\.normalizedKeywordKey))
+        let platform = selectedPlatform
+
+        do {
+            // Resolve every needed keyword query with one batch fetch; the
+            // same queries are shared by all apps.
+            let neededQueryKeys = Array(Set(storefrontCodes.flatMap { storefront in
+                terms.map {
+                    KeywordQuery.makeQueryKey(term: $0, storefront: storefront, platform: platform)
+                }
+            }))
+            var queriesByKey: [String: KeywordQuery] = [:]
+            let descriptor = FetchDescriptor<KeywordQuery>(
+                predicate: #Predicate { query in
+                    neededQueryKeys.contains(query.queryKey)
+                }
+            )
+            for query in try modelContext.fetch(descriptor) {
+                queriesByKey[query.queryKey] = query
+            }
+
+            var insertedCount = 0
+            var removedCount = 0
+
+            for app in trackedApps {
+                if removesKeywordsMissingFromGlobalList {
+                    let tracksToRemove = app.keywordTracks.filter { track in
+                        storefrontCodeSet.contains(
+                            track.storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        )
+                            && track.platform == platform
+                            && !globalTermKeys.contains(track.term.normalizedKeywordKey)
+                    }
+                    for track in tracksToRemove {
+                        deleteSnapshots(for: track)
+                        modelContext.delete(track)
+                        removedCount += 1
+                    }
+                }
+
+                var existingKeys = Set<String>()
+                for track in app.keywordTracks where !track.isDeleted {
+                    existingKeys.insert(
+                        trackKey(term: track.term, storefront: track.storefront, platform: track.platform)
+                    )
+                }
+
+                for storefront in storefrontCodes {
+                    for term in terms {
+                        let key = trackKey(term: term, storefront: storefront, platform: platform)
+                        guard existingKeys.insert(key).inserted else { continue }
+
+                        let queryKey = KeywordQuery.makeQueryKey(
+                            term: term, storefront: storefront, platform: platform)
+                        let query: KeywordQuery
+                        if let existing = queriesByKey[queryKey] {
+                            query = existing
+                        } else {
+                            query = KeywordQuery(term: term, storefront: storefront, platform: platform)
+                            modelContext.insert(query)
+                            queriesByKey[queryKey] = query
+                        }
+
+                        let track = TrackedAppKeyword(
+                            term: term,
+                            storefront: storefront,
+                            platform: platform,
+                            trackedApp: app,
+                            query: query
+                        )
+                        track.notes = "Added from global keyword list."
+                        app.keywordTracks.append(track)
+                        modelContext.insert(track)
+                        insertedCount += 1
+                    }
+                }
+            }
+
+            try modelContext.save()
+            if insertedCount > 0 {
+                services.analyticsService.capture(
+                    .keywordAdded(keywordCount: terms.count, storefrontCount: storefrontCodes.count))
+            }
+            if removedCount > 0 {
+                services.analyticsService.capture(.keywordDeleted(deleteCount: removedCount))
+            }
+            var summary =
+                "Added \(insertedCount.formatted()) keyword tracks across \(trackedApps.count.formatted()) apps."
+            if removesKeywordsMissingFromGlobalList {
+                summary += " Removed \(removedCount.formatted()) keyword tracks not in the global list."
+            }
+            summary += " Refresh apps to collect rankings."
+            statusMessage = summary
+        } catch {
+            errorMessage = OpenASOError.map(error).localizedDescription
+        }
+        isApplying = false
+    }
+
+    private func trackKey(term: String, storefront: String, platform: AppPlatform) -> String {
+        [
+            term.normalizedKeywordKey,
+            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            platform.rawValue,
+        ].joined(separator: "::")
+    }
+
+    private func deleteSnapshots(for track: TrackedAppKeyword) {
+        for snapshot in track.snapshots {
+            for result in snapshot.topResults {
+                modelContext.delete(result)
+            }
+            snapshot.topResults.removeAll()
+            modelContext.delete(snapshot)
+        }
+        track.snapshots.removeAll()
     }
 }
 
