@@ -217,10 +217,7 @@ struct OpenASOMCPServerFactory: Sendable {
             return try Self.toolResult(result)
 
         case "list_global_keywords":
-            let result = try service.listGlobalKeywords(
-                storefronts: arguments.stringArray("storefronts"),
-                platform: arguments.string("platform")
-            )
+            let result = try service.listGlobalKeywords()
             return try Self.toolResult(result)
 
         case "score_keywords":
@@ -242,9 +239,7 @@ struct OpenASOMCPServerFactory: Sendable {
 
         case "add_global_keywords":
             let result = try service.addGlobalKeywords(
-                keywords: try arguments.requiredStringArray("keywords"),
-                storefronts: try arguments.requiredStringArray("storefronts"),
-                platform: arguments.string("platform")
+                keywords: try arguments.requiredStringArray("keywords")
             )
             return try Self.toolResult(result)
 
@@ -283,9 +278,7 @@ struct OpenASOMCPServerFactory: Sendable {
         case "update_global_keyword":
             let result = try service.updateGlobalKeyword(
                 id: try arguments.requiredString("id"),
-                keyword: try arguments.requiredString("keyword"),
-                storefront: try arguments.requiredString("storefront"),
-                platform: arguments.string("platform")
+                keyword: try arguments.requiredString("keyword")
             )
             return try Self.toolResult(result)
 
@@ -550,8 +543,8 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "cursor": .string]) { current, _ in current }
             ), readOnly: true),
-            tool("list_global_keywords", "List reusable global keyword templates.", schema(
-                optional: ["storefronts": .stringArray, "platform": .string]
+            tool("list_global_keywords", "List the reusable global keyword terms. Global keywords are storefront-agnostic; use add_keywords to apply them to an app for specific storefronts.", schema(
+                optional: [:]
             ), readOnly: true),
             tool("score_keywords", "Classify tracked keywords into defend, attack, long-tail, brand, experimental, or noisy buckets using rank, popularity, and phrase-quality heuristics.", schema(
                 required: ["appStoreID"],
@@ -561,9 +554,9 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID", "keywords", "storefronts"],
                 optional: ["appStoreID": .integer, "keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
             ), readOnly: false, destructive: false, idempotent: true),
-            tool("add_global_keywords", "Add reusable global keyword templates.", schema(
-                required: ["keywords", "storefronts"],
-                optional: ["keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
+            tool("add_global_keywords", "Add reusable global keyword terms. Global keywords are storefront-agnostic and are not tracked for any app until applied with add_keywords.", schema(
+                required: ["keywords"],
+                optional: ["keywords": .stringArray]
             ), readOnly: false, destructive: false, idempotent: true),
             tool("update_keyword_notes", "Update notes for one tracked keyword.", schema(
                 required: ["appStoreID", "keyword", "storefront", "notes"],
@@ -584,9 +577,9 @@ private extension OpenASOMCPServerFactory {
                 optional: ["track_identity_key": .string]
             ), readOnly: false, destructive: true, idempotent: false),
             tool("reset_keywords", "Delete all tracked keywords for one app.", appIDSchema, readOnly: false, destructive: true, idempotent: false),
-            tool("update_global_keyword", "Edit one reusable global keyword template by id.", schema(
-                required: ["id", "keyword", "storefront"],
-                optional: ["id": .string, "keyword": .string, "storefront": .string, "platform": .string]
+            tool("update_global_keyword", "Rename one reusable global keyword term by id.", schema(
+                required: ["id", "keyword"],
+                optional: ["id": .string, "keyword": .string]
             ), readOnly: false, destructive: false, idempotent: true),
             tool("delete_global_keyword", "Delete one reusable global keyword template by id.", schema(
                 required: ["id"],

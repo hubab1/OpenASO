@@ -39,7 +39,6 @@ struct AppDetailView: View {
     @State private var queuedKeywordAdds: [KeywordAddRequest] = []
     @State private var isFlushingQueuedKeywordAdds = false
     @State private var isRefreshingQueuedKeywordAdds = false
-    @AppStorage("globalTrackedKeywordTemplatesJSON") private var globalKeywordTemplatesJSON = "[]"
 
     init(trackedApp: TrackedApp) {
         self.trackedApp = trackedApp
@@ -738,68 +737,10 @@ struct AppDetailView: View {
         storefrontSelection: AppDetailRefreshStorefrontSelection,
         platformFilter: PlatformFilter
     ) throws -> [TrackedAppKeyword] {
-        try ensureGlobalKeywordTracks(
-            for: app,
-            storefrontSelection: storefrontSelection,
-            platformFilter: platformFilter
-        )
-
-        return try fetchTrackedKeywords(for: app.appStoreID, platformFilter: platformFilter)
+        // Global keywords are only added to an app explicitly (via Add
+        // Keywords); refreshes never auto-materialize them as tracks.
+        try fetchTrackedKeywords(for: app.appStoreID, platformFilter: platformFilter)
             .filter { matchesStorefrontSelection($0.storefront, selection: storefrontSelection) }
-    }
-
-    private func ensureGlobalKeywordTracks(
-        for app: TrackedApp,
-        storefrontSelection: AppDetailRefreshStorefrontSelection,
-        platformFilter: PlatformFilter
-    ) throws {
-        let templates = globalKeywordTemplates.filter {
-            matchesStorefrontSelection($0.storefront, selection: storefrontSelection)
-                && platformFilter.matches($0.platform)
-        }
-        guard !templates.isEmpty else { return }
-
-        var existingKeys = Set(
-            try fetchTrackedKeywords(for: app.appStoreID)
-                .map { keywordDuplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform) }
-        )
-        var insertedAny = false
-
-        for template in templates {
-            let duplicateKey = keywordDuplicateKey(
-                term: template.term,
-                storefront: template.storefront,
-                platform: template.platform
-            )
-            guard existingKeys.insert(duplicateKey).inserted else { continue }
-
-            let query = try KeywordQuery.fetchOrInsert(
-                term: template.term,
-                storefront: template.storefront,
-                platform: template.platform,
-                in: modelContext
-            )
-            let track = TrackedAppKeyword(
-                term: template.term,
-                storefront: template.storefront,
-                platform: template.platform,
-                trackedApp: app,
-                query: query
-            )
-            track.notes = "Added from global keyword list."
-            app.keywordTracks.append(track)
-            modelContext.insert(track)
-            insertedAny = true
-        }
-
-        if insertedAny {
-            try modelContext.save()
-            keywordRefreshToken += 1
-        }
-    }
-
-    private var globalKeywordTemplates: [GlobalTrackedKeywordTemplate] {
-        GlobalTrackedKeywordTemplate.decodeList(from: globalKeywordTemplatesJSON)
     }
 
     private func matchesStorefrontSelection(

@@ -227,8 +227,6 @@ struct OpenASOMCPKeywordTrackMutationResult: Codable, Sendable {
 struct OpenASOMCPGlobalKeywordTemplate: Codable, Identifiable, Sendable {
     let id: String
     let keyword: String
-    let storefront: String
-    let platform: String
     let createdAt: Date
 }
 

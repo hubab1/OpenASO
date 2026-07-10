@@ -408,49 +408,25 @@ final class OpenASOMCPService: Sendable {
     }
   }
 
-  func listGlobalKeywords(
-    storefronts: [String]? = nil,
-    platform: String? = nil
-  ) throws -> [OpenASOMCPGlobalKeywordTemplate] {
-    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
-    let platform = try platform.map(OpenASOMCPValidation.platform)
-    return Self.globalKeywordTemplates().filter { template in
-      if !storefronts.isEmpty && !storefronts.contains(template.storefront) { return false }
-      if let platform, template.platformRaw != platform.rawValue { return false }
-      return true
-    }.map(Self.globalKeywordTemplate)
+  func listGlobalKeywords() throws -> [OpenASOMCPGlobalKeywordTemplate] {
+    Self.globalKeywordTemplates().map(Self.globalKeywordTemplate)
   }
 
-  func addGlobalKeywords(
-    keywords: [String],
-    storefronts: [String],
-    platform: String? = nil
-  ) throws -> OpenASOMCPGlobalKeywordMutationResult {
+  func addGlobalKeywords(keywords: [String]) throws -> OpenASOMCPGlobalKeywordMutationResult {
     let keywords = try OpenASOMCPValidation.keywords(keywords)
-    let storefronts = try OpenASOMCPValidation.storefronts(storefronts)
-    let platform = try OpenASOMCPValidation.platform(platform)
-    guard !storefronts.isEmpty else {
-      throw OpenASOError.providerUnavailable("Select at least one storefront.")
-    }
 
     var templates = Self.globalKeywordTemplates()
     var existingIDs = Set(templates.map(\.id))
     var insertedCount = 0
     var skippedCount = 0
 
-    for storefront in storefronts {
-      for keyword in keywords {
-        let template = GlobalTrackedKeywordTemplate(
-          term: keyword,
-          storefront: storefront,
-          platform: platform
-        )
-        if existingIDs.insert(template.id).inserted {
-          templates.append(template)
-          insertedCount += 1
-        } else {
-          skippedCount += 1
-        }
+    for keyword in keywords {
+      let template = GlobalTrackedKeywordTemplate(term: keyword)
+      if existingIDs.insert(template.id).inserted {
+        templates.append(template)
+        insertedCount += 1
+      } else {
+        skippedCount += 1
       }
     }
 
@@ -469,28 +445,21 @@ final class OpenASOMCPService: Sendable {
 
   func updateGlobalKeyword(
     id: String,
-    keyword: String,
-    storefront: String,
-    platform: String? = nil
+    keyword: String
   ) throws -> OpenASOMCPGlobalKeywordMutationResult {
     let keyword = try OpenASOMCPValidation.keyword(keyword)
-    let storefront = try OpenASOMCPValidation.storefront(storefront)
-    let platform = try OpenASOMCPValidation.platform(platform)
     var templates = Self.globalKeywordTemplates()
     guard let index = templates.firstIndex(where: { $0.id == id }) else {
       throw OpenASOError.appNotFound
     }
     let replacement = GlobalTrackedKeywordTemplate(
       term: keyword,
-      storefront: storefront,
-      platform: platform,
       createdAt: templates[index].createdAt
     )
     guard !templates.enumerated().contains(where: { offset, template in
       offset != index && template.id == replacement.id
     }) else {
-      throw OpenASOError.providerUnavailable(
-        "That global keyword, country, and device already exist.")
+      throw OpenASOError.providerUnavailable("That keyword is already in the global list.")
     }
     templates[index] = replacement
     Self.setGlobalKeywordTemplates(templates)
@@ -3964,15 +3933,7 @@ extension OpenASOMCPService {
   fileprivate static func globalKeywordTemplates() -> [GlobalTrackedKeywordTemplate] {
     let json = UserDefaults.standard.string(forKey: globalKeywordTemplatesKey) ?? "[]"
     return GlobalTrackedKeywordTemplate.decodeList(from: json)
-      .sorted {
-        if $0.storefront == $1.storefront {
-          if $0.platformRaw == $1.platformRaw {
-            return $0.term.localizedStandardCompare($1.term) == .orderedAscending
-          }
-          return $0.platformRaw < $1.platformRaw
-        }
-        return $0.storefront < $1.storefront
-      }
+      .sorted { $0.term.localizedStandardCompare($1.term) == .orderedAscending }
   }
 
   fileprivate static func setGlobalKeywordTemplates(_ templates: [GlobalTrackedKeywordTemplate]) {
@@ -3988,8 +3949,6 @@ extension OpenASOMCPService {
     OpenASOMCPGlobalKeywordTemplate(
       id: template.id,
       keyword: template.term,
-      storefront: template.storefront,
-      platform: template.platform.rawValue,
       createdAt: template.createdAt
     )
   }

@@ -149,11 +149,14 @@ struct AddKeywordsSheet: View {
 
     @ViewBuilder
     private var reusableKeywordsSection: some View {
-        let keywords = reusableKeywordsForSelection
+        let keywords = sortedGlobalKeywords
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Reusable Keywords")
                     .font(.headline)
+                Text("Applied to every selected country and the selected device.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 if !keywords.isEmpty {
                     Button("Select All") {
@@ -168,20 +171,13 @@ struct AddKeywordsSheet: View {
             }
 
             if keywords.isEmpty {
-                Text("No reusable keywords match the selected device and countries yet.")
+                Text("No reusable keywords yet. Save pasted keywords to build the global list.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
                 List(keywords) { keyword in
                     Toggle(isOn: reusableKeywordBinding(for: keyword.id)) {
-                        HStack(spacing: 10) {
-                            Text(keyword.term)
-                            Spacer()
-                            Text(keyword.storefront.uppercased())
-                                .foregroundStyle(.secondary)
-                            Text(keyword.platform.displayName)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(keyword.term)
                     }
                 }
                 .frame(minHeight: 110, maxHeight: 150)
@@ -222,18 +218,10 @@ struct AddKeywordsSheet: View {
         .mapValues(\.count)
     }
 
-    private var reusableKeywordsForSelection: [GlobalTrackedKeywordTemplate] {
-        globalKeywordTemplates
-            .filter { template in
-                template.platform == selectedPlatform
-                    && selectedStorefrontCodes.contains(template.storefront)
-            }
-            .sorted { lhs, rhs in
-                if lhs.storefront == rhs.storefront {
-                    return lhs.term.localizedStandardCompare(rhs.term) == .orderedAscending
-                }
-                return lhs.storefront < rhs.storefront
-            }
+    private var sortedGlobalKeywords: [GlobalTrackedKeywordTemplate] {
+        globalKeywordTemplates.sorted { lhs, rhs in
+            lhs.term.localizedStandardCompare(rhs.term) == .orderedAscending
+        }
     }
 
     private func keywordCount(for storefrontCode: String) -> Int {
@@ -249,8 +237,6 @@ struct AddKeywordsSheet: View {
                     selectedStorefrontCodes.insert(code)
                 } else {
                     selectedStorefrontCodes.remove(code)
-                    selectedGlobalKeywordIDs.subtract(
-                        globalKeywordTemplates.filter { $0.storefront == code }.map(\.id))
                 }
             }
         )
@@ -438,8 +424,7 @@ struct AddKeywordsSheet: View {
         }
 
         if savesInputToGlobalKeywords, !typedKeywords.isEmpty {
-            persistGlobalKeywords(
-                keywords: typedKeywords, storefrontCodes: storefrontCodes, platform: platform)
+            persistGlobalKeywords(keywords: typedKeywords)
         }
 
         do {
@@ -521,8 +506,11 @@ struct AddKeywordsSheet: View {
         var seen = Set<String>()
         var candidates: [KeywordAddCandidate] = []
 
+        // Typed keywords and selected global keywords both fan out across the
+        // selected countries and device.
+        let keywordsToAdd = parsedKeywords + selectedGlobalKeywords.map(\.term)
         for storefrontCode in selectedStorefrontCodes.sorted() {
-            for keyword in parsedKeywords {
+            for keyword in keywordsToAdd {
                 let candidate = KeywordAddCandidate(
                     keyword: keyword,
                     storefrontCode: storefrontCode,
@@ -533,35 +521,17 @@ struct AddKeywordsSheet: View {
             }
         }
 
-        for template in selectedGlobalKeywords {
-            let candidate = KeywordAddCandidate(
-                keyword: template.term,
-                storefrontCode: template.storefront,
-                platform: template.platform
-            )
-            guard seen.insert(candidate.identityKey).inserted else { continue }
-            candidates.append(candidate)
-        }
-
         return candidates
     }
 
-    private func persistGlobalKeywords(
-        keywords: [String], storefrontCodes: Set<String>, platform: AppPlatform
-    ) {
+    private func persistGlobalKeywords(keywords: [String]) {
         var templates = globalKeywordTemplates
         var existingIDs = Set(templates.map(\.id))
 
-        for storefrontCode in storefrontCodes.sorted() {
-            for keyword in keywords {
-                let template = GlobalTrackedKeywordTemplate(
-                    term: keyword,
-                    storefront: storefrontCode,
-                    platform: platform
-                )
-                guard existingIDs.insert(template.id).inserted else { continue }
-                templates.append(template)
-            }
+        for keyword in keywords {
+            let template = GlobalTrackedKeywordTemplate(term: keyword)
+            guard existingIDs.insert(template.id).inserted else { continue }
+            templates.append(template)
         }
 
         globalKeywordTemplatesJSON = GlobalTrackedKeywordTemplate.encodeList(templates)
@@ -602,36 +572,35 @@ struct KeywordAddCandidate: Hashable {
     }
 }
 
+// A global keyword is just a reusable term. Countries and device are chosen
+// at apply time, so the list never needs one copy per storefront.
 struct GlobalTrackedKeywordTemplate: Codable, Identifiable, Hashable {
     let term: String
-    let storefront: String
-    let platformRaw: String
     let createdAt: Date
 
-    init(term: String, storefront: String, platform: AppPlatform, createdAt: Date = .now) {
+    init(term: String, createdAt: Date = .now) {
         self.term = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.storefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        self.platformRaw = platform.rawValue
         self.createdAt = createdAt
     }
 
     var id: String {
-        [
-            term.normalizedKeywordKey,
-            storefront,
-            platformRaw,
-        ].joined(separator: "::")
+        term.normalizedKeywordKey
     }
 
-    var platform: AppPlatform {
-        AppPlatform(rawValue: platformRaw) ?? .iphone
+    private enum CodingKeys: String, CodingKey {
+        case term
+        case createdAt
     }
 
     static func decodeList(from json: String) -> [GlobalTrackedKeywordTemplate] {
         guard let data = json.data(using: .utf8) else {
             return []
         }
-        return (try? JSONDecoder().decode([GlobalTrackedKeywordTemplate].self, from: data)) ?? []
+        let decoded = (try? JSONDecoder().decode([GlobalTrackedKeywordTemplate].self, from: data)) ?? []
+        // Legacy lists stored one copy per storefront and device; collapse
+        // them to unique terms.
+        var seenIDs = Set<String>()
+        return decoded.filter { !$0.term.isEmpty && seenIDs.insert($0.id).inserted }
     }
 
     static func encodeList(_ templates: [GlobalTrackedKeywordTemplate]) -> String {
@@ -718,6 +687,7 @@ struct ManageKeywordListsSheet: View {
                 title: entry.title,
                 draft: entry.draft,
                 allowsMultipleKeywords: entry.allowsMultipleKeywords,
+                showsTargetingControls: entry.showsTargetingControls,
                 storefronts: editorStorefronts(including: entry.draft.storefront)
             ) { draft in
                 save(entry: entry, draft: draft)
@@ -806,8 +776,8 @@ struct ManageKeywordListsSheet: View {
                 List(globalKeywordTemplates) { template in
                     KeywordListRow(
                         title: template.term,
-                        storefront: storeTitle(for: template.storefront),
-                        platform: template.platform.displayName,
+                        storefront: nil,
+                        platform: nil,
                         notes: nil,
                         editAction: {
                             editingEntry = .global(template)
@@ -825,13 +795,7 @@ struct ManageKeywordListsSheet: View {
     private var globalKeywordTemplates: [GlobalTrackedKeywordTemplate] {
         GlobalTrackedKeywordTemplate.decodeList(from: globalKeywordTemplatesJSON)
             .sorted { lhs, rhs in
-                if lhs.storefront != rhs.storefront {
-                    return lhs.storefront < rhs.storefront
-                }
-                if lhs.platformRaw != rhs.platformRaw {
-                    return lhs.platformRaw < rhs.platformRaw
-                }
-                return lhs.term.localizedStandardCompare(rhs.term) == .orderedAscending
+                lhs.term.localizedStandardCompare(rhs.term) == .orderedAscending
             }
     }
 
@@ -843,14 +807,14 @@ struct ManageKeywordListsSheet: View {
             errorMessage = "Enter a keyword."
             return
         }
-        guard !normalizedDraft.storefront.isEmpty else {
-            errorMessage = "Choose a country."
-            return
-        }
 
         do {
             switch entry.source {
             case .local(let track):
+                guard !normalizedDraft.storefront.isEmpty else {
+                    errorMessage = "Choose a country."
+                    return
+                }
                 try saveLocalKeyword(track, draft: normalizedDraft)
             case .global(let existingID):
                 try saveGlobalKeywords(existingID: existingID, draft: normalizedDraft)
@@ -915,17 +879,12 @@ struct ManageKeywordListsSheet: View {
         try modelContext.save()
     }
 
-    private func saveGlobalKeyword(existingID: String?, draft: KeywordListDraft) throws {
-        let replacement = GlobalTrackedKeywordTemplate(
-            term: draft.term,
-            storefront: draft.storefront,
-            platform: draft.platform
-        )
+    private func saveGlobalKeyword(existingID: String?, term: String) throws {
+        let replacement = GlobalTrackedKeywordTemplate(term: term)
         var templates = globalKeywordTemplates.filter { $0.id != existingID }
 
         guard !templates.contains(where: { $0.id == replacement.id }) else {
-            throw OpenASOError.providerUnavailable(
-                "That global keyword, country, and device already exist.")
+            throw OpenASOError.providerUnavailable("That keyword is already in the global list.")
         }
 
         templates.append(replacement)
@@ -939,15 +898,7 @@ struct ManageKeywordListsSheet: View {
         }
 
         if existingID != nil || keywords.count == 1 {
-            try saveGlobalKeyword(
-                existingID: existingID,
-                draft: KeywordListDraft(
-                    term: keywords[0],
-                    storefront: draft.storefront,
-                    platform: draft.platform,
-                    notes: draft.notes
-                )
-            )
+            try saveGlobalKeyword(existingID: existingID, term: keywords[0])
             return
         }
 
@@ -956,19 +907,14 @@ struct ManageKeywordListsSheet: View {
         var insertedCount = 0
 
         for keyword in keywords {
-            let template = GlobalTrackedKeywordTemplate(
-                term: keyword,
-                storefront: draft.storefront,
-                platform: draft.platform
-            )
+            let template = GlobalTrackedKeywordTemplate(term: keyword)
             guard existingIDs.insert(template.id).inserted else { continue }
             templates.append(template)
             insertedCount += 1
         }
 
         guard insertedCount > 0 else {
-            throw OpenASOError.providerUnavailable(
-                "Those global keywords already exist for this country and device.")
+            throw OpenASOError.providerUnavailable("Those keywords are already in the global list.")
         }
 
         globalKeywordTemplatesJSON = GlobalTrackedKeywordTemplate.encodeList(templates)
@@ -1132,8 +1078,8 @@ private enum KeywordListResetConfirmation: Identifiable {
 
 private struct KeywordListRow: View {
     let title: String
-    let storefront: String
-    let platform: String
+    let storefront: String?
+    let platform: String?
     let notes: String?
     let editAction: () -> Void
     let deleteAction: () -> Void
@@ -1144,8 +1090,12 @@ private struct KeywordListRow: View {
                 Text(title)
                     .font(.headline)
                 HStack(spacing: 8) {
-                    Text(storefront)
-                    Text(platform)
+                    if let storefront {
+                        Text(storefront)
+                    }
+                    if let platform {
+                        Text(platform)
+                    }
                     if let notes, !notes.isEmpty {
                         Text(notes)
                             .lineLimit(1)
@@ -1173,6 +1123,7 @@ private struct KeywordListEntryEditor: View {
 
     let title: String
     let allowsMultipleKeywords: Bool
+    let showsTargetingControls: Bool
     let storefronts: [KeywordListStorefrontOption]
     let save: (KeywordListDraft) -> Void
 
@@ -1182,11 +1133,13 @@ private struct KeywordListEntryEditor: View {
         title: String,
         draft: KeywordListDraft,
         allowsMultipleKeywords: Bool,
+        showsTargetingControls: Bool,
         storefronts: [KeywordListStorefrontOption],
         save: @escaping (KeywordListDraft) -> Void
     ) {
         self.title = title
         self.allowsMultipleKeywords = allowsMultipleKeywords
+        self.showsTargetingControls = showsTargetingControls
         self.storefronts = storefronts
         self.save = save
         _draft = State(initialValue: draft)
@@ -1213,23 +1166,29 @@ private struct KeywordListEntryEditor: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            Picker("Country", selection: $draft.storefront) {
-                ForEach(storefronts) { storefront in
-                    Text(storefront.title)
-                        .tag(storefront.code)
+            if showsTargetingControls {
+                Picker("Country", selection: $draft.storefront) {
+                    ForEach(storefronts) { storefront in
+                        Text(storefront.title)
+                            .tag(storefront.code)
+                    }
                 }
-            }
 
-            Picker("Device", selection: $draft.platform) {
-                ForEach(AppPlatform.allCases) { platform in
-                    Label(platform.displayName, systemImage: platform.keywordSheetSystemImage)
-                        .tag(platform)
+                Picker("Device", selection: $draft.platform) {
+                    ForEach(AppPlatform.allCases) { platform in
+                        Label(platform.displayName, systemImage: platform.keywordSheetSystemImage)
+                            .tag(platform)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
+                .pickerStyle(.segmented)
 
-            TextField("Notes", text: $draft.notes, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                TextField("Notes", text: $draft.notes, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+            } else {
+                Text("Global keywords apply to the countries and device you choose when adding them to an app.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack {
                 Spacer()
@@ -1283,6 +1242,13 @@ private struct KeywordListEditingEntry: Identifiable {
         return false
     }
 
+    var showsTargetingControls: Bool {
+        if case .local = source {
+            return true
+        }
+        return false
+    }
+
     static func local(_ track: TrackedAppKeyword) -> KeywordListEditingEntry {
         KeywordListEditingEntry(
             source: .local(track),
@@ -1302,8 +1268,8 @@ private struct KeywordListEditingEntry: Identifiable {
             title: "Edit Global Keyword",
             draft: KeywordListDraft(
                 term: template.term,
-                storefront: template.storefront,
-                platform: template.platform,
+                storefront: "",
+                platform: .iphone,
                 notes: ""
             )
         )
@@ -1312,10 +1278,10 @@ private struct KeywordListEditingEntry: Identifiable {
     static func newGlobal(defaultPlatform: AppPlatform) -> KeywordListEditingEntry {
         KeywordListEditingEntry(
             source: .global(existingID: nil),
-            title: "Add Global Keyword",
+            title: "Add Global Keywords",
             draft: KeywordListDraft(
                 term: "",
-                storefront: "us",
+                storefront: "",
                 platform: defaultPlatform,
                 notes: ""
             )
