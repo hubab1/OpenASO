@@ -340,6 +340,18 @@ struct AppDetailAddKeywordsToolbarButton: View {
     }
 }
 
+struct AppDetailMarketInsightsToolbarButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Market Insights", systemImage: "globe")
+                .labelStyle(.titleAndIcon)
+        }
+        .help("Best and worst ranking markets per keyword")
+    }
+}
+
 struct AppDetailKeywordListsToolbarButton: View {
     let action: () -> Void
 

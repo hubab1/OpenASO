@@ -200,6 +200,27 @@ final class AppRefreshProgressStore: Sendable {
         )
     }
 
+    func beginGlobalKeywordSync(trackTotal: Int) {
+        clearTask?.cancel()
+        clearTask = nil
+
+        activeRefresh = AppRefreshProgress(
+            id: UUID(),
+            appStoreID: 0,
+            appName: "Global keywords",
+            trigger: "global_keyword_sync",
+            startedAt: .now,
+            phase: .refreshingKeywords,
+            keywordProgress: .pending(total: trackTotal),
+            metricsProgress: .pending(total: trackTotal),
+            ratingsProgress: .pending(total: 0),
+            reviewsProgress: .pending(total: 0),
+            pricingProgress: .pending(total: 0),
+            completedAt: nil,
+            errorMessage: nil
+        )
+    }
+
     func beginAppleAdsPopularityRefresh(total: Int) {
         clearTask?.cancel()
         clearTask = nil

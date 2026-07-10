@@ -21,6 +21,7 @@ struct AppDetailView: View {
 
     @State private var isPresentingAddKeywords = false
     @State private var isPresentingKeywordLists = false
+    @State private var isPresentingMarketInsights = false
     @State private var isRefreshingApp = false
     @State private var errorMessage: String?
     @State private var searchText = ""
@@ -131,6 +132,9 @@ struct AppDetailView: View {
             if selectedWorkspaceView == .keywords {
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 10) {
+                        AppDetailMarketInsightsToolbarButton {
+                            isPresentingMarketInsights = true
+                        }
                         AppDetailKeywordListsToolbarButton {
                             isPresentingKeywordLists = true
                         }
@@ -183,6 +187,9 @@ struct AppDetailView: View {
             }
         ) {
             ManageKeywordListsSheet(trackedApp: trackedApp)
+        }
+        .sheet(isPresented: $isPresentingMarketInsights) {
+            KeywordMarketInsightsSheet(trackedApp: trackedApp)
         }
         .onAppear {
             services.analyticsService.capture(.workspaceViewed(selectedWorkspaceView))

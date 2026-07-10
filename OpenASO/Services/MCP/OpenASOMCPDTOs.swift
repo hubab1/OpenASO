@@ -230,9 +230,44 @@ struct OpenASOMCPGlobalKeywordTemplate: Codable, Identifiable, Sendable {
     let createdAt: Date
 }
 
+struct OpenASOMCPGlobalKeywordSyncSummary: Codable, Sendable {
+    let syncedAppCount: Int
+    let insertedTrackCount: Int
+    let removedTrackCount: Int
+    let storefrontCount: Int
+    let note: String
+}
+
 struct OpenASOMCPGlobalKeywordMutationResult: Codable, Sendable {
     let templates: [OpenASOMCPGlobalKeywordTemplate]
     let summary: OpenASOMCPMutationSummary
+    let sync: OpenASOMCPGlobalKeywordSyncSummary?
+}
+
+struct OpenASOMCPKeywordMarketRank: Codable, Sendable {
+    let storefront: String
+    let rank: Int?
+    let resultCount: Int?
+    let searchedAt: Date?
+}
+
+struct OpenASOMCPKeywordMarketRankings: Codable, Identifiable, Sendable {
+    let keyword: String
+    let platform: String
+    let marketsTracked: Int
+    let marketsRanked: Int
+    let bestMarket: OpenASOMCPKeywordMarketRank?
+    let worstMarket: OpenASOMCPKeywordMarketRank?
+    let averageRank: Double?
+    let markets: [OpenASOMCPKeywordMarketRank]
+
+    var id: String { [keyword.lowercased(), platform].joined(separator: "::") }
+}
+
+struct OpenASOMCPKeywordMarketRankingsResult: Codable, Sendable {
+    let appStoreID: String
+    let platform: String?
+    let items: [OpenASOMCPKeywordMarketRankings]
 }
 
 struct OpenASOMCPKeywordScoreResult: Codable, Sendable {

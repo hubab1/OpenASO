@@ -857,6 +857,8 @@ private struct SidebarRefreshProgressView: View {
             return refresh.phase == .completed ? "Daily refresh complete" : refresh.phase == .failed ? "Daily refresh failed" : "Running daily refresh"
         case "apple_ads_connection":
             return refresh.phase == .completed ? "Popularity refreshed" : refresh.phase == .failed ? "Popularity refresh failed" : "Refreshing keyword popularity"
+        case "global_keyword_sync":
+            return refresh.phase == .completed ? "Global keywords synced" : refresh.phase == .failed ? "Global keyword sync failed" : "Fetching global keyword rankings"
         default:
             return refresh.phase.title
         }

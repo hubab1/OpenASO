@@ -412,7 +412,7 @@ final class OpenASOMCPService: Sendable {
     Self.globalKeywordTemplates().map(Self.globalKeywordTemplate)
   }
 
-  func addGlobalKeywords(keywords: [String]) throws -> OpenASOMCPGlobalKeywordMutationResult {
+  func addGlobalKeywords(keywords: [String]) async throws -> OpenASOMCPGlobalKeywordMutationResult {
     let keywords = try OpenASOMCPValidation.keywords(keywords)
 
     var templates = Self.globalKeywordTemplates()
@@ -431,6 +431,7 @@ final class OpenASOMCPService: Sendable {
     }
 
     Self.setGlobalKeywordTemplates(templates)
+    let sync = try await syncGlobalKeywordTracks(templates: templates)
     return OpenASOMCPGlobalKeywordMutationResult(
       templates: templates.map(Self.globalKeywordTemplate),
       summary: OpenASOMCPMutationSummary(
@@ -439,14 +440,15 @@ final class OpenASOMCPService: Sendable {
         skipped: skippedCount,
         refreshed: 0,
         failed: 0
-      )
+      ),
+      sync: sync
     )
   }
 
   func updateGlobalKeyword(
     id: String,
     keyword: String
-  ) throws -> OpenASOMCPGlobalKeywordMutationResult {
+  ) async throws -> OpenASOMCPGlobalKeywordMutationResult {
     let keyword = try OpenASOMCPValidation.keyword(keyword)
     var templates = Self.globalKeywordTemplates()
     guard let index = templates.firstIndex(where: { $0.id == id }) else {
@@ -463,6 +465,7 @@ final class OpenASOMCPService: Sendable {
     }
     templates[index] = replacement
     Self.setGlobalKeywordTemplates(templates)
+    let sync = try await syncGlobalKeywordTracks(templates: templates)
     return OpenASOMCPGlobalKeywordMutationResult(
       templates: templates.map(Self.globalKeywordTemplate),
       summary: OpenASOMCPMutationSummary(
@@ -471,14 +474,16 @@ final class OpenASOMCPService: Sendable {
         skipped: 0,
         refreshed: 0,
         failed: 0
-      )
+      ),
+      sync: sync
     )
   }
 
-  func deleteGlobalKeyword(id: String) -> OpenASOMCPGlobalKeywordMutationResult {
+  func deleteGlobalKeyword(id: String) async throws -> OpenASOMCPGlobalKeywordMutationResult {
     let templates = Self.globalKeywordTemplates()
     let retained = templates.filter { $0.id != id }
     Self.setGlobalKeywordTemplates(retained)
+    let sync = try await syncGlobalKeywordTracks(templates: retained)
     return OpenASOMCPGlobalKeywordMutationResult(
       templates: retained.map(Self.globalKeywordTemplate),
       summary: OpenASOMCPMutationSummary(
@@ -487,13 +492,15 @@ final class OpenASOMCPService: Sendable {
         skipped: 0,
         refreshed: 0,
         failed: 0
-      )
+      ),
+      sync: sync
     )
   }
 
-  func resetGlobalKeywords() -> OpenASOMCPGlobalKeywordMutationResult {
+  func resetGlobalKeywords() async throws -> OpenASOMCPGlobalKeywordMutationResult {
     let templates = Self.globalKeywordTemplates()
     Self.setGlobalKeywordTemplates([])
+    let sync = try await syncGlobalKeywordTracks(templates: [])
     return OpenASOMCPGlobalKeywordMutationResult(
       templates: [],
       summary: OpenASOMCPMutationSummary(
@@ -502,8 +509,111 @@ final class OpenASOMCPService: Sendable {
         skipped: 0,
         refreshed: 0,
         failed: 0
-      )
+      ),
+      sync: sync
     )
+  }
+
+  // Reconciles every app's keyword tracks with the global list across all
+  // bundled storefronts. Rankings are not fetched here; call refresh_keywords
+  // per app afterwards.
+  private func syncGlobalKeywordTracks(
+    templates: [GlobalTrackedKeywordTemplate]
+  ) async throws -> OpenASOMCPGlobalKeywordSyncSummary {
+    let storefrontCodes = try StorefrontCatalog.bundledStorefrontCodes()
+    let outcome = try await backgroundModelStore.write { modelContext in
+      try GlobalKeywordSync.sync(
+        templates: templates,
+        storefrontCodes: storefrontCodes,
+        in: modelContext
+      )
+    }
+    return OpenASOMCPGlobalKeywordSyncSummary(
+      syncedAppCount: outcome.appCount,
+      insertedTrackCount: outcome.insertedTrackCount,
+      removedTrackCount: outcome.removedTrackCount,
+      storefrontCount: storefrontCodes.count,
+      note: outcome.insertedTrackCount > 0
+        ? "New keyword tracks have no rankings yet. Call refresh_keywords for each app to fetch rankings across all markets."
+        : "All apps already in sync."
+    )
+  }
+
+  func listKeywordMarketRankings(
+    appStoreID: Int64,
+    platform: String? = nil,
+    keyword: String? = nil
+  ) async throws -> OpenASOMCPKeywordMarketRankingsResult {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let platform = try platform.map(OpenASOMCPValidation.platform)
+    let keywordFilter = keyword?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .normalizedKeywordKey
+
+    return try await backgroundModelStore.read { modelContext in
+      let descriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.appStoreID == appStoreID
+        }
+      )
+      let tracks = try modelContext.fetch(descriptor).filter { track in
+        if let platform, track.platform != platform { return false }
+        if let keywordFilter, !keywordFilter.isEmpty,
+          track.term.normalizedKeywordKey != keywordFilter
+        {
+          return false
+        }
+        return true
+      }
+
+      let grouped = Dictionary(grouping: tracks) { track in
+        [track.term.normalizedKeywordKey, track.platformRaw].joined(separator: "::")
+      }
+      let items = grouped.values.compactMap { group -> OpenASOMCPKeywordMarketRankings? in
+        guard let sample = group.first else { return nil }
+
+        let markets = group.map { track -> OpenASOMCPKeywordMarketRank in
+          let latest = track.latestSnapshot
+          return OpenASOMCPKeywordMarketRank(
+            storefront: track.storefront,
+            rank: latest?.rank,
+            resultCount: latest?.resultCount ?? track.rankingAppCount,
+            searchedAt: latest?.searchedAt ?? track.lastRefreshAt
+          )
+        }
+        let rankedMarkets = markets
+          .filter { $0.rank != nil }
+          .sorted { ($0.rank ?? .max) < ($1.rank ?? .max) }
+        let rankValues = rankedMarkets.compactMap(\.rank)
+
+        return OpenASOMCPKeywordMarketRankings(
+          keyword: sample.term,
+          platform: sample.platformRaw,
+          marketsTracked: markets.count,
+          marketsRanked: rankedMarkets.count,
+          bestMarket: rankedMarkets.first,
+          worstMarket: rankedMarkets.last,
+          averageRank: rankValues.isEmpty
+            ? nil
+            : Double(rankValues.reduce(0, +)) / Double(rankValues.count),
+          markets: markets.sorted { ($0.rank ?? .max, $0.storefront) < ($1.rank ?? .max, $1.storefront) }
+        )
+      }
+      .sorted { lhs, rhs in
+        let lhsBest = lhs.bestMarket?.rank ?? .max
+        let rhsBest = rhs.bestMarket?.rank ?? .max
+        if lhsBest == rhsBest {
+          return lhs.keyword.localizedStandardCompare(rhs.keyword) == .orderedAscending
+        }
+        return lhsBest < rhsBest
+      }
+
+      return OpenASOMCPKeywordMarketRankingsResult(
+        appStoreID: String(appStoreID),
+        platform: platform?.rawValue,
+        items: items
+      )
+    }
   }
 
   func scoreKeywords(

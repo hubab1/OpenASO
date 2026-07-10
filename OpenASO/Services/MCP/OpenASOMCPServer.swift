@@ -238,7 +238,7 @@ struct OpenASOMCPServerFactory: Sendable {
             return try Self.toolResult(result)
 
         case "add_global_keywords":
-            let result = try service.addGlobalKeywords(
+            let result = try await service.addGlobalKeywords(
                 keywords: try arguments.requiredStringArray("keywords")
             )
             return try Self.toolResult(result)
@@ -276,18 +276,26 @@ struct OpenASOMCPServerFactory: Sendable {
             return try Self.toolResult(result)
 
         case "update_global_keyword":
-            let result = try service.updateGlobalKeyword(
+            let result = try await service.updateGlobalKeyword(
                 id: try arguments.requiredString("id"),
                 keyword: try arguments.requiredString("keyword")
             )
             return try Self.toolResult(result)
 
         case "delete_global_keyword":
-            let result = service.deleteGlobalKeyword(id: try arguments.requiredString("id"))
+            let result = try await service.deleteGlobalKeyword(id: try arguments.requiredString("id"))
             return try Self.toolResult(result)
 
         case "reset_global_keywords":
-            let result = service.resetGlobalKeywords()
+            let result = try await service.resetGlobalKeywords()
+            return try Self.toolResult(result)
+
+        case "list_keyword_market_rankings":
+            let result = try await service.listKeywordMarketRankings(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                platform: arguments.string("platform"),
+                keyword: arguments.string("keyword")
+            )
             return try Self.toolResult(result)
 
         case "list_screenshots":
@@ -543,7 +551,7 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "cursor": .string]) { current, _ in current }
             ), readOnly: true),
-            tool("list_global_keywords", "List the reusable global keyword terms. Global keywords are storefront-agnostic; use add_keywords to apply them to an app for specific storefronts.", schema(
+            tool("list_global_keywords", "List the reusable global keyword terms. Global keywords automatically sync as tracked keywords to every app across all markets.", schema(
                 optional: [:]
             ), readOnly: true),
             tool("score_keywords", "Classify tracked keywords into defend, attack, long-tail, brand, experimental, or noisy buckets using rank, popularity, and phrase-quality heuristics.", schema(
@@ -554,7 +562,7 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID", "keywords", "storefronts"],
                 optional: ["appStoreID": .integer, "keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
             ), readOnly: false, destructive: false, idempotent: true),
-            tool("add_global_keywords", "Add reusable global keyword terms. Global keywords are storefront-agnostic and are not tracked for any app until applied with add_keywords.", schema(
+            tool("add_global_keywords", "Add reusable global keyword terms. Automatically syncs keyword tracks to every app across all markets; call refresh_keywords per app afterwards to fetch rankings.", schema(
                 required: ["keywords"],
                 optional: ["keywords": .stringArray]
             ), readOnly: false, destructive: false, idempotent: true),
@@ -577,10 +585,14 @@ private extension OpenASOMCPServerFactory {
                 optional: ["track_identity_key": .string]
             ), readOnly: false, destructive: true, idempotent: false),
             tool("reset_keywords", "Delete all tracked keywords for one app.", appIDSchema, readOnly: false, destructive: true, idempotent: false),
-            tool("update_global_keyword", "Rename one reusable global keyword term by id.", schema(
+            tool("update_global_keyword", "Rename one reusable global keyword term by id. Synced keyword tracks across all apps and markets are updated automatically.", schema(
                 required: ["id", "keyword"],
                 optional: ["id": .string, "keyword": .string]
             ), readOnly: false, destructive: false, idempotent: true),
+            tool("list_keyword_market_rankings", "Per keyword, show where the app ranks best and worst across all tracked markets, with per-market ranks.", schema(
+                required: ["appStoreID"],
+                optional: ["appStoreID": .integer, "platform": .string, "keyword": .string]
+            ), readOnly: true),
             tool("delete_global_keyword", "Delete one reusable global keyword template by id.", schema(
                 required: ["id"],
                 optional: ["id": .string]
