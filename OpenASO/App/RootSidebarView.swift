@@ -37,6 +37,8 @@ struct RootSidebarView: View {
     @State private var hoveredAppID: Int64?
     @State private var isPresentingMCPServer = false
     @State private var isMCPHovered = false
+    @State private var isPresentingGlobalKeywords = false
+    @State private var isGlobalKeywordsHovered = false
     @State private var isSettingsHovered = false
 
     private var unfiledApps: [TrackedApp] {
@@ -69,6 +71,9 @@ struct RootSidebarView: View {
                 controller: services.mcpServerController,
                 settingsStore: services.settingsStore
             )
+        }
+        .sheet(isPresented: $isPresentingGlobalKeywords) {
+            GlobalKeywordsSheet()
         }
         .alert("Rename Folder", isPresented: $isPresentingRenameFolder) {
             TextField("Folder Name", text: $folderName)
@@ -247,6 +252,22 @@ struct RootSidebarView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(Color.secondary.opacity(0.15))
             )
+
+            Button {
+                isPresentingGlobalKeywords = true
+            } label: {
+                SidebarUtilityRow(
+                    title: "Global Keywords",
+                    systemImage: "globe",
+                    state: nil,
+                    isHovered: isGlobalKeywordsHovered
+                )
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .onHover { isGlobalKeywordsHovered = $0 }
+            .animation(.easeInOut(duration: 0.12), value: isGlobalKeywordsHovered)
+            .help("Manage the shared global keyword list and apply it to apps")
 
             Button {
                 isPresentingMCPServer = true

@@ -622,7 +622,6 @@ struct ManageKeywordListsSheet: View {
     private var storefronts: [Storefront]
 
     @Query private var localKeywords: [TrackedAppKeyword]
-    @AppStorage("globalTrackedKeywordTemplatesJSON") private var globalKeywordTemplatesJSON = "[]"
 
     let trackedApp: TrackedApp
 
@@ -630,7 +629,6 @@ struct ManageKeywordListsSheet: View {
     @State private var editingEntry: KeywordListEditingEntry?
     @State private var resetConfirmation: KeywordListResetConfirmation?
     @State private var errorMessage: String?
-    @State private var isShowingApplySheet = false
 
     init(trackedApp: TrackedApp) {
         self.trackedApp = trackedApp
@@ -678,7 +676,7 @@ struct ManageKeywordListsSheet: View {
             case .local:
                 localKeywordList
             case .global:
-                globalKeywordList
+                GlobalKeywordListEditorView(defaultPlatform: trackedApp.defaultPlatform)
             }
         }
         .padding(24)
@@ -702,12 +700,6 @@ struct ManageKeywordListsSheet: View {
                     reset(confirmation)
                 },
                 secondaryButton: .cancel()
-            )
-        }
-        .sheet(isPresented: $isShowingApplySheet) {
-            GlobalKeywordApplySheet(
-                templates: globalKeywordTemplates,
-                defaultPlatform: trackedApp.defaultPlatform
             )
         }
     }
@@ -753,66 +745,6 @@ struct ManageKeywordListsSheet: View {
         }
     }
 
-    private var globalKeywordList: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("\(globalKeywordTemplates.count.formatted()) reusable global keywords")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    editingEntry = .newGlobal(defaultPlatform: trackedApp.defaultPlatform)
-                } label: {
-                    Label("Add Global Keyword", systemImage: "plus")
-                }
-                Button {
-                    isShowingApplySheet = true
-                } label: {
-                    Label("Apply to Apps", systemImage: "square.and.arrow.down.on.square")
-                }
-                .disabled(globalKeywordTemplates.isEmpty)
-                .help("Add the global keywords to every tracked app for chosen countries")
-                Button(role: .destructive) {
-                    resetConfirmation = .global(count: globalKeywordTemplates.count)
-                } label: {
-                    Label("Reset Global Keywords", systemImage: "trash")
-                }
-                .disabled(globalKeywordTemplates.isEmpty)
-            }
-
-            if globalKeywordTemplates.isEmpty {
-                ContentUnavailableView(
-                    "No Global Keywords",
-                    systemImage: "globe",
-                    description: Text("Add reusable keywords here or save pasted keywords from Add Keywords.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(globalKeywordTemplates) { template in
-                    KeywordListRow(
-                        title: template.term,
-                        storefront: nil,
-                        platform: nil,
-                        notes: nil,
-                        editAction: {
-                            editingEntry = .global(template)
-                        },
-                        deleteAction: {
-                            deleteGlobalKeyword(template)
-                        }
-                    )
-                }
-                .listStyle(.plain)
-            }
-        }
-    }
-
-    private var globalKeywordTemplates: [GlobalTrackedKeywordTemplate] {
-        GlobalTrackedKeywordTemplate.decodeList(from: globalKeywordTemplatesJSON)
-            .sorted { lhs, rhs in
-                lhs.term.localizedStandardCompare(rhs.term) == .orderedAscending
-            }
-    }
-
     private func save(entry: KeywordListEditingEntry, draft: KeywordListDraft) {
         errorMessage = nil
         let normalizedDraft = draft.normalized
@@ -830,8 +762,9 @@ struct ManageKeywordListsSheet: View {
                     return
                 }
                 try saveLocalKeyword(track, draft: normalizedDraft)
-            case .global(let existingID):
-                try saveGlobalKeywords(existingID: existingID, draft: normalizedDraft)
+            case .global:
+                // Global entries are edited by GlobalKeywordListEditorView.
+                break
             }
             editingEntry = nil
         } catch {
@@ -893,6 +826,227 @@ struct ManageKeywordListsSheet: View {
         try modelContext.save()
     }
 
+    private func deleteLocalKeyword(_ track: TrackedAppKeyword) {
+        modelContext.delete(track)
+        do {
+            try modelContext.save()
+            services.analyticsService.capture(.keywordDeleted(deleteCount: 1))
+        } catch {
+            errorMessage = OpenASOError.map(error).localizedDescription
+        }
+    }
+
+    private func reset(_ confirmation: KeywordListResetConfirmation) {
+        switch confirmation {
+        case .local:
+            resetLocalKeywords()
+        }
+    }
+
+    private func resetLocalKeywords() {
+        let deleteCount = localKeywords.count
+        for track in localKeywords {
+            modelContext.delete(track)
+        }
+
+        do {
+            try modelContext.save()
+            services.analyticsService.capture(.keywordDeleted(deleteCount: deleteCount))
+        } catch {
+            errorMessage = OpenASOError.map(error).localizedDescription
+        }
+    }
+
+    private func deleteSnapshots(for track: TrackedAppKeyword) {
+        for snapshot in track.snapshots {
+            for result in snapshot.topResults {
+                modelContext.delete(result)
+            }
+            snapshot.topResults.removeAll()
+            modelContext.delete(snapshot)
+        }
+        track.snapshots.removeAll()
+    }
+
+    private func localDuplicateKey(term: String, storefront: String, platform: AppPlatform) -> String {
+        [
+            term.normalizedKeywordKey,
+            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            platform.rawValue,
+        ].joined(separator: "::")
+    }
+
+    private func storeTitle(for code: String) -> String {
+        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let storefront = storefronts.first(where: { $0.code.lowercased() == normalizedCode }) else {
+            return code.uppercased()
+        }
+        return storefront.title
+    }
+
+    private func editorStorefronts(including code: String) -> [KeywordListStorefrontOption] {
+        var options = storefronts.map {
+            KeywordListStorefrontOption(code: $0.code.lowercased(), title: $0.title)
+        }
+        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !normalizedCode.isEmpty, !options.contains(where: { $0.code == normalizedCode }) {
+            options.append(KeywordListStorefrontOption(code: normalizedCode, title: normalizedCode.uppercased()))
+        }
+        return options.sorted { lhs, rhs in
+            lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+        }
+    }
+}
+
+// Central editor for the shared global keyword list. Embedded in the per-app
+// Keyword Lists sheet and presented standalone from the sidebar.
+struct GlobalKeywordsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @Query(sort: [SortDescriptor(\TrackedApp.name, order: .forward)])
+    private var trackedApps: [TrackedApp]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Global Keywords")
+                    .font(.title2)
+                    .bold()
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            Text(
+                "One shared keyword list for all apps. Keywords here are not tracked anywhere until you apply them to apps for the countries and device you choose."
+            )
+            .foregroundStyle(.secondary)
+
+            GlobalKeywordListEditorView(
+                defaultPlatform: trackedApps.first?.defaultPlatform ?? .iphone
+            )
+        }
+        .padding(24)
+        .frame(minWidth: 820, minHeight: 620)
+    }
+}
+
+private struct GlobalKeywordListEditorView: View {
+    @AppStorage("globalTrackedKeywordTemplatesJSON") private var globalKeywordTemplatesJSON = "[]"
+
+    let defaultPlatform: AppPlatform
+
+    @State private var editingEntry: KeywordListEditingEntry?
+    @State private var isShowingResetConfirmation = false
+    @State private var isShowingApplySheet = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("\(globalKeywordTemplates.count.formatted()) reusable global keywords")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    editingEntry = .newGlobal(defaultPlatform: defaultPlatform)
+                } label: {
+                    Label("Add Global Keywords", systemImage: "plus")
+                }
+                Button {
+                    isShowingApplySheet = true
+                } label: {
+                    Label("Apply to Apps", systemImage: "square.and.arrow.down.on.square")
+                }
+                .disabled(globalKeywordTemplates.isEmpty)
+                .help("Add the global keywords to every tracked app for chosen countries")
+                Button(role: .destructive) {
+                    isShowingResetConfirmation = true
+                } label: {
+                    Label("Reset Global Keywords", systemImage: "trash")
+                }
+                .disabled(globalKeywordTemplates.isEmpty)
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+            }
+
+            if globalKeywordTemplates.isEmpty {
+                ContentUnavailableView(
+                    "No Global Keywords",
+                    systemImage: "globe",
+                    description: Text("Add reusable keywords here or save pasted keywords from Add Keywords.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(globalKeywordTemplates) { template in
+                    KeywordListRow(
+                        title: template.term,
+                        storefront: nil,
+                        platform: nil,
+                        notes: nil,
+                        editAction: {
+                            editingEntry = .global(template)
+                        },
+                        deleteAction: {
+                            deleteGlobalKeyword(template)
+                        }
+                    )
+                }
+                .listStyle(.plain)
+            }
+        }
+        .sheet(item: $editingEntry) { entry in
+            KeywordListEntryEditor(
+                title: entry.title,
+                draft: entry.draft,
+                allowsMultipleKeywords: entry.allowsMultipleKeywords,
+                showsTargetingControls: false,
+                storefronts: []
+            ) { draft in
+                save(entry: entry, draft: draft)
+            }
+        }
+        .alert("Reset Global Keywords?", isPresented: $isShowingResetConfirmation) {
+            Button("Reset Global Keywords", role: .destructive) {
+                globalKeywordTemplatesJSON = "[]"
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Delete all \(globalKeywordTemplates.count.formatted()) reusable global keywords. App-specific tracked keywords will not be deleted."
+            )
+        }
+        .sheet(isPresented: $isShowingApplySheet) {
+            GlobalKeywordApplySheet(
+                templates: globalKeywordTemplates,
+                defaultPlatform: defaultPlatform
+            )
+        }
+    }
+
+    private var globalKeywordTemplates: [GlobalTrackedKeywordTemplate] {
+        GlobalTrackedKeywordTemplate.decodeList(from: globalKeywordTemplatesJSON)
+            .sorted { lhs, rhs in
+                lhs.term.localizedStandardCompare(rhs.term) == .orderedAscending
+            }
+    }
+
+    private func save(entry: KeywordListEditingEntry, draft: KeywordListDraft) {
+        errorMessage = nil
+        guard case .global(let existingID) = entry.source else { return }
+
+        do {
+            try saveGlobalKeywords(existingID: existingID, term: draft.normalized.term)
+            editingEntry = nil
+        } catch {
+            errorMessage = OpenASOError.map(error).localizedDescription
+        }
+    }
+
     private func saveGlobalKeyword(existingID: String?, term: String) throws {
         let replacement = GlobalTrackedKeywordTemplate(term: term)
         var templates = globalKeywordTemplates.filter { $0.id != existingID }
@@ -905,8 +1059,8 @@ struct ManageKeywordListsSheet: View {
         globalKeywordTemplatesJSON = GlobalTrackedKeywordTemplate.encodeList(templates)
     }
 
-    private func saveGlobalKeywords(existingID: String?, draft: KeywordListDraft) throws {
-        let keywords = parsedKeywords(from: draft.term)
+    private func saveGlobalKeywords(existingID: String?, term: String) throws {
+        let keywords = parsedKeywords(from: term)
         guard !keywords.isEmpty else {
             throw OpenASOError.providerUnavailable("Enter at least one keyword.")
         }
@@ -934,66 +1088,10 @@ struct ManageKeywordListsSheet: View {
         globalKeywordTemplatesJSON = GlobalTrackedKeywordTemplate.encodeList(templates)
     }
 
-    private func deleteLocalKeyword(_ track: TrackedAppKeyword) {
-        modelContext.delete(track)
-        do {
-            try modelContext.save()
-            services.analyticsService.capture(.keywordDeleted(deleteCount: 1))
-        } catch {
-            errorMessage = OpenASOError.map(error).localizedDescription
-        }
-    }
-
     private func deleteGlobalKeyword(_ template: GlobalTrackedKeywordTemplate) {
         globalKeywordTemplatesJSON = GlobalTrackedKeywordTemplate.encodeList(
             globalKeywordTemplates.filter { $0.id != template.id }
         )
-    }
-
-    private func reset(_ confirmation: KeywordListResetConfirmation) {
-        switch confirmation {
-        case .local:
-            resetLocalKeywords()
-        case .global:
-            resetGlobalKeywords()
-        }
-    }
-
-    private func resetLocalKeywords() {
-        let deleteCount = localKeywords.count
-        for track in localKeywords {
-            modelContext.delete(track)
-        }
-
-        do {
-            try modelContext.save()
-            services.analyticsService.capture(.keywordDeleted(deleteCount: deleteCount))
-        } catch {
-            errorMessage = OpenASOError.map(error).localizedDescription
-        }
-    }
-
-    private func resetGlobalKeywords() {
-        globalKeywordTemplatesJSON = "[]"
-    }
-
-    private func deleteSnapshots(for track: TrackedAppKeyword) {
-        for snapshot in track.snapshots {
-            for result in snapshot.topResults {
-                modelContext.delete(result)
-            }
-            snapshot.topResults.removeAll()
-            modelContext.delete(snapshot)
-        }
-        track.snapshots.removeAll()
-    }
-
-    private func localDuplicateKey(term: String, storefront: String, platform: AppPlatform) -> String {
-        [
-            term.normalizedKeywordKey,
-            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            platform.rawValue,
-        ].joined(separator: "::")
     }
 
     private func parsedKeywords(from text: String) -> [String] {
@@ -1006,27 +1104,6 @@ struct ManageKeywordListsSheet: View {
         var seen = Set<String>()
         return parts.filter { keyword in
             seen.insert(keyword.normalizedKeywordKey).inserted
-        }
-    }
-
-    private func storeTitle(for code: String) -> String {
-        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard let storefront = storefronts.first(where: { $0.code.lowercased() == normalizedCode }) else {
-            return code.uppercased()
-        }
-        return storefront.title
-    }
-
-    private func editorStorefronts(including code: String) -> [KeywordListStorefrontOption] {
-        var options = storefronts.map {
-            KeywordListStorefrontOption(code: $0.code.lowercased(), title: $0.title)
-        }
-        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !normalizedCode.isEmpty, !options.contains(where: { $0.code == normalizedCode }) {
-            options.append(KeywordListStorefrontOption(code: normalizedCode, title: normalizedCode.uppercased()))
-        }
-        return options.sorted { lhs, rhs in
-            lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
         }
     }
 }
@@ -1297,14 +1374,11 @@ private enum KeywordListScope: CaseIterable, Identifiable {
 
 private enum KeywordListResetConfirmation: Identifiable {
     case local(appName: String, count: Int)
-    case global(count: Int)
 
     var id: String {
         switch self {
         case .local:
             return "local"
-        case .global:
-            return "global"
         }
     }
 
@@ -1312,8 +1386,6 @@ private enum KeywordListResetConfirmation: Identifiable {
         switch self {
         case .local:
             return "Reset App Keywords?"
-        case .global:
-            return "Reset Global Keywords?"
         }
     }
 
@@ -1322,9 +1394,6 @@ private enum KeywordListResetConfirmation: Identifiable {
         case .local(let appName, let count):
             return
                 "Delete all \(count.formatted()) tracked keywords for \(appName). This removes the app's keyword tracks and ranking history. The app itself stays tracked."
-        case .global(let count):
-            return
-                "Delete all \(count.formatted()) reusable global keywords. App-specific tracked keywords will not be deleted."
         }
     }
 
@@ -1332,8 +1401,6 @@ private enum KeywordListResetConfirmation: Identifiable {
         switch self {
         case .local:
             return "Reset App Keywords"
-        case .global:
-            return "Reset Global Keywords"
         }
     }
 }
