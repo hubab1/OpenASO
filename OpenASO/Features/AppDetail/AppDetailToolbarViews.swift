@@ -1,11 +1,87 @@
 import SwiftData
 import SwiftUI
 
+struct AppDetailRefreshDataSelection: Equatable, Sendable {
+    var refreshRankings: Bool
+    var refreshMetrics: Bool
+    var refreshRatings: Bool
+    var refreshReviews: Bool
+    var refreshPricing: Bool
+
+    static let pricing = AppDetailRefreshDataSelection(
+        refreshRankings: false,
+        refreshMetrics: false,
+        refreshRatings: false,
+        refreshReviews: false,
+        refreshPricing: true
+    )
+    static let rankings = AppDetailRefreshDataSelection(
+        refreshRankings: true,
+        refreshMetrics: false,
+        refreshRatings: false,
+        refreshReviews: false,
+        refreshPricing: false
+    )
+    static let metrics = AppDetailRefreshDataSelection(
+        refreshRankings: false,
+        refreshMetrics: true,
+        refreshRatings: false,
+        refreshReviews: false,
+        refreshPricing: false
+    )
+    static let rankingsAndMetrics = AppDetailRefreshDataSelection(
+        refreshRankings: true,
+        refreshMetrics: true,
+        refreshRatings: false,
+        refreshReviews: false,
+        refreshPricing: false
+    )
+    static let ratings = AppDetailRefreshDataSelection(
+        refreshRankings: false,
+        refreshMetrics: false,
+        refreshRatings: true,
+        refreshReviews: false,
+        refreshPricing: false
+    )
+    static let reviews = AppDetailRefreshDataSelection(
+        refreshRankings: false,
+        refreshMetrics: false,
+        refreshRatings: false,
+        refreshReviews: true,
+        refreshPricing: false
+    )
+    static let ratingsAndReviews = AppDetailRefreshDataSelection(
+        refreshRankings: false,
+        refreshMetrics: false,
+        refreshRatings: true,
+        refreshReviews: true,
+        refreshPricing: false
+    )
+    static let allData = AppDetailRefreshDataSelection(
+        refreshRankings: true,
+        refreshMetrics: true,
+        refreshRatings: true,
+        refreshReviews: true,
+        refreshPricing: true
+    )
+
+    var title: String {
+        var parts: [String] = []
+        if refreshRankings { parts.append("rankings") }
+        if refreshMetrics { parts.append("metrics") }
+        if refreshRatings { parts.append("ratings") }
+        if refreshReviews { parts.append("reviews") }
+        if refreshPricing { parts.append("pricing") }
+        return parts.isEmpty ? "nothing" : parts.joined(separator: ", ")
+    }
+}
+
 struct AppDetailRefreshToolbarButton: View {
     let isRefreshing: Bool
     let isDisabled: Bool
     let action: () -> Void
     let refreshAllAction: () -> Void
+    let refreshAllSelectedDataAction: (AppDetailRefreshDataSelection) -> Void
 
     var body: some View {
         Menu {
@@ -13,6 +89,65 @@ struct AppDetailRefreshToolbarButton: View {
                 refreshAllAction()
             } label: {
                 Label("Refresh All Apps", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(isDisabled)
+
+            Divider()
+
+            Menu {
+                Button {
+                    refreshAllSelectedDataAction(.pricing)
+                } label: {
+                    Label("Pricing", systemImage: "tag")
+                }
+
+                Button {
+                    refreshAllSelectedDataAction(.rankings)
+                } label: {
+                    Label("Keyword Rankings", systemImage: "chart.line.uptrend.xyaxis")
+                }
+
+                Button {
+                    refreshAllSelectedDataAction(.metrics)
+                } label: {
+                    Label("Keyword Metrics", systemImage: "gauge.with.dots.needle.67percent")
+                }
+
+                Button {
+                    refreshAllSelectedDataAction(.rankingsAndMetrics)
+                } label: {
+                    Label("Rankings + Metrics", systemImage: "chart.xyaxis.line")
+                }
+
+                Divider()
+
+                Button {
+                    refreshAllSelectedDataAction(.ratings)
+                } label: {
+                    Label("Ratings", systemImage: "star")
+                }
+
+                Button {
+                    refreshAllSelectedDataAction(.reviews)
+                } label: {
+                    Label("Reviews", systemImage: "text.bubble")
+                }
+
+                Button {
+                    refreshAllSelectedDataAction(.ratingsAndReviews)
+                } label: {
+                    Label("Ratings + Reviews", systemImage: "star.bubble")
+                }
+
+                Divider()
+
+                Button {
+                    refreshAllSelectedDataAction(.allData)
+                } label: {
+                    Label("All Data", systemImage: "square.stack.3d.up")
+                }
+            } label: {
+                Label("Refresh All Apps With Selected Data", systemImage: "checklist")
             }
             .disabled(isDisabled)
         } label: {
@@ -202,6 +337,18 @@ struct AppDetailAddKeywordsToolbarButton: View {
         .background(Color.accentColor)
         .clipShape(Capsule())
         .help("Add Keywords")
+    }
+}
+
+struct AppDetailKeywordListsToolbarButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Keyword Lists", systemImage: "list.bullet.rectangle")
+                .labelStyle(.titleAndIcon)
+        }
+        .help("View and edit keyword lists")
     }
 }
 

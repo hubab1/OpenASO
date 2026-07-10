@@ -3,7 +3,7 @@ import SwiftData
 
 enum ModelContainerFactory {
     static var schema: Schema {
-        Schema(OpenASOSchemaV1.models)
+        Schema(OpenASOSchemaV2.models)
     }
 
     static func makeModelContainer(

@@ -7,6 +7,7 @@ final class KeywordMetricsService: Sendable {
     @MainActor private let popularityClient: AppleAdsPopularityClient
     @MainActor private let settingsStore: AppSettingsStore
     private let metricsTTL: TimeInterval = 60 * 60 * 24 * 7
+    private static let popularityStorefrontConcurrency = 2
 
     @MainActor
     init(
@@ -194,48 +195,104 @@ final class KeywordMetricsService: Sendable {
         }
 
         let cmPopularityClient = AppleAdsCMPopularityClient(httpClient: httpClient)
-        for (_, storefrontTracks) in Dictionary(grouping: tracksNeedingPopularity, by: \.storefront) {
-            let storefrontCode = storefrontTracks.first?.storefront ?? "US"
-            do {
-                let popularities = try await cmPopularityClient.keywordPopularities(
-                    for: storefrontTracks.map(\.term),
-                    storefrontCode: storefrontCode,
-                    adamId: popularityContextAppStoreID,
-                    session: webSession
+        let storefrontGroups = Dictionary(grouping: tracksNeedingPopularity, by: \.storefront)
+            .map { storefront, candidates in
+                KeywordMetricsStorefrontBatch(
+                    storefront: storefront,
+                    candidates: candidates
                 )
-                for candidate in storefrontTracks {
-                    let result: AppleAdsPopularityResult
-                    if let popularity = popularities[AppleAdsCMPopularityClient.normalizedKeywordKey(candidate.term)] {
-                        result = .success(popularity)
-                    } else {
-                        result = .notFound
-                    }
-                    let outcome = try await persistMetricsPayload(
-                        Self.makeAppleAdsMetrics(popularityResult: result),
-                        for: candidate,
-                        using: modelStore
-                    )
-                    outcomes.append(outcome)
-                    if outcome.errorMessage != nil { failureCount += 1 }
-                    completedCount += 1
-                    await progress?(completedCount, totalCount, failureCount)
+            }
+            .sorted { $0.storefront < $1.storefront }
+
+        for await batchResult in Self.popularityBatchResults(
+            storefrontGroups,
+            cmPopularityClient: cmPopularityClient,
+            popularityContextAppStoreID: popularityContextAppStoreID,
+            webSession: webSession
+        ) {
+            for candidate in batchResult.candidates {
+                let result: AppleAdsPopularityResult
+                if let errorMessage = batchResult.errorMessage {
+                    result = .failure(errorMessage)
+                } else if let popularity = batchResult.popularities[AppleAdsCMPopularityClient.normalizedKeywordKey(candidate.term)] {
+                    result = .success(popularity)
+                } else {
+                    result = .notFound
                 }
-            } catch {
-                for candidate in storefrontTracks {
-                    let outcome = try await persistMetricsPayload(
-                        Self.makeAppleAdsMetrics(popularityResult: .failure(OpenASOError.map(error).localizedDescription)),
-                        for: candidate,
-                        using: modelStore
-                    )
-                    outcomes.append(outcome)
-                    if outcome.errorMessage != nil { failureCount += 1 }
-                    completedCount += 1
-                    await progress?(completedCount, totalCount, failureCount)
-                }
+
+                let outcome = try await persistMetricsPayload(
+                    Self.makeAppleAdsMetrics(popularityResult: result),
+                    for: candidate,
+                    using: modelStore
+                )
+                outcomes.append(outcome)
+                if outcome.errorMessage != nil { failureCount += 1 }
+                completedCount += 1
+                await progress?(completedCount, totalCount, failureCount)
             }
         }
 
         return outcomes
+    }
+
+    private static func popularityBatchResults(
+        _ batches: [KeywordMetricsStorefrontBatch],
+        cmPopularityClient: AppleAdsCMPopularityClient,
+        popularityContextAppStoreID: Int64,
+        webSession: AppleAdsWebSession
+    ) -> AsyncStream<KeywordMetricsStorefrontBatchResult> {
+        AsyncStream { continuation in
+            Task {
+                await withTaskGroup(of: KeywordMetricsStorefrontBatchResult.self) { group in
+                    var nextBatchIndex = 0
+                    var activeFetchCount = 0
+
+                    func enqueueNextFetchIfPossible() {
+                        guard activeFetchCount < popularityStorefrontConcurrency,
+                              nextBatchIndex < batches.count
+                        else {
+                            return
+                        }
+
+                        let batch = batches[nextBatchIndex]
+                        nextBatchIndex += 1
+                        activeFetchCount += 1
+                        group.addTask {
+                            do {
+                                let popularities = try await cmPopularityClient.keywordPopularities(
+                                    for: batch.candidates.map(\.term),
+                                    storefrontCode: batch.storefront,
+                                    adamId: popularityContextAppStoreID,
+                                    session: webSession
+                                )
+                                return KeywordMetricsStorefrontBatchResult(
+                                    candidates: batch.candidates,
+                                    popularities: popularities,
+                                    errorMessage: nil
+                                )
+                            } catch {
+                                return KeywordMetricsStorefrontBatchResult(
+                                    candidates: batch.candidates,
+                                    popularities: [:],
+                                    errorMessage: OpenASOError.map(error).localizedDescription
+                                )
+                            }
+                        }
+                    }
+
+                    for _ in 0..<min(popularityStorefrontConcurrency, batches.count) {
+                        enqueueNextFetchIfPossible()
+                    }
+
+                    while let result = await group.next() {
+                        activeFetchCount -= 1
+                        continuation.yield(result)
+                        enqueueNextFetchIfPossible()
+                    }
+                }
+                continuation.finish()
+            }
+        }
     }
 
     func refreshStalePopularityMetrics(
@@ -394,7 +451,9 @@ final class KeywordMetricsService: Sendable {
         }
 
         metrics.popularityScore = payload.popularityScore
-        metrics.difficultyScore = payload.difficultyScore
+        if let difficultyScore = payload.difficultyScore {
+            metrics.difficultyScore = difficultyScore
+        }
         metrics.source = payload.source
         metrics.popularityDate = payload.popularityDate
         metrics.submissionCount = payload.submissionCount
@@ -486,6 +545,17 @@ private struct KeywordMetricsRefreshCandidate: Sendable {
     let term: String
     let storefront: String
     let shouldRefresh: Bool
+}
+
+private struct KeywordMetricsStorefrontBatch: Sendable {
+    let storefront: String
+    let candidates: [KeywordMetricsRefreshCandidate]
+}
+
+private struct KeywordMetricsStorefrontBatchResult: Sendable {
+    let candidates: [KeywordMetricsRefreshCandidate]
+    let popularities: [String: Int]
+    let errorMessage: String?
 }
 
 private struct KeywordMetricsPayload: Sendable {

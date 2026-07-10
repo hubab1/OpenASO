@@ -2,6 +2,7 @@ import Foundation
 
 enum KeywordMetricsSource: String, Codable, CaseIterable, Identifiable, Sendable {
     case appleAdsPopularity
+    case rankingDifficulty
 
     var id: String { rawValue }
 
@@ -9,6 +10,8 @@ enum KeywordMetricsSource: String, Codable, CaseIterable, Identifiable, Sendable
         switch self {
         case .appleAdsPopularity:
             return "Apple Ads"
+        case .rankingDifficulty:
+            return "Ranking difficulty"
         }
     }
 }

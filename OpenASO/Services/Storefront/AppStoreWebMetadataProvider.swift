@@ -95,7 +95,7 @@ final class AppStoreWebMetadataProvider: Sendable {
         )
     }
 
-    private static func serializedServerData(from html: String) -> String? {
+    static func serializedServerData(from html: String) -> String? {
         let pattern = #"<script[^>]*id=["']serialized-server-data["'][^>]*>(.*?)</script>"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
             return nil
@@ -334,7 +334,7 @@ final class AppStoreWebMetadataProvider: Sendable {
         return normalized.isEmpty ? "us" : normalized
     }
 
-    private static func htmlDecoded(_ value: String) -> String {
+    static func htmlDecoded(_ value: String) -> String {
         value
             .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&#34;", with: "\"")

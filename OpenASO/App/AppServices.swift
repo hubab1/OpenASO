@@ -32,6 +32,7 @@ final class AppServices {
     let refreshCoordinator: RankingRefreshCoordinator
     let appDetailRefreshService: AppDetailRefreshService?
     let refreshProgressStore: AppRefreshProgressStore
+    let appPricingCache: AppPricingCache
     let mcpServerController: OpenASOMCPServerController
     private(set) var backgroundModelStore: BackgroundModelStore?
     private(set) var backgroundModelStoreRevision = 0
@@ -100,6 +101,7 @@ final class AppServices {
         let keywordInsightsService = KeywordInsightsService()
         let rankingProvider = ITunesSearchFallbackProvider(httpClient: httpClient)
         let refreshProgressStore = AppRefreshProgressStore()
+        let appPricingCache = AppPricingCache()
         let storefrontCatalog = StorefrontCatalog()
         let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?
         if let backgroundModelStore {
@@ -179,9 +181,9 @@ final class AppServices {
             },
             metadataEnrichmentHandler: metadataEnrichmentHandler
         )
-        let appDetailRefreshService = backgroundModelStore.map {
+        let appDetailRefreshService = backgroundModelStore.map { backgroundModelStore in
             AppDetailRefreshService(
-                backgroundModelStore: $0,
+                backgroundModelStore: backgroundModelStore,
                 refreshCoordinator: refreshCoordinator,
                 keywordMetricsService: keywordMetricsService,
                 appStorefrontRatingService: appStorefrontRatingService,
@@ -190,7 +192,21 @@ final class AppServices {
                 progressStore: refreshProgressStore,
                 ratingsReviewsRefreshRecorder: { date in
                     await settingsStore.markRatingsReviewsRefreshed(on: date)
-                }
+                },
+                pricingRefresh: { appStoreID, storefronts, progress in
+                    let service = OpenASOMCPService(
+                        backgroundModelStore: backgroundModelStore,
+                        appResolver: resolver,
+                        appCatalogService: catalogService,
+                        httpClient: httpClient
+                    )
+                    return try await service.compareAppPricing(
+                        appStoreIDs: [appStoreID],
+                        storefronts: storefronts,
+                        progress: progress
+                    )
+                },
+                pricingCache: appPricingCache
             )
         }
 
@@ -246,6 +262,7 @@ final class AppServices {
         self.refreshCoordinator = refreshCoordinator
         self.appDetailRefreshService = appDetailRefreshService
         self.refreshProgressStore = refreshProgressStore
+        self.appPricingCache = appPricingCache
         self.mcpServerController = OpenASOMCPServerController(portProvider: {
             settingsStore.mcpServerPort
         }) {

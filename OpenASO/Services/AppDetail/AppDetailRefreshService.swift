@@ -13,6 +13,7 @@ struct AppDetailRefreshAppSnapshot: Sendable {
 enum AppDetailRefreshWorkspace: Sendable {
     case keywords
     case ratings
+    case pricing
 }
 
 enum AppDetailRefreshStorefrontSelection: Sendable {
@@ -39,6 +40,7 @@ struct AppDetailRefreshRequest: Sendable {
     let refreshMetrics: Bool
     let refreshRatings: Bool
     let refreshReviews: Bool
+    let pricingStorefronts: [String]
     let recordsRatingsReviewsRefresh: Bool
     let popularityContextAppStoreID: Int64?
     let appleAdsWebSession: AppleAdsWebSession?
@@ -54,6 +56,7 @@ struct AppDetailRefreshRequest: Sendable {
         refreshMetrics: Bool = true,
         refreshRatings: Bool = true,
         refreshReviews: Bool = true,
+        pricingStorefronts: [String] = [],
         recordsRatingsReviewsRefresh: Bool = true,
         popularityContextAppStoreID: Int64?,
         appleAdsWebSession: AppleAdsWebSession?,
@@ -68,6 +71,7 @@ struct AppDetailRefreshRequest: Sendable {
         self.refreshMetrics = refreshMetrics
         self.refreshRatings = refreshRatings
         self.refreshReviews = refreshReviews
+        self.pricingStorefronts = pricingStorefronts
         self.recordsRatingsReviewsRefresh = recordsRatingsReviewsRefresh
         self.popularityContextAppStoreID = popularityContextAppStoreID
         self.appleAdsWebSession = appleAdsWebSession
@@ -90,11 +94,40 @@ private struct RankingPersistenceBatchOutcome: Sendable {
     }
 }
 
+private struct RankingRefreshWorkItem: Sendable {
+    let fetchRequest: RankingRefreshRequest
+    let targetRequests: [RankingRefreshRequest]
+}
+
 struct AppDetailRefreshResult: Sendable {
     let keywordOutcomes: [KeywordBackgroundRefreshOutcome]
     let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
     let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
+    let pricingComparison: OpenASOMCPAppPricingComparison?
+    let pricingError: OpenASOError?
     let firstError: OpenASOError?
+}
+
+actor AppPricingCache {
+    private var comparisonsByAppStoreID: [Int64: OpenASOMCPAppPricingComparison] = [:]
+
+    func comparison(appStoreID: Int64, requestedStorefronts: [String]?) -> OpenASOMCPAppPricingComparison? {
+        guard let comparison = comparisonsByAppStoreID[appStoreID] else { return nil }
+        guard let requestedStorefronts else { return comparison }
+        let cachedStorefronts = Set(comparison.storefronts.map(Self.normalizedStorefront))
+        let requested = Set(requestedStorefronts.map(Self.normalizedStorefront))
+        return requested.isSubset(of: cachedStorefronts) ? comparison : nil
+    }
+
+    func store(_ comparison: OpenASOMCPAppPricingComparison) {
+        for appStoreID in comparison.appStoreIDs.compactMap(Int64.init) {
+            comparisonsByAppStoreID[appStoreID] = comparison
+        }
+    }
+
+    private static func normalizedStorefront(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
 }
 
 private actor AppDetailRefreshQueue {
@@ -158,6 +191,14 @@ final class AppDetailRefreshService: Sendable {
     private let appStoreConnectReviewService: AppStoreConnectReviewService
     private let progressStore: AppRefreshProgressStore?
     private let ratingsReviewsRefreshRecorder: (@Sendable (Date) async -> Void)?
+    private let pricingRefresh: (
+        @Sendable (
+            Int64,
+            [String],
+            @escaping @Sendable (Int, Int, Int) async -> Void
+        ) async throws -> OpenASOMCPAppPricingComparison
+    )?
+    private let pricingCache: AppPricingCache?
 
     init(
         backgroundModelStore: BackgroundModelStore,
@@ -167,7 +208,15 @@ final class AppDetailRefreshService: Sendable {
         appStorefrontReviewService: AppStorefrontReviewService,
         appStoreConnectReviewService: AppStoreConnectReviewService,
         progressStore: AppRefreshProgressStore? = nil,
-        ratingsReviewsRefreshRecorder: (@Sendable (Date) async -> Void)? = nil
+        ratingsReviewsRefreshRecorder: (@Sendable (Date) async -> Void)? = nil,
+        pricingRefresh: (
+            @Sendable (
+                Int64,
+                [String],
+                @escaping @Sendable (Int, Int, Int) async -> Void
+            ) async throws -> OpenASOMCPAppPricingComparison
+        )? = nil,
+        pricingCache: AppPricingCache? = nil
     ) {
         self.backgroundModelStore = backgroundModelStore
         self.refreshCoordinator = refreshCoordinator
@@ -177,6 +226,8 @@ final class AppDetailRefreshService: Sendable {
         self.appStoreConnectReviewService = appStoreConnectReviewService
         self.progressStore = progressStore
         self.ratingsReviewsRefreshRecorder = ratingsReviewsRefreshRecorder
+        self.pricingRefresh = pricingRefresh
+        self.pricingCache = pricingCache
     }
 
     func refresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
@@ -192,9 +243,13 @@ final class AppDetailRefreshService: Sendable {
         let keywordOutcomes: [KeywordBackgroundRefreshOutcome]
         let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
         let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
+        let pricingComparison: OpenASOMCPAppPricingComparison?
+        let pricingError: OpenASOError?
 
         switch request.workspace {
         case .keywords:
+            pricingComparison = nil
+            pricingError = nil
             keywordOutcomes = await refreshKeywords(request)
             if request.refreshRatings || request.refreshReviews {
                 (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
@@ -203,6 +258,8 @@ final class AppDetailRefreshService: Sendable {
                 reviewOutcomes = []
             }
         case .ratings:
+            pricingComparison = nil
+            pricingError = nil
             if request.refreshRatings || request.refreshReviews {
                 (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
             } else {
@@ -210,9 +267,16 @@ final class AppDetailRefreshService: Sendable {
                 reviewOutcomes = []
             }
             keywordOutcomes = await refreshKeywords(request)
+        case .pricing:
+            keywordOutcomes = []
+            ratingOutcomes = []
+            reviewOutcomes = []
+            let pricingResult = await refreshPricing(request)
+            pricingComparison = pricingResult.comparison
+            pricingError = pricingResult.error
         }
 
-        let firstError = firstRefreshError(
+        let firstError = pricingError ?? firstRefreshError(
             workspace: request.workspace,
             keywordOutcomes: keywordOutcomes,
             ratingOutcomes: ratingOutcomes,
@@ -225,12 +289,69 @@ final class AppDetailRefreshService: Sendable {
             keywordOutcomes: keywordOutcomes,
             ratingOutcomes: ratingOutcomes,
             reviewOutcomes: reviewOutcomes,
+            pricingComparison: pricingComparison,
+            pricingError: pricingError,
             firstError: firstError
         )
     }
 
+    private func refreshPricing(_ request: AppDetailRefreshRequest) async
+        -> (comparison: OpenASOMCPAppPricingComparison?, error: OpenASOError?)
+    {
+        await progressStore?.updatePhase(.refreshingPricing)
+        guard let pricingRefresh else {
+            await progressStore?.updateStep(.pricing, status: .failed, completed: 0, total: 0, failureCount: 1)
+            return (nil, .providerUnavailable("The pricing refresh service is unavailable."))
+        }
+
+        let storefronts = request.pricingStorefronts.isEmpty
+            ? Self.pricingStorefronts(from: request.storefrontSelection)
+            : request.pricingStorefronts
+        await progressStore?.updateStep(
+            .pricing,
+            status: storefronts.isEmpty ? .skipped : .running,
+            completed: 0,
+            total: storefronts.count,
+            failureCount: 0
+        )
+
+        do {
+            let comparison = try await pricingRefresh(
+                request.app.appStoreID,
+                storefronts
+            ) { completed, total, failureCount in
+                await self.progressStore?.updateStep(
+                    .pricing,
+                    status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
+                    completed: completed,
+                    total: total,
+                    failureCount: failureCount
+                )
+            }
+            await pricingCache?.store(comparison)
+            try await AppPricingPersistence.store(comparison, using: backgroundModelStore)
+            return (comparison, nil)
+        } catch {
+            await progressStore?.updateStep(
+                .pricing,
+                status: .failed,
+                completed: 0,
+                total: storefronts.count,
+                failureCount: max(1, storefronts.count)
+            )
+            return (nil, OpenASOError.map(error))
+        }
+    }
+
+    private static func pricingStorefronts(from selection: AppDetailRefreshStorefrontSelection) -> [String] {
+        let selected = selection.codes
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return Array(Set(selected + ["us"])).sorted()
+    }
+
     private func refreshKeywords(_ request: AppDetailRefreshRequest) async -> [KeywordBackgroundRefreshOutcome] {
-        guard request.refreshKeywords, !request.trackIdentityKeys.isEmpty else {
+        guard request.refreshKeywords || request.refreshMetrics, !request.trackIdentityKeys.isEmpty else {
             await progressStore?.updateStep(.keywords, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await progressStore?.updateStep(.metrics, status: .skipped, completed: 0, total: 0, failureCount: 0)
             return []
@@ -264,12 +385,24 @@ final class AppDetailRefreshService: Sendable {
                 )
             }
 
-            let keywordOutcomes = await refreshRankings(
-                rankingRequests,
-                trigger: request.trigger,
-                missingFailureCount: missingFailureCount,
-                totalRequestedCount: request.trackIdentityKeys.count
-            )
+            let keywordOutcomes: [KeywordBackgroundRefreshOutcome]
+            if request.refreshKeywords {
+                keywordOutcomes = await refreshRankings(
+                    rankingRequests,
+                    trigger: request.trigger,
+                    missingFailureCount: missingFailureCount,
+                    totalRequestedCount: request.trackIdentityKeys.count
+                )
+            } else {
+                await progressStore?.updateStep(
+                    .keywords,
+                    status: .skipped,
+                    completed: 0,
+                    total: 0,
+                    failureCount: 0
+                )
+                keywordOutcomes = []
+            }
 
             if request.refreshMetrics {
                 await progressStore?.updatePhase(.refreshingMetrics)
@@ -332,6 +465,7 @@ final class AppDetailRefreshService: Sendable {
         var outcomes: [KeywordBackgroundRefreshOutcome] = []
         var statsRebuildRequests = Set<RankingStatsRebuildRequest>()
         var pendingPageResults: [RankingRefreshPageResult] = []
+        let workItems = rankingRefreshWorkItems(from: rankingRequests)
         var completedCount = 0
         var failureCount = 0
 
@@ -349,52 +483,54 @@ final class AppDetailRefreshService: Sendable {
             }
         }
 
-        await withTaskGroup(of: (RankingRefreshRequest, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
-            var nextRequestIndex = 0
+        await withTaskGroup(of: (RankingRefreshWorkItem, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
+            var nextWorkItemIndex = 0
             var activeFetchCount = 0
 
             func enqueueNextFetchIfPossible() {
                 guard activeFetchCount < Self.rankingFetchConcurrency,
-                      nextRequestIndex < rankingRequests.count else {
+                      nextWorkItemIndex < workItems.count else {
                     return
                 }
 
-                let rankingRequest = rankingRequests[nextRequestIndex]
-                nextRequestIndex += 1
+                let workItem = workItems[nextWorkItemIndex]
+                nextWorkItemIndex += 1
                 activeFetchCount += 1
                 group.addTask {
-                    let result = await rankingPageFetcher(rankingRequest)
-                    return (rankingRequest, result)
+                    let result = await rankingPageFetcher(workItem.fetchRequest)
+                    return (workItem, result)
                 }
             }
 
-            for _ in 0..<min(Self.rankingFetchConcurrency, rankingRequests.count) {
+            for _ in 0..<min(Self.rankingFetchConcurrency, workItems.count) {
                 enqueueNextFetchIfPossible()
             }
 
-            while let (rankingRequest, result) = await group.next() {
+            while let (workItem, result) = await group.next() {
                 activeFetchCount -= 1
 
                 switch result {
                 case .success(let pageResult):
-                    pendingPageResults.append(pageResult)
+                    pendingPageResults.append(contentsOf: pageResults(from: pageResult, for: workItem.targetRequests))
                     if pendingPageResults.count >= Self.rankingPersistenceBatchSize {
                         await flushPendingPageResults()
                     }
                 case .failure(let error):
-                    try? await backgroundModelStore.write { modelContext in
-                        _ = try refreshCoordinator.recordRefreshFailure(
-                            identityKey: rankingRequest.identityKey,
-                            error: error,
-                            in: modelContext,
-                            saveChanges: false
-                        )
+                    for rankingRequest in workItem.targetRequests {
+                        try? await backgroundModelStore.write { modelContext in
+                            _ = try refreshCoordinator.recordRefreshFailure(
+                                identityKey: rankingRequest.identityKey,
+                                error: error,
+                                in: modelContext,
+                                saveChanges: false
+                            )
+                        }
+                        outcomes.append(KeywordBackgroundRefreshOutcome(trackIdentityKey: rankingRequest.identityKey, error: error))
                     }
-                    outcomes.append(KeywordBackgroundRefreshOutcome(trackIdentityKey: rankingRequest.identityKey, error: error))
-                    failureCount += 1
+                    failureCount += workItem.targetRequests.count
                 }
 
-                completedCount += 1
+                completedCount += workItem.targetRequests.count
                 await progressStore?.updateStep(
                     .keywords,
                     status: completedCount >= rankingRequests.count
@@ -431,6 +567,40 @@ final class AppDetailRefreshService: Sendable {
             failureCount: outcomes.filter { $0.error != nil }.count
         )
         return outcomes
+    }
+
+    private func rankingRefreshWorkItems(from requests: [RankingRefreshRequest]) -> [RankingRefreshWorkItem] {
+        Dictionary(grouping: requests, by: \.queryKey)
+            .values
+            .map { groupedRequests in
+                let orderedRequests = groupedRequests.sorted { lhs, rhs in
+                    lhs.identityKey.localizedStandardCompare(rhs.identityKey) == .orderedAscending
+                }
+                return RankingRefreshWorkItem(
+                    fetchRequest: orderedRequests[0],
+                    targetRequests: orderedRequests
+                )
+            }
+            .sorted { lhs, rhs in
+                lhs.fetchRequest.queryKey.localizedStandardCompare(rhs.fetchRequest.queryKey) == .orderedAscending
+            }
+    }
+
+    private func pageResults(
+        from pageResult: RankingRefreshPageResult,
+        for targetRequests: [RankingRefreshRequest]
+    ) -> [RankingRefreshPageResult] {
+        targetRequests.map { request in
+            RankingRefreshPageResult(
+                request: request,
+                page: pageResult.page,
+                searchedAt: pageResult.searchedAt,
+                observedHour: pageResult.observedHour,
+                submissionCount: pageResult.submissionCount,
+                winningCount: pageResult.winningCount,
+                confidence: targetRequests.count > 1 ? "shared_query_fetch" : pageResult.confidence
+            )
+        }
     }
 
     private func persistRankingPageBatch(
@@ -781,6 +951,8 @@ final class AppDetailRefreshService: Sendable {
             return keywordError ?? ratingError ?? reviewError
         case .ratings:
             return ratingError ?? reviewError ?? keywordError
+        case .pricing:
+            return nil
         }
     }
 }

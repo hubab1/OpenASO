@@ -15,6 +15,13 @@ final class StorefrontCatalog {
         return storefronts
     }
 
+    nonisolated static func bundledStorefrontCodes() throws -> [String] {
+        let codes = try loadBundledStorefronts()
+            .map { $0.code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return Array(Set(codes)).sorted()
+    }
+
     func seedIfNeeded(in modelContext: ModelContext) throws {
         let seeds = try bundledStorefronts()
         try Self.seedIfNeeded(seeds: seeds, in: modelContext)

@@ -1015,7 +1015,7 @@ private struct ReportingCampaignApp: Decodable {
     let adamId: String
 }
 
-struct AppleAdsCMPopularityClient {
+struct AppleAdsCMPopularityClient: Sendable {
     static let maxTermsPerRequest = 100
 
     private let httpClient: HTTPClient

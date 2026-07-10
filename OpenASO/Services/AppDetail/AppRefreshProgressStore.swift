@@ -7,6 +7,7 @@ enum AppRefreshPhase: Sendable {
     case refreshingMetrics
     case refreshingRatings
     case refreshingReviews
+    case refreshingPricing
     case finishing
     case completed
     case failed
@@ -23,6 +24,8 @@ enum AppRefreshPhase: Sendable {
             return "Refreshing ratings"
         case .refreshingReviews:
             return "Refreshing reviews"
+        case .refreshingPricing:
+            return "Refreshing pricing"
         case .finishing:
             return "Finishing refresh"
         case .completed:
@@ -38,6 +41,7 @@ enum AppRefreshStep: Sendable {
     case metrics
     case ratings
     case reviews
+    case pricing
 }
 
 enum AppRefreshStepStatus: Sendable {
@@ -122,6 +126,7 @@ struct AppRefreshProgress: Identifiable, Sendable {
     var metricsProgress: AppRefreshStepProgress
     var ratingsProgress: AppRefreshStepProgress
     var reviewsProgress: AppRefreshStepProgress
+    var pricingProgress: AppRefreshStepProgress
     var completedAt: Date?
     var errorMessage: String?
 
@@ -131,10 +136,12 @@ struct AppRefreshProgress: Identifiable, Sendable {
 
     var completedUnits: Int {
         keywordProgress.completed + metricsProgress.completed + ratingsProgress.completed + reviewsProgress.completed
+            + pricingProgress.completed
     }
 
     var totalUnits: Int {
         keywordProgress.total + metricsProgress.total + ratingsProgress.total + reviewsProgress.total
+            + pricingProgress.total
     }
 }
 
@@ -187,6 +194,7 @@ final class AppRefreshProgressStore: Sendable {
             metricsProgress: .pending(total: request.refreshMetrics ? request.trackIdentityKeys.count : 0),
             ratingsProgress: .pending(total: request.refreshRatings ? storefrontCount : 0),
             reviewsProgress: .pending(total: request.refreshReviews ? (usesAppStoreConnectReviews ? 1 : storefrontCount) : 0),
+            pricingProgress: .pending(total: request.workspace == .pricing ? request.pricingStorefronts.count : 0),
             completedAt: nil,
             errorMessage: nil
         )
@@ -207,6 +215,7 @@ final class AppRefreshProgressStore: Sendable {
             metricsProgress: .pending(total: total),
             ratingsProgress: .pending(total: 0),
             reviewsProgress: .pending(total: 0),
+            pricingProgress: .pending(total: 0),
             completedAt: nil,
             errorMessage: nil
         )
@@ -241,6 +250,8 @@ final class AppRefreshProgressStore: Sendable {
             refresh.ratingsProgress = progress
         case .reviews:
             refresh.reviewsProgress = progress
+        case .pricing:
+            refresh.pricingProgress = progress
         }
         activeRefresh = refresh
     }
@@ -254,6 +265,7 @@ final class AppRefreshProgressStore: Sendable {
         refresh.metricsProgress = finalized(refresh.metricsProgress)
         refresh.ratingsProgress = finalized(refresh.ratingsProgress)
         refresh.reviewsProgress = finalized(refresh.reviewsProgress)
+        refresh.pricingProgress = finalized(refresh.pricingProgress)
         activeRefresh = refresh
         scheduleClear(refreshID: refresh.id)
     }

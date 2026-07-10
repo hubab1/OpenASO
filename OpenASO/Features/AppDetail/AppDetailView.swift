@@ -7,7 +7,7 @@ struct AppDetailView: View {
 
     @Query(sort: [
         SortDescriptor(\TrackedApp.sidebarSortOrder, order: .forward),
-        SortDescriptor(\TrackedApp.appStoreID, order: .forward)
+        SortDescriptor(\TrackedApp.appStoreID, order: .forward),
     ])
     private var trackedApps: [TrackedApp]
 
@@ -20,6 +20,7 @@ struct AppDetailView: View {
     private let defaultPlatform: AppPlatform
 
     @State private var isPresentingAddKeywords = false
+    @State private var isPresentingKeywordLists = false
     @State private var isRefreshingApp = false
     @State private var errorMessage: String?
     @State private var searchText = ""
@@ -27,6 +28,7 @@ struct AppDetailView: View {
     @State private var selectedStorefrontFilter = StorefrontFilter.all
     @State private var keywordWorkspaceState = KeywordWorkspaceState()
     @State private var ratingsRefreshToken = 0
+    @State private var pricingRefreshToken = 0
     @State private var isImportingCSV = false
     @State private var isProcessingCSVImport = false
     @State private var isExportingCSV = false
@@ -37,6 +39,7 @@ struct AppDetailView: View {
     @State private var queuedKeywordAdds: [KeywordAddRequest] = []
     @State private var isFlushingQueuedKeywordAdds = false
     @State private var isRefreshingQueuedKeywordAdds = false
+    @AppStorage("globalTrackedKeywordTemplatesJSON") private var globalKeywordTemplatesJSON = "[]"
 
     init(trackedApp: TrackedApp) {
         self.trackedApp = trackedApp
@@ -65,6 +68,24 @@ struct AppDetailView: View {
                     searchText: searchText,
                     refreshToken: ratingsRefreshToken
                 )
+            } else if selectedWorkspaceView == .pricing {
+                AppPricingView(
+                    appStoreID: appStoreID,
+                    selectedStorefrontFilter: selectedStorefrontFilter,
+                    searchText: searchText,
+                    refreshToken: pricingRefreshToken
+                )
+            } else if selectedWorkspaceView == .competitors {
+                CompetitorComparisonView(
+                    trackedApp: trackedApp,
+                    trackedApps: trackedApps,
+                    selectedStorefrontFilter: selectedStorefrontFilter,
+                    searchText: searchText,
+                    reportError: setErrorMessage,
+                    didAddKeyword: {
+                        keywordRefreshToken += 1
+                    }
+                )
             } else {
                 AppKeywordsView(
                     trackedApp: trackedApp,
@@ -90,7 +111,8 @@ struct AppDetailView: View {
                     isRefreshing: isRefreshingApp,
                     isDisabled: isRefreshDisabled,
                     action: refreshApp,
-                    refreshAllAction: refreshAllApps
+                    refreshAllAction: refreshAllApps,
+                    refreshAllSelectedDataAction: refreshAllApps
                 )
                 AppDetailWorkspaceViewPicker(selectedWorkspaceView: $selectedWorkspaceView)
                 AppDetailStorefrontPickerButton(
@@ -109,8 +131,13 @@ struct AppDetailView: View {
 
             if selectedWorkspaceView == .keywords {
                 ToolbarItem(placement: .principal) {
-                    AppDetailAddKeywordsToolbarButton {
-                        isPresentingAddKeywords = true
+                    HStack(spacing: 10) {
+                        AppDetailKeywordListsToolbarButton {
+                            isPresentingKeywordLists = true
+                        }
+                        AppDetailAddKeywordsToolbarButton {
+                            isPresentingAddKeywords = true
+                        }
                     }
                 }
             }
@@ -137,15 +164,26 @@ struct AppDetailView: View {
                 )
             }
         }
-        .sheet(isPresented: $isPresentingAddKeywords, onDismiss: {
-            keywordRefreshToken += 1
-        }) {
+        .sheet(
+            isPresented: $isPresentingAddKeywords,
+            onDismiss: {
+                keywordRefreshToken += 1
+            }
+        ) {
             AddKeywordsSheet(
                 trackedApp: trackedApp,
                 initialStorefrontCode: addKeywordsInitialStorefrontCode,
                 isRefreshInProgress: isRefreshInProgress,
                 queueKeywordAdd: queueKeywordAdd
             )
+        }
+        .sheet(
+            isPresented: $isPresentingKeywordLists,
+            onDismiss: {
+                keywordRefreshToken += 1
+            }
+        ) {
+            ManageKeywordListsSheet(trackedApp: trackedApp)
         }
         .onAppear {
             services.analyticsService.capture(.workspaceViewed(selectedWorkspaceView))
@@ -168,8 +206,9 @@ struct AppDetailView: View {
             contentType: .commaSeparatedText,
             defaultFilename: exportDefaultFilename
         ) { result in
-            if case let .failure(error) = result {
-                transferAlert = TrackedKeywordTransferAlert(title: "Export Failed", message: error.localizedDescription)
+            if case .failure(let error) = result {
+                transferAlert = TrackedKeywordTransferAlert(
+                    title: "Export Failed", message: error.localizedDescription)
             }
         }
         .fileImporter(
@@ -213,16 +252,17 @@ struct AppDetailView: View {
         switch refresh.phase {
         case .completed, .failed:
             return false
-        case .preparing, .refreshingKeywords, .refreshingMetrics, .refreshingRatings, .refreshingReviews, .finishing:
+        case .preparing, .refreshingKeywords, .refreshingMetrics, .refreshingRatings,
+            .refreshingReviews, .refreshingPricing, .finishing:
             return true
         }
     }
 
     private var activeKeywordMetricsRefreshSignature: String? {
         guard let refresh = services.refreshProgressStore.activeRefresh,
-              refresh.appStoreID == appStoreID,
-              refresh.metricsProgress.total > 0,
-              refresh.metricsProgress.completed > 0
+            refresh.appStoreID == appStoreID,
+            refresh.metricsProgress.total > 0,
+            refresh.metricsProgress.completed > 0
         else {
             return nil
         }
@@ -231,7 +271,7 @@ struct AppDetailView: View {
             refresh.id.uuidString,
             String(refresh.metricsProgress.completed),
             String(refresh.metricsProgress.failureCount),
-            String(describing: refresh.metricsProgress.status)
+            String(describing: refresh.metricsProgress.status),
         ].joined(separator: "::")
     }
 
@@ -267,6 +307,7 @@ struct AppDetailView: View {
                 }
                 keywordRefreshToken += 1
                 ratingsRefreshToken += 1
+                pricingRefreshToken += 1
 
                 OpenASOLog.appDetail.info(
                     "Refresh finished appStoreID=\(appStoreID, privacy: .public) ratingSuccesses=\(result.ratingOutcomes.filter { $0.error == nil }.count, privacy: .public) ratingFailures=\(result.ratingOutcomes.filter { $0.error != nil }.count, privacy: .public) reviewSuccesses=\(result.reviewOutcomes.filter { $0.error == nil }.count, privacy: .public) reviewFailures=\(result.reviewOutcomes.filter { $0.error != nil }.count, privacy: .public) keywordFailures=\(result.keywordOutcomes.filter { $0.error != nil }.count, privacy: .public)"
@@ -278,6 +319,14 @@ struct AppDetailView: View {
     }
 
     private func refreshAllApps() {
+        refreshAllApps(selection: nil)
+    }
+
+    private func refreshAllApps(_ selection: AppDetailRefreshDataSelection) {
+        refreshAllApps(selection: selection)
+    }
+
+    private func refreshAllApps(selection: AppDetailRefreshDataSelection?) {
         isRefreshingApp = true
         errorMessage = nil
         let activeWorkspaceView = selectedWorkspaceView
@@ -288,7 +337,11 @@ struct AppDetailView: View {
             guard let service = services.appDetailRefreshService else {
                 throw OpenASOError.providerUnavailable("The background model store is unavailable.")
             }
-            requests = try makeRefreshAllRequests(activeWorkspaceView: activeWorkspaceView)
+            if let selection {
+                requests = try makeRefreshAllRequests(selection: selection)
+            } else {
+                requests = try makeRefreshAllRequests(activeWorkspaceView: activeWorkspaceView)
+            }
             refreshService = service
         } catch {
             errorMessage = OpenASOError.map(error).localizedDescription
@@ -297,7 +350,7 @@ struct AppDetailView: View {
         }
 
         OpenASOLog.appDetail.info(
-            "Refresh all tapped startingAppStoreID=\(appStoreID, privacy: .public) view=\(activeWorkspaceView.title, privacy: .public) selectedStorefront=\(selectedStorefrontFilter.title, privacy: .public) appCount=\(requests.count, privacy: .public)"
+            "Refresh all tapped startingAppStoreID=\(appStoreID, privacy: .public) view=\(activeWorkspaceView.title, privacy: .public) selectedData=\(selection?.title ?? "current view", privacy: .public) selectedStorefront=\(selectedStorefrontFilter.title, privacy: .public) requestCount=\(requests.count, privacy: .public)"
         )
 
         Task(priority: .userInitiated) {
@@ -323,6 +376,7 @@ struct AppDetailView: View {
                     await MainActor.run {
                         keywordRefreshToken += 1
                         ratingsRefreshToken += 1
+                        pricingRefreshToken += 1
                     }
                 }
             }
@@ -333,6 +387,7 @@ struct AppDetailView: View {
                 }
                 keywordRefreshToken += 1
                 ratingsRefreshToken += 1
+                pricingRefreshToken += 1
 
                 OpenASOLog.appDetail.info(
                     "Refresh all finished startingAppStoreID=\(appStoreID, privacy: .public) appCount=\(requests.count, privacy: .public) ratingSuccesses=\(ratingSuccesses, privacy: .public) ratingFailures=\(ratingFailures, privacy: .public) reviewSuccesses=\(reviewSuccesses, privacy: .public) reviewFailures=\(reviewFailures, privacy: .public) keywordFailures=\(keywordFailures, privacy: .public)"
@@ -347,7 +402,7 @@ struct AppDetailView: View {
         queuedKeywordAdds.append(request)
         services.refreshProgressStore.queuePendingKeywordAddition(
             appStoreID: appStoreID,
-            trackCount: request.keywords.count * request.storefrontCodes.count
+            trackCount: request.candidates.count
         )
         flushQueuedKeywordAdds()
     }
@@ -382,40 +437,39 @@ struct AppDetailView: View {
         for request in requests {
             requestedKeywordCount += request.keywords.count
             requestedStorefrontCodes.formUnion(request.storefrontCodes)
-            let platform = request.platform
 
-            for storefrontCode in request.storefrontCodes.sorted() {
-                for keyword in request.keywords {
-                    let identityKey = keywordDuplicateKey(term: keyword, storefront: storefrontCode, platform: platform)
-                    guard !mutableExistingKeys.contains(identityKey) else { continue }
+            for candidate in request.candidates {
+                let identityKey = keywordDuplicateKey(
+                    term: candidate.keyword, storefront: candidate.storefrontCode,
+                    platform: candidate.platform)
+                guard !mutableExistingKeys.contains(identityKey) else { continue }
 
-                    let query: KeywordQuery
-                    do {
-                        query = try KeywordQuery.fetchOrInsert(
-                            term: keyword,
-                            storefront: storefrontCode,
-                            platform: platform,
-                            in: modelContext
-                        )
-                    } catch {
-                        errorMessage = OpenASOError.map(error).localizedDescription
-                        return
-                    }
-
-                    let track = TrackedAppKeyword(
-                        term: keyword,
-                        storefront: storefrontCode,
-                        platform: platform,
-                        trackedApp: trackedApp,
-                        query: query
+                let query: KeywordQuery
+                do {
+                    query = try KeywordQuery.fetchOrInsert(
+                        term: candidate.keyword,
+                        storefront: candidate.storefrontCode,
+                        platform: candidate.platform,
+                        in: modelContext
                     )
-
-                    trackedApp.keywordTracks.append(track)
-                    modelContext.insert(track)
-                    mutableExistingKeys.insert(identityKey)
-                    insertedStorefrontCodes.insert(storefrontCode)
-                    insertedTracks.append(track)
+                } catch {
+                    errorMessage = OpenASOError.map(error).localizedDescription
+                    return
                 }
+
+                let track = TrackedAppKeyword(
+                    term: candidate.keyword,
+                    storefront: candidate.storefrontCode,
+                    platform: candidate.platform,
+                    trackedApp: trackedApp,
+                    query: query
+                )
+
+                trackedApp.keywordTracks.append(track)
+                modelContext.insert(track)
+                mutableExistingKeys.insert(identityKey)
+                insertedStorefrontCodes.insert(candidate.storefrontCode)
+                insertedTracks.append(track)
             }
         }
 
@@ -431,10 +485,11 @@ struct AppDetailView: View {
         }
 
         keywordRefreshToken += 1
-        services.analyticsService.capture(.keywordAdded(
-            keywordCount: requestedKeywordCount,
-            storefrontCount: requestedStorefrontCodes.count
-        ))
+        services.analyticsService.capture(
+            .keywordAdded(
+                keywordCount: requestedKeywordCount,
+                storefrontCount: requestedStorefrontCodes.count
+            ))
 
         guard let refreshService = services.appDetailRefreshService else {
             return
@@ -468,24 +523,37 @@ struct AppDetailView: View {
         }
     }
 
-    private func makeRefreshRequest(activeWorkspaceView: AppDetailWorkspaceView) throws -> AppDetailRefreshRequest {
-        try makeRefreshRequest(
+    private func makeRefreshRequest(activeWorkspaceView: AppDetailWorkspaceView) throws
+        -> AppDetailRefreshRequest
+    {
+        let storefrontSelection = try makeRefreshStorefrontSelection()
+        let tracks = try trackedKeywordsForRefresh(
+            app: trackedApp,
+            storefrontSelection: storefrontSelection,
+            platformFilter: keywordWorkspaceState.selectedPlatformFilter
+        )
+        return try makeRefreshRequest(
             for: appSnapshot,
-            trackIdentityKeys: fetchTrackedKeywords(for: appStoreID, platformFilter: keywordWorkspaceState.selectedPlatformFilter).map(\.identityKey),
+            storefrontSelection: storefrontSelection,
+            trackIdentityKeys: tracks.map(\.identityKey),
             activeWorkspaceView: activeWorkspaceView,
             trigger: "manual"
         )
     }
 
-    private func makeRefreshAllRequests(activeWorkspaceView: AppDetailWorkspaceView) throws -> [AppDetailRefreshRequest] {
+    private func makeRefreshAllRequests(activeWorkspaceView: AppDetailWorkspaceView) throws
+        -> [AppDetailRefreshRequest]
+    {
         let orderedApps = trackedAppsForRefreshAll()
         let platformFilter = keywordWorkspaceState.selectedPlatformFilter
-        let tracksByAppStoreID = Dictionary(
-            grouping: try fetchAllTrackedKeywords().filter { platformFilter.matches($0.platform) },
-            by: \.appStoreID
-        )
+        let storefrontSelection = try makeRefreshStorefrontSelection()
         return try orderedApps.map { app in
-            try makeRefreshRequest(
+            let tracks = try trackedKeywordsForRefresh(
+                app: app,
+                storefrontSelection: storefrontSelection,
+                platformFilter: platformFilter
+            )
+            return try makeRefreshRequest(
                 for: AppDetailRefreshAppSnapshot(
                     appStoreID: app.appStoreID,
                     bundleID: app.bundleID,
@@ -494,10 +562,70 @@ struct AppDetailView: View {
                     sellerName: app.sellerName,
                     defaultPlatform: app.defaultPlatform
                 ),
-                trackIdentityKeys: (tracksByAppStoreID[app.appStoreID] ?? []).map(\.identityKey),
+                storefrontSelection: storefrontSelection,
+                trackIdentityKeys: tracks.map(\.identityKey),
                 activeWorkspaceView: activeWorkspaceView,
                 trigger: "manual_all"
             )
+        }
+    }
+
+    private func makeRefreshAllRequests(selection: AppDetailRefreshDataSelection) throws
+        -> [AppDetailRefreshRequest]
+    {
+        let orderedApps = trackedAppsForRefreshAll()
+        let platformFilter = keywordWorkspaceState.selectedPlatformFilter
+        let storefrontSelection = try makeRefreshStorefrontSelection()
+        return try orderedApps.flatMap { trackedApp -> [AppDetailRefreshRequest] in
+            let app = AppDetailRefreshAppSnapshot(
+                appStoreID: trackedApp.appStoreID,
+                bundleID: trackedApp.bundleID,
+                name: trackedApp.name,
+                subtitle: trackedApp.subtitle,
+                sellerName: trackedApp.sellerName,
+                defaultPlatform: trackedApp.defaultPlatform
+            )
+            var requests: [AppDetailRefreshRequest] = []
+
+            if selection.refreshRankings || selection.refreshMetrics || selection.refreshRatings || selection.refreshReviews {
+                let tracks: [TrackedAppKeyword]
+                if selection.refreshRankings || selection.refreshMetrics {
+                    tracks = try trackedKeywordsForRefresh(
+                        app: trackedApp,
+                        storefrontSelection: storefrontSelection,
+                        platformFilter: platformFilter
+                    )
+                } else {
+                    tracks = []
+                }
+                requests.append(try makeRefreshRequest(
+                    for: app,
+                    storefrontSelection: storefrontSelection,
+                    trackIdentityKeys: tracks.map(\.identityKey),
+                    workspace: selection.refreshRankings || selection.refreshMetrics ? .keywords : .ratings,
+                    trigger: "manual_all_selected",
+                    refreshKeywords: selection.refreshRankings,
+                    refreshMetrics: selection.refreshMetrics,
+                    refreshRatings: selection.refreshRatings,
+                    refreshReviews: selection.refreshReviews
+                ))
+            }
+
+            if selection.refreshPricing {
+                requests.append(try makeRefreshRequest(
+                    for: app,
+                    storefrontSelection: storefrontSelection,
+                    trackIdentityKeys: [],
+                    workspace: .pricing,
+                    trigger: "manual_all_selected",
+                    refreshKeywords: false,
+                    refreshMetrics: false,
+                    refreshRatings: false,
+                    refreshReviews: false
+                ))
+            }
+
+            return requests
         }
     }
 
@@ -526,10 +654,65 @@ struct AppDetailView: View {
 
     private func makeRefreshRequest(
         for app: AppDetailRefreshAppSnapshot,
+        storefrontSelection: AppDetailRefreshStorefrontSelection,
         trackIdentityKeys: [String],
         activeWorkspaceView: AppDetailWorkspaceView,
         trigger: String
     ) throws -> AppDetailRefreshRequest {
+        let workspace: AppDetailRefreshWorkspace
+        switch activeWorkspaceView {
+        case .keywords:
+            workspace = .keywords
+        case .competitors:
+            workspace = .keywords
+        case .ratings:
+            workspace = .ratings
+        case .pricing:
+            workspace = .pricing
+        }
+
+        return try makeRefreshRequest(
+            for: app,
+            storefrontSelection: storefrontSelection,
+            trackIdentityKeys: trackIdentityKeys,
+            workspace: workspace,
+            trigger: trigger,
+            refreshKeywords: workspace != .pricing,
+            refreshMetrics: workspace != .pricing,
+            refreshRatings: workspace != .pricing,
+            refreshReviews: workspace != .pricing
+        )
+    }
+
+    private func makeRefreshRequest(
+        for app: AppDetailRefreshAppSnapshot,
+        storefrontSelection: AppDetailRefreshStorefrontSelection,
+        trackIdentityKeys: [String],
+        workspace: AppDetailRefreshWorkspace,
+        trigger: String,
+        refreshKeywords: Bool,
+        refreshMetrics: Bool,
+        refreshRatings: Bool,
+        refreshReviews: Bool
+    ) throws -> AppDetailRefreshRequest {
+        return AppDetailRefreshRequest(
+            app: app,
+            workspace: workspace,
+            storefrontSelection: storefrontSelection,
+            trackIdentityKeys: trackIdentityKeys,
+            trigger: trigger,
+            refreshKeywords: refreshKeywords,
+            refreshMetrics: refreshMetrics,
+            refreshRatings: refreshRatings,
+            refreshReviews: refreshReviews,
+            pricingStorefronts: workspace == .pricing ? try allPricingStorefrontCodes() : [],
+            popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
+            appleAdsWebSession: services.appleAdsWebSessionStore.session,
+            appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
+        )
+    }
+
+    private func makeRefreshStorefrontSelection() throws -> AppDetailRefreshStorefrontSelection {
         let storefrontSelection: AppDetailRefreshStorefrontSelection
         switch selectedStorefrontFilter {
         case .all:
@@ -540,25 +723,97 @@ struct AppDetailView: View {
         case .storefront(let code, _):
             storefrontSelection = .storefront(code: code)
         }
+        return storefrontSelection
+    }
 
-        let workspace: AppDetailRefreshWorkspace
-        switch activeWorkspaceView {
-        case .keywords:
-            workspace = .keywords
-        case .ratings:
-            workspace = .ratings
+    private func allPricingStorefrontCodes() throws -> [String] {
+        let codes = try services.storefrontCatalog.bundledStorefronts()
+            .map { $0.code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return Array(Set(codes + ["us"])).sorted()
+    }
+
+    private func trackedKeywordsForRefresh(
+        app: TrackedApp,
+        storefrontSelection: AppDetailRefreshStorefrontSelection,
+        platformFilter: PlatformFilter
+    ) throws -> [TrackedAppKeyword] {
+        try ensureGlobalKeywordTracks(
+            for: app,
+            storefrontSelection: storefrontSelection,
+            platformFilter: platformFilter
+        )
+
+        return try fetchTrackedKeywords(for: app.appStoreID, platformFilter: platformFilter)
+            .filter { matchesStorefrontSelection($0.storefront, selection: storefrontSelection) }
+    }
+
+    private func ensureGlobalKeywordTracks(
+        for app: TrackedApp,
+        storefrontSelection: AppDetailRefreshStorefrontSelection,
+        platformFilter: PlatformFilter
+    ) throws {
+        let templates = globalKeywordTemplates.filter {
+            matchesStorefrontSelection($0.storefront, selection: storefrontSelection)
+                && platformFilter.matches($0.platform)
+        }
+        guard !templates.isEmpty else { return }
+
+        var existingKeys = Set(
+            try fetchTrackedKeywords(for: app.appStoreID)
+                .map { keywordDuplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform) }
+        )
+        var insertedAny = false
+
+        for template in templates {
+            let duplicateKey = keywordDuplicateKey(
+                term: template.term,
+                storefront: template.storefront,
+                platform: template.platform
+            )
+            guard existingKeys.insert(duplicateKey).inserted else { continue }
+
+            let query = try KeywordQuery.fetchOrInsert(
+                term: template.term,
+                storefront: template.storefront,
+                platform: template.platform,
+                in: modelContext
+            )
+            let track = TrackedAppKeyword(
+                term: template.term,
+                storefront: template.storefront,
+                platform: template.platform,
+                trackedApp: app,
+                query: query
+            )
+            track.notes = "Added from global keyword list."
+            app.keywordTracks.append(track)
+            modelContext.insert(track)
+            insertedAny = true
         }
 
-        return AppDetailRefreshRequest(
-            app: app,
-            workspace: workspace,
-            storefrontSelection: storefrontSelection,
-            trackIdentityKeys: trackIdentityKeys,
-            trigger: trigger,
-            popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
-            appleAdsWebSession: services.appleAdsWebSessionStore.session,
-            appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
-        )
+        if insertedAny {
+            try modelContext.save()
+            keywordRefreshToken += 1
+        }
+    }
+
+    private var globalKeywordTemplates: [GlobalTrackedKeywordTemplate] {
+        GlobalTrackedKeywordTemplate.decodeList(from: globalKeywordTemplatesJSON)
+    }
+
+    private func matchesStorefrontSelection(
+        _ storefront: String,
+        selection: AppDetailRefreshStorefrontSelection
+    ) -> Bool {
+        let normalizedStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch selection {
+        case .all(let codes):
+            return Set(codes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+                .contains(normalizedStorefront)
+        case .storefront(let code):
+            return code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedStorefront
+        }
     }
 
     private func setErrorMessage(_ message: String) {
@@ -566,7 +821,8 @@ struct AppDetailView: View {
     }
 
     private var keywordExportFilename: String {
-        let sanitizedName = appName
+        let sanitizedName =
+            appName
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "-")
@@ -576,7 +832,8 @@ struct AppDetailView: View {
     }
 
     private var keywordHistoryExportFilename: String {
-        let sanitizedName = appName
+        let sanitizedName =
+            appName
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "-")
@@ -592,7 +849,8 @@ struct AppDetailView: View {
     }
 
     private var ratingsExportFilename: String {
-        let sanitizedName = appName
+        let sanitizedName =
+            appName
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "-")
@@ -619,7 +877,8 @@ struct AppDetailView: View {
                 storeDomain: track.storefront,
                 store: storefrontTitle(for: track.storefront),
                 note: track.notes,
-                lastUpdate: TrackedKeywordCSVFormat.string(from: track.lastRefreshAt ?? snapshot?.searchedAt),
+                lastUpdate: TrackedKeywordCSVFormat.string(
+                    from: track.lastRefreshAt ?? snapshot?.searchedAt),
                 ranking: snapshot?.rank.map(String.init) ?? "1000",
                 change: changeText(for: track),
                 popularity: metrics?.popularityScore.map(String.init) ?? "",
@@ -638,7 +897,8 @@ struct AppDetailView: View {
             for: tracks.map(\.queryKey),
             in: modelContext
         )
-        let rows = tracks
+        let rows =
+            tracks
             .filter { matchesExportStorefront($0) }
             .filter { matchesExportPlatform($0) }
             .filter { matchesExportSearch($0) }
@@ -672,7 +932,8 @@ struct AppDetailView: View {
             isExportingCSV = true
             services.analyticsService.capture(.csvExported(type: "keywords"))
         } catch {
-            transferAlert = TrackedKeywordTransferAlert(title: "Export Failed", message: error.localizedDescription)
+            transferAlert = TrackedKeywordTransferAlert(
+                title: "Export Failed", message: error.localizedDescription)
         }
     }
 
@@ -683,7 +944,8 @@ struct AppDetailView: View {
             isExportingCSV = true
             services.analyticsService.capture(.csvExported(type: "keyword_history"))
         } catch {
-            transferAlert = TrackedKeywordTransferAlert(title: "Export Failed", message: error.localizedDescription)
+            transferAlert = TrackedKeywordTransferAlert(
+                title: "Export Failed", message: error.localizedDescription)
         }
     }
 
@@ -695,7 +957,8 @@ struct AppDetailView: View {
                 isExportingCSV = true
                 services.analyticsService.capture(.csvExported(type: "ratings"))
             } catch {
-                transferAlert = TrackedKeywordTransferAlert(title: "Export Failed", message: error.localizedDescription)
+                transferAlert = TrackedKeywordTransferAlert(
+                    title: "Export Failed", message: error.localizedDescription)
             }
         }
     }
@@ -727,7 +990,9 @@ struct AppDetailView: View {
             snapshots.count > 1,
             let periodStartRank = snapshots.first?.rank,
             let periodEndRank = snapshots.last?.rank,
-            matchesExportValue(periodStartRank - periodEndRank, in: keywordWorkspaceState.changeFilterRange, configuration: .change)
+            matchesExportValue(
+                periodStartRank - periodEndRank, in: keywordWorkspaceState.changeFilterRange,
+                configuration: .change)
         else {
             return []
         }
@@ -790,9 +1055,16 @@ struct AppDetailView: View {
         return track.term.localizedCaseInsensitiveContains(trimmedSearch)
     }
 
-    private func matchesExportMetrics(_ track: TrackedAppKeyword, metrics: KeywordDailyMetric?) -> Bool {
-        guard matchesExportValue(metrics?.popularityScore, in: keywordWorkspaceState.popularityFilterRange, configuration: .popularity),
-              matchesExportValue(metrics?.difficultyScore, in: keywordWorkspaceState.difficultyFilterRange, configuration: .difficulty)
+    private func matchesExportMetrics(_ track: TrackedAppKeyword, metrics: KeywordDailyMetric?)
+        -> Bool
+    {
+        guard
+            matchesExportValue(
+                metrics?.popularityScore, in: keywordWorkspaceState.popularityFilterRange,
+                configuration: .popularity),
+            matchesExportValue(
+                metrics?.difficultyScore, in: keywordWorkspaceState.difficultyFilterRange,
+                configuration: .difficulty)
         else {
             return false
         }
@@ -802,7 +1074,8 @@ struct AppDetailView: View {
             return MetricFilterRange.position.isDefault(keywordWorkspaceState.positionFilterRange)
         }
 
-        return matchesExportValue(latestRank, in: keywordWorkspaceState.positionFilterRange, configuration: .position)
+        return matchesExportValue(
+            latestRank, in: keywordWorkspaceState.positionFilterRange, configuration: .position)
     }
 
     private func matchesExportChangedOnly(_ track: TrackedAppKeyword) -> Bool {
@@ -818,7 +1091,9 @@ struct AppDetailView: View {
         return firstRank != latestRank
     }
 
-    private func matchesExportValue(_ value: Int?, in range: ClosedRange<Double>, configuration: MetricFilterRange) -> Bool {
+    private func matchesExportValue(
+        _ value: Int?, in range: ClosedRange<Double>, configuration: MetricFilterRange
+    ) -> Bool {
         if configuration.isDefault(range) {
             return true
         }
@@ -871,20 +1146,24 @@ struct AppDetailView: View {
             let data = try Data(contentsOf: url)
             let csv = String(decoding: data, as: UTF8.self)
             #if DEBUG
-            print(TrackedKeywordCSVFormat.debugImportSummary(
-                csv: csv,
-                fileName: url.lastPathComponent,
-                filePath: url.path,
-                byteCount: data.count,
-                didAccessSecurityScopedResource: didAccess
-            ))
+                print(
+                    TrackedKeywordCSVFormat.debugImportSummary(
+                        csv: csv,
+                        fileName: url.lastPathComponent,
+                        filePath: url.path,
+                        byteCount: data.count,
+                        didAccessSecurityScopedResource: didAccess
+                    ))
             #endif
             let rows = try TrackedKeywordCSVFormat.decode(csv)
             let summary = importRows(rows)
             #if DEBUG
-            print("[CSVImportDebug] importResult inserted=\(summary.insertedCount) skippedExisting=\(summary.skippedExistingCount) skippedDuplicates=\(summary.skippedDuplicateCount) skippedInvalid=\(summary.skippedInvalidCount) createdApps=\(summary.createdAppCount) importedApps=\(summary.importedAppIDs.count)")
+                print(
+                    "[CSVImportDebug] importResult inserted=\(summary.insertedCount) skippedExisting=\(summary.skippedExistingCount) skippedDuplicates=\(summary.skippedDuplicateCount) skippedInvalid=\(summary.skippedInvalidCount) createdApps=\(summary.createdAppCount) importedApps=\(summary.importedAppIDs.count)"
+                )
             #endif
-            services.analyticsService.capture(.csvImported(rowCount: summary.insertedCount, result: "success"))
+            services.analyticsService.capture(
+                .csvImported(rowCount: summary.insertedCount, result: "success"))
             refreshImportedTracksInBackground(summary.importedTracks)
 
             if summary.insertedCount == 0 {
@@ -895,15 +1174,17 @@ struct AppDetailView: View {
             } else {
                 transferAlert = TrackedKeywordTransferAlert(
                     title: "Import Complete",
-                    message: "Imported \(summary.insertedCount) keyword track\(summary.insertedCount == 1 ? "" : "s") across \(summary.importedAppIDs.count) app\(summary.importedAppIDs.count == 1 ? "" : "s"). Created \(summary.createdAppCount) app\(summary.createdAppCount == 1 ? "" : "s"). \(summary.skippedRowsMessage)"
+                    message:
+                        "Imported \(summary.insertedCount) keyword track\(summary.insertedCount == 1 ? "" : "s") across \(summary.importedAppIDs.count) app\(summary.importedAppIDs.count == 1 ? "" : "s"). Created \(summary.createdAppCount) app\(summary.createdAppCount == 1 ? "" : "s"). \(summary.skippedRowsMessage)"
                 )
             }
         } catch {
             #if DEBUG
-            print("[CSVImportDebug] importFailed error=\(error.localizedDescription)")
+                print("[CSVImportDebug] importFailed error=\(error.localizedDescription)")
             #endif
             services.analyticsService.capture(.csvImported(rowCount: 0, result: "failure"))
-            transferAlert = TrackedKeywordTransferAlert(title: "Import Failed", message: error.localizedDescription)
+            transferAlert = TrackedKeywordTransferAlert(
+                title: "Import Failed", message: error.localizedDescription)
         }
     }
 
@@ -923,14 +1204,16 @@ struct AppDetailView: View {
                         )
                     }
             )
-            trackedAppsByAppStoreID = Dictionary(uniqueKeysWithValues: try fetchTrackedApps().map { ($0.appStoreID, $0) })
+            trackedAppsByAppStoreID = Dictionary(
+                uniqueKeysWithValues: try fetchTrackedApps().map { ($0.appStoreID, $0) })
         } catch {
             setErrorMessage(OpenASOError.map(error).localizedDescription)
             var summary = TrackedKeywordCSVImportSummary()
             summary.failedRowCount = rows.count
             return summary
         }
-        var nextSidebarSortOrder = trackedAppsByAppStoreID.values
+        var nextSidebarSortOrder =
+            trackedAppsByAppStoreID.values
             .filter { $0.folder == nil }
             .map(\.sidebarSortOrder)
             .max()
@@ -941,14 +1224,18 @@ struct AppDetailView: View {
 
         for row in rows {
             let keyword = row.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-            let storefront = row.storeDomain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let storefront = row.storeDomain.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
             guard !keyword.isEmpty, !storefront.isEmpty else {
                 summary.skippedInvalidCount += 1
                 continue
             }
 
-            let rowPlatform = AppPlatform(rawValue: row.platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-            guard let rowAppStoreID = importAppStoreID(from: row.appID, defaultAppStoreID: appStoreID) else {
+            let rowPlatform = AppPlatform(
+                rawValue: row.platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            guard
+                let rowAppStoreID = importAppStoreID(from: row.appID, defaultAppStoreID: appStoreID)
+            else {
                 summary.skippedInvalidCount += 1
                 continue
             }
@@ -972,7 +1259,8 @@ struct AppDetailView: View {
             }
 
             do {
-                let queryKey = KeywordQuery.makeQueryKey(term: keyword, storefront: storefront, platform: platform)
+                let queryKey = KeywordQuery.makeQueryKey(
+                    term: keyword, storefront: storefront, platform: platform)
                 let query: KeywordQuery
                 if let cachedQuery = queriesByKey[queryKey] {
                     query = cachedQuery
@@ -1098,7 +1386,9 @@ struct AppDetailView: View {
         }
 
         return orderedAppStoreIDs.compactMap { appStoreID in
-            guard let tracks = tracksByAppStoreID[appStoreID], let trackedApp = tracks.first?.trackedApp else {
+            guard let tracks = tracksByAppStoreID[appStoreID],
+                let trackedApp = tracks.first?.trackedApp
+            else {
                 return nil
             }
 
@@ -1125,12 +1415,14 @@ struct AppDetailView: View {
         }
     }
 
-    private func importDuplicateKey(appStoreID: Int64, term: String, storefront: String, platform: AppPlatform) -> String {
+    private func importDuplicateKey(
+        appStoreID: Int64, term: String, storefront: String, platform: AppPlatform
+    ) -> String {
         [
             String(appStoreID),
             term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            platform.rawValue
+            platform.rawValue,
         ].joined(separator: "::")
     }
 
@@ -1156,7 +1448,8 @@ struct AppDetailView: View {
             sellerName: nil,
             defaultPlatform: defaultPlatform
         )
-        let storeApp = try services.appCatalogService.upsertStoreApp(from: resolvedApp, in: modelContext)
+        let storeApp = try services.appCatalogService.upsertStoreApp(
+            from: resolvedApp, in: modelContext)
 
         let trackedApp = TrackedApp(
             appStoreID: appStoreID,
@@ -1164,7 +1457,8 @@ struct AppDetailView: View {
             sidebarSortOrder: sidebarSortOrder
         )
         modelContext.insert(trackedApp)
-        services.analyticsService.capture(.trackedAppAdded(platform: defaultPlatform, source: "csv_import"))
+        services.analyticsService.capture(
+            .trackedAppAdded(platform: defaultPlatform, source: "csv_import"))
         return trackedApp
     }
 
@@ -1175,7 +1469,9 @@ struct AppDetailView: View {
         }
     }
 
-    private func applyImportedValues(from row: TrackedKeywordCSVRow, to importedTrack: TrackedAppKeyword) {
+    private func applyImportedValues(
+        from row: TrackedKeywordCSVRow, to importedTrack: TrackedAppKeyword
+    ) {
         if let appsInRanking = Int(row.appsInRanking) {
             importedTrack.rankingAppCount = appsInRanking
         }
@@ -1212,16 +1508,18 @@ struct AppDetailView: View {
         if let cachedMetrics = metricsByQueryKey[queryKey] {
             metrics = cachedMetrics
         } else {
-            metrics = existingMetrics(for: importedTrack) ?? KeywordDailyMetric(
-                queryKey: queryKey,
-                keyword: importedTrack.term,
-                storefront: importedTrack.storefront,
-                platform: importedTrack.platform,
-                popularityScore: nil,
-                difficultyScore: nil,
-                source: .appleAdsPopularity,
-                updatedAt: .distantPast
-            )
+            metrics =
+                existingMetrics(for: importedTrack)
+                ?? KeywordDailyMetric(
+                    queryKey: queryKey,
+                    keyword: importedTrack.term,
+                    storefront: importedTrack.storefront,
+                    platform: importedTrack.platform,
+                    popularityScore: nil,
+                    difficultyScore: nil,
+                    source: .appleAdsPopularity,
+                    updatedAt: .distantPast
+                )
             metricsByQueryKey[queryKey] = metrics
         }
 
@@ -1249,10 +1547,13 @@ struct AppDetailView: View {
     }
 
     private func fetchTrackedKeywords() throws -> [TrackedAppKeyword] {
-        try fetchTrackedKeywords(for: appStoreID, platformFilter: keywordWorkspaceState.selectedPlatformFilter)
+        try fetchTrackedKeywords(
+            for: appStoreID, platformFilter: keywordWorkspaceState.selectedPlatformFilter)
     }
 
-    private func fetchTrackedKeywords(for appStoreID: Int64, platformFilter: PlatformFilter = .all) throws -> [TrackedAppKeyword] {
+    private func fetchTrackedKeywords(for appStoreID: Int64, platformFilter: PlatformFilter = .all)
+        throws -> [TrackedAppKeyword]
+    {
         let descriptor = FetchDescriptor<TrackedAppKeyword>(
             predicate: #Predicate { track in
                 track.appStoreID == appStoreID
@@ -1260,7 +1561,7 @@ struct AppDetailView: View {
             sortBy: [
                 SortDescriptor(\TrackedAppKeyword.term, order: .forward),
                 SortDescriptor(\TrackedAppKeyword.storefront, order: .forward),
-                SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward)
+                SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward),
             ]
         )
         return try modelContext.fetch(descriptor)
@@ -1270,15 +1571,20 @@ struct AppDetailView: View {
     private func existingKeywordDuplicateKeys() throws -> Set<String> {
         Set(
             try fetchTrackedKeywords()
-                .map { keywordDuplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform) }
+                .map {
+                    keywordDuplicateKey(
+                        term: $0.term, storefront: $0.storefront, platform: $0.platform)
+                }
         )
     }
 
-    private func keywordDuplicateKey(term: String, storefront: String, platform: AppPlatform) -> String {
+    private func keywordDuplicateKey(term: String, storefront: String, platform: AppPlatform)
+        -> String
+    {
         [
             term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            platform.rawValue
+            platform.rawValue,
         ].joined(separator: "::")
     }
 
@@ -1288,7 +1594,7 @@ struct AppDetailView: View {
                 SortDescriptor(\TrackedAppKeyword.appStoreID, order: .forward),
                 SortDescriptor(\TrackedAppKeyword.term, order: .forward),
                 SortDescriptor(\TrackedAppKeyword.storefront, order: .forward),
-                SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward)
+                SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward),
             ]
         )
         return try modelContext.fetch(descriptor)
@@ -1313,5 +1619,320 @@ struct AppDetailView: View {
         }
 
         return "\(storefront.flagEmoji) \(storefront.name)"
+    }
+}
+
+private struct CompetitorComparisonView: View {
+    @Environment(\.modelContext) private var modelContext
+
+    @Query(sort: [SortDescriptor(\KeywordAppRanking.observedAt, order: .reverse)])
+    private var rankingItems: [KeywordAppRanking]
+
+    let trackedApp: TrackedApp
+    let trackedApps: [TrackedApp]
+    let selectedStorefrontFilter: StorefrontFilter
+    let searchText: String
+    let reportError: (String) -> Void
+    let didAddKeyword: () -> Void
+
+    @State private var selectedCompetitorIDs = Set<Int64>()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            competitorPicker
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+
+            Divider()
+
+            if selectedCompetitorIDs.isEmpty {
+                ContentUnavailableView(
+                    "Select Competitors",
+                    systemImage: "person.2",
+                    description: Text(
+                        "Choose one or more tracked competitor apps to compare rankings.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if opportunities.isEmpty {
+                ContentUnavailableView(
+                    "No Opportunities Found",
+                    systemImage: "magnifyingglass",
+                    description: Text(
+                        "Refresh keyword rankings or change the selected competitors and country.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(opportunities) { opportunity in
+                    CompetitorOpportunityRow(
+                        opportunity: opportunity,
+                        addAction: {
+                            addKeyword(from: opportunity)
+                        }
+                    )
+                }
+                .listStyle(.plain)
+            }
+        }
+        .onAppear(perform: selectDefaultCompetitors)
+    }
+
+    private var competitorPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Competitor View")
+                    .font(.headline)
+                Spacer()
+                Text("\(opportunities.count.formatted()) opportunities")
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(competitorApps) { app in
+                        Toggle(isOn: competitorBinding(for: app.appStoreID)) {
+                            Text(app.name)
+                                .lineLimit(1)
+                        }
+                        .toggleStyle(.button)
+                    }
+                }
+            }
+        }
+    }
+
+    private var competitorApps: [TrackedApp] {
+        trackedApps
+            .filter { $0.appStoreID != trackedApp.appStoreID }
+            .sorted { lhs, rhs in
+                lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private var opportunities: [CompetitorKeywordOpportunity] {
+        let competitorIDs = selectedCompetitorIDs
+        guard !competitorIDs.isEmpty else { return [] }
+
+        let targetAppStoreID = trackedApp.appStoreID
+        let relevantItems = rankingItems.filter { item in
+            (item.appStoreID == targetAppStoreID || competitorIDs.contains(item.appStoreID))
+                && selectedStorefrontFilter.matches(storefront: item.storefront)
+        }
+
+        let latestItemsByQueryKey = latestRankingItemsByQueryKey(from: relevantItems)
+        let trackedKeywordKeys = Set(
+            trackedApp.keywordTracks.map {
+                duplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform)
+            }
+        )
+        let normalizedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return latestItemsByQueryKey.values.compactMap { items in
+            guard let firstItem = items.first else { return nil }
+            let competitorItems = items.filter { competitorIDs.contains($0.appStoreID) }
+            guard let bestCompetitor = competitorItems.min(by: { $0.position < $1.position }) else {
+                return nil
+            }
+
+            let targetItem = items.first { $0.appStoreID == targetAppStoreID }
+            guard targetItem == nil || bestCompetitor.position < (targetItem?.position ?? Int.max)
+            else {
+                return nil
+            }
+
+            let keyword = firstItem.observation.keyword
+            let platform = firstItem.platform
+            let duplicateKey = duplicateKey(
+                term: keyword, storefront: firstItem.storefront, platform: platform)
+            let opportunity = CompetitorKeywordOpportunity(
+                keyword: keyword,
+                storefront: firstItem.storefront,
+                platform: platform,
+                competitorName: bestCompetitor.name,
+                competitorPosition: bestCompetitor.position,
+                yourPosition: targetItem?.position,
+                observedAt: firstItem.observedAt,
+                isAlreadyTracked: trackedKeywordKeys.contains(duplicateKey)
+            )
+
+            guard
+                normalizedSearch.isEmpty
+                    || opportunity.keyword.localizedCaseInsensitiveContains(normalizedSearch)
+                    || opportunity.competitorName.localizedCaseInsensitiveContains(normalizedSearch)
+                    || opportunity.storefront.localizedCaseInsensitiveContains(normalizedSearch)
+            else {
+                return nil
+            }
+            return opportunity
+        }
+        .sorted()
+        .prefix(300)
+        .map { $0 }
+    }
+
+    private func latestRankingItemsByQueryKey(from items: [KeywordAppRanking]) -> [String:
+        [KeywordAppRanking]]
+    {
+        let itemsByCrawlKey = Dictionary(grouping: items, by: \.crawlKey)
+        var latestByQueryKey: [String: [KeywordAppRanking]] = [:]
+
+        for crawlItems in itemsByCrawlKey.values {
+            guard let firstItem = crawlItems.first else { continue }
+            let queryKey = firstItem.queryKey
+            let existingDate = latestByQueryKey[queryKey]?.first?.observedAt ?? .distantPast
+            if firstItem.observedAt > existingDate {
+                latestByQueryKey[queryKey] = crawlItems
+            }
+        }
+
+        return latestByQueryKey
+    }
+
+    private func selectDefaultCompetitors() {
+        guard selectedCompetitorIDs.isEmpty else { return }
+        selectedCompetitorIDs = Set(competitorApps.prefix(3).map(\.appStoreID))
+    }
+
+    private func competitorBinding(for appStoreID: Int64) -> Binding<Bool> {
+        Binding(
+            get: { selectedCompetitorIDs.contains(appStoreID) },
+            set: { isSelected in
+                if isSelected {
+                    selectedCompetitorIDs.insert(appStoreID)
+                } else {
+                    selectedCompetitorIDs.remove(appStoreID)
+                }
+            }
+        )
+    }
+
+    private func addKeyword(from opportunity: CompetitorKeywordOpportunity) {
+        guard !opportunity.isAlreadyTracked else { return }
+
+        do {
+            let query = try KeywordQuery.fetchOrInsert(
+                term: opportunity.keyword,
+                storefront: opportunity.storefront,
+                platform: opportunity.platform,
+                in: modelContext
+            )
+            let track = TrackedAppKeyword(
+                term: opportunity.keyword,
+                storefront: opportunity.storefront,
+                platform: opportunity.platform,
+                trackedApp: trackedApp,
+                query: query
+            )
+            trackedApp.keywordTracks.append(track)
+            modelContext.insert(track)
+            try modelContext.save()
+            didAddKeyword()
+        } catch {
+            reportError(OpenASOError.map(error).localizedDescription)
+        }
+    }
+
+    private func duplicateKey(term: String, storefront: String, platform: AppPlatform) -> String {
+        [
+            term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            platform.rawValue,
+        ].joined(separator: "::")
+    }
+}
+
+private struct CompetitorOpportunityRow: View {
+    let opportunity: CompetitorKeywordOpportunity
+    let addAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(opportunity.keyword)
+                        .font(.headline)
+                    Text(opportunity.storefront.uppercased())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(opportunity.platform.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("\(opportunity.competitorName) ranks #\(opportunity.competitorPosition)")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(opportunity.yourRankTitle)
+                    .font(.body.monospacedDigit())
+                Text(opportunity.observedAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 150, alignment: .trailing)
+
+            Button(opportunity.isAlreadyTracked ? "Tracked" : "Add Keyword", action: addAction)
+                .disabled(opportunity.isAlreadyTracked)
+                .buttonStyle(.borderedProminent)
+                .frame(width: 120, alignment: .trailing)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+private struct CompetitorKeywordOpportunity: Identifiable, Comparable {
+    let keyword: String
+    let storefront: String
+    let platform: AppPlatform
+    let competitorName: String
+    let competitorPosition: Int
+    let yourPosition: Int?
+    let observedAt: Date
+    let isAlreadyTracked: Bool
+
+    var id: String {
+        [
+            keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            storefront,
+            platform.rawValue,
+            competitorName,
+        ].joined(separator: "::")
+    }
+
+    var yourRankTitle: String {
+        if let yourPosition {
+            return "You #\(yourPosition)"
+        }
+        return "Not ranking"
+    }
+
+    static func < (lhs: CompetitorKeywordOpportunity, rhs: CompetitorKeywordOpportunity) -> Bool {
+        if lhs.isAlreadyTracked != rhs.isAlreadyTracked {
+            return !lhs.isAlreadyTracked
+        }
+        if lhs.yourPosition == nil, rhs.yourPosition != nil {
+            return true
+        }
+        if lhs.yourPosition != nil, rhs.yourPosition == nil {
+            return false
+        }
+        if lhs.competitorPosition != rhs.competitorPosition {
+            return lhs.competitorPosition < rhs.competitorPosition
+        }
+        return lhs.keyword.localizedStandardCompare(rhs.keyword) == .orderedAscending
+    }
+}
+
+extension StorefrontFilter {
+    fileprivate func matches(storefront: String) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .storefront(let code, _):
+            return code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                == storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
     }
 }

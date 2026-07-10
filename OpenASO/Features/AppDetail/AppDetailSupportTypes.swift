@@ -38,7 +38,9 @@ enum TrendDateRange: CaseIterable, Identifiable {
 
 enum AppDetailWorkspaceView: String, CaseIterable, Identifiable {
     case keywords
+    case competitors
     case ratings
+    case pricing
 
     var id: String { rawValue }
 
@@ -46,8 +48,12 @@ enum AppDetailWorkspaceView: String, CaseIterable, Identifiable {
         switch self {
         case .keywords:
             return "Keywords"
+        case .competitors:
+            return "Competitors"
         case .ratings:
             return "Ratings"
+        case .pricing:
+            return "Pricing"
         }
     }
 
@@ -55,8 +61,12 @@ enum AppDetailWorkspaceView: String, CaseIterable, Identifiable {
         switch self {
         case .keywords:
             return "Search keywords"
+        case .competitors:
+            return "Search opportunities"
         case .ratings:
             return "Search"
+        case .pricing:
+            return "Search plans"
         }
     }
 }

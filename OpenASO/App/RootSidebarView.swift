@@ -792,6 +792,7 @@ private struct SidebarRefreshProgressView: View {
                 SidebarRefreshProgressRow(title: "Keywords & Metrics", progress: refresh.keywordAndMetricsProgress)
                 SidebarRefreshProgressRow(title: "Ratings", progress: refresh.ratingsProgress)
                 SidebarRefreshProgressRow(title: "Reviews", progress: refresh.reviewsProgress)
+                SidebarRefreshProgressRow(title: "Pricing", progress: refresh.pricingProgress)
                 SidebarPendingAppRefreshesRow(appCount: pendingAppRefreshCount)
                 SidebarPendingKeywordAdditionsRow(trackCount: pendingKeywordTrackCount)
             }
@@ -854,7 +855,7 @@ private struct SidebarRefreshProgressView: View {
             return "App data ready"
         case .failed:
             return "App data update failed"
-        case .refreshingKeywords, .refreshingMetrics:
+        case .refreshingKeywords, .refreshingMetrics, .refreshingPricing:
             return refresh.phase.title
         }
     }
@@ -873,7 +874,7 @@ private struct SidebarRefreshProgressView: View {
             return "Keyword data ready"
         case .failed:
             return "Keyword data update failed"
-        case .refreshingRatings, .refreshingReviews:
+        case .refreshingRatings, .refreshingReviews, .refreshingPricing:
             return refresh.phase.title
         }
     }
@@ -892,7 +893,7 @@ private struct SidebarRefreshProgressView: View {
             return "Imported keywords ready"
         case .failed:
             return "Imported keyword update failed"
-        case .refreshingRatings, .refreshingReviews:
+        case .refreshingRatings, .refreshingReviews, .refreshingPricing:
             return refresh.phase.title
         }
     }

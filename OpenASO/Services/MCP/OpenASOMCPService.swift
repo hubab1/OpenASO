@@ -2,6 +2,8 @@ import Foundation
 import SwiftData
 
 final class OpenASOMCPService: Sendable {
+  private static let globalKeywordTemplatesKey = "globalTrackedKeywordTemplatesJSON"
+
   private enum ResponseLimits {
     static let overviewStorefrontMetadata = 8
     static let overviewRatings = 25
@@ -17,6 +19,7 @@ final class OpenASOMCPService: Sendable {
     static let maximumRankingAppLimit = 50
     static let defaultKeywordRefreshTrackLimit = 20
     static let maximumKeywordRefreshTrackLimit = 25
+    static let keywordRefreshConcurrency = 4
     static let keywordVerificationSearchBudget = 16
     static let rankingSearchTimeoutNanoseconds: UInt64 = 20_000_000_000
     static let bigAppRatingThreshold = 10_000
@@ -32,12 +35,33 @@ final class OpenASOMCPService: Sendable {
     static let maximumLocalizationCompetitorLimit = 20
     static let localizationDescriptionCharacters = 1_200
     static let localizationReleaseNotesCharacters = 800
+    static let maximumPricingAppCount = 10
+    static let pricingFetchConcurrency = 6
+    static let planPriceFetchConcurrency = 4
   }
 
   private static let localizationBaselineStorefront = "us"
   private static let defaultLocalizationStorefronts = [
     "us", "jp", "cn", "gb", "de", "fr", "ca", "au", "kr", "br",
     "mx", "es", "it", "nl", "se", "ch", "tr", "in", "id", "sa",
+  ]
+  private static let appStoreTaxInclusiveRatesByStorefront: [String: Double] = [
+    "ae": 0.05, "al": 0.20, "am": 0.20, "ao": 0.14, "ar": 0.21,
+    "at": 0.20, "au": 0.10, "az": 0.18, "ba": 0.17, "bb": 0.175,
+    "be": 0.21, "bg": 0.20, "bh": 0.10, "bj": 0.18, "br": 0.17,
+    "by": 0.20, "ca": 0.05, "ch": 0.081, "cl": 0.19, "co": 0.19,
+    "cr": 0.13, "cy": 0.19, "cz": 0.21, "de": 0.19, "dk": 0.25,
+    "ee": 0.22, "eg": 0.14, "es": 0.21, "fi": 0.255, "fr": 0.20,
+    "gb": 0.20, "ge": 0.18, "gh": 0.15, "gr": 0.24, "hr": 0.25,
+    "hu": 0.27, "id": 0.11, "ie": 0.23, "in": 0.18, "is": 0.24,
+    "it": 0.22, "jp": 0.10, "ke": 0.16, "kr": 0.10, "kz": 0.12,
+    "lt": 0.21, "lu": 0.17, "lv": 0.21, "ma": 0.20, "md": 0.20,
+    "mt": 0.18, "mx": 0.16, "my": 0.08, "ng": 0.075, "nl": 0.21,
+    "no": 0.25, "nz": 0.15, "om": 0.05, "pe": 0.18, "ph": 0.12,
+    "pl": 0.23, "pt": 0.23, "ro": 0.19, "rs": 0.20, "sa": 0.15,
+    "se": 0.25, "sg": 0.09, "si": 0.22, "sk": 0.20, "th": 0.07,
+    "tr": 0.20, "tw": 0.05, "tz": 0.18, "ua": 0.20, "ug": 0.18,
+    "uy": 0.22, "vn": 0.10, "za": 0.15,
   ]
 
   private let backgroundModelStore: BackgroundModelStore
@@ -384,6 +408,135 @@ final class OpenASOMCPService: Sendable {
     }
   }
 
+  func listGlobalKeywords(
+    storefronts: [String]? = nil,
+    platform: String? = nil
+  ) throws -> [OpenASOMCPGlobalKeywordTemplate] {
+    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
+    let platform = try platform.map(OpenASOMCPValidation.platform)
+    return Self.globalKeywordTemplates().filter { template in
+      if !storefronts.isEmpty && !storefronts.contains(template.storefront) { return false }
+      if let platform, template.platformRaw != platform.rawValue { return false }
+      return true
+    }.map(Self.globalKeywordTemplate)
+  }
+
+  func addGlobalKeywords(
+    keywords: [String],
+    storefronts: [String],
+    platform: String? = nil
+  ) throws -> OpenASOMCPGlobalKeywordMutationResult {
+    let keywords = try OpenASOMCPValidation.keywords(keywords)
+    let storefronts = try OpenASOMCPValidation.storefronts(storefronts)
+    let platform = try OpenASOMCPValidation.platform(platform)
+    guard !storefronts.isEmpty else {
+      throw OpenASOError.providerUnavailable("Select at least one storefront.")
+    }
+
+    var templates = Self.globalKeywordTemplates()
+    var existingIDs = Set(templates.map(\.id))
+    var insertedCount = 0
+    var skippedCount = 0
+
+    for storefront in storefronts {
+      for keyword in keywords {
+        let template = GlobalTrackedKeywordTemplate(
+          term: keyword,
+          storefront: storefront,
+          platform: platform
+        )
+        if existingIDs.insert(template.id).inserted {
+          templates.append(template)
+          insertedCount += 1
+        } else {
+          skippedCount += 1
+        }
+      }
+    }
+
+    Self.setGlobalKeywordTemplates(templates)
+    return OpenASOMCPGlobalKeywordMutationResult(
+      templates: templates.map(Self.globalKeywordTemplate),
+      summary: OpenASOMCPMutationSummary(
+        inserted: insertedCount,
+        updated: 0,
+        skipped: skippedCount,
+        refreshed: 0,
+        failed: 0
+      )
+    )
+  }
+
+  func updateGlobalKeyword(
+    id: String,
+    keyword: String,
+    storefront: String,
+    platform: String? = nil
+  ) throws -> OpenASOMCPGlobalKeywordMutationResult {
+    let keyword = try OpenASOMCPValidation.keyword(keyword)
+    let storefront = try OpenASOMCPValidation.storefront(storefront)
+    let platform = try OpenASOMCPValidation.platform(platform)
+    var templates = Self.globalKeywordTemplates()
+    guard let index = templates.firstIndex(where: { $0.id == id }) else {
+      throw OpenASOError.appNotFound
+    }
+    let replacement = GlobalTrackedKeywordTemplate(
+      term: keyword,
+      storefront: storefront,
+      platform: platform,
+      createdAt: templates[index].createdAt
+    )
+    guard !templates.enumerated().contains(where: { offset, template in
+      offset != index && template.id == replacement.id
+    }) else {
+      throw OpenASOError.providerUnavailable(
+        "That global keyword, country, and device already exist.")
+    }
+    templates[index] = replacement
+    Self.setGlobalKeywordTemplates(templates)
+    return OpenASOMCPGlobalKeywordMutationResult(
+      templates: templates.map(Self.globalKeywordTemplate),
+      summary: OpenASOMCPMutationSummary(
+        inserted: 0,
+        updated: 1,
+        skipped: 0,
+        refreshed: 0,
+        failed: 0
+      )
+    )
+  }
+
+  func deleteGlobalKeyword(id: String) -> OpenASOMCPGlobalKeywordMutationResult {
+    let templates = Self.globalKeywordTemplates()
+    let retained = templates.filter { $0.id != id }
+    Self.setGlobalKeywordTemplates(retained)
+    return OpenASOMCPGlobalKeywordMutationResult(
+      templates: retained.map(Self.globalKeywordTemplate),
+      summary: OpenASOMCPMutationSummary(
+        inserted: 0,
+        updated: templates.count - retained.count,
+        skipped: 0,
+        refreshed: 0,
+        failed: 0
+      )
+    )
+  }
+
+  func resetGlobalKeywords() -> OpenASOMCPGlobalKeywordMutationResult {
+    let templates = Self.globalKeywordTemplates()
+    Self.setGlobalKeywordTemplates([])
+    return OpenASOMCPGlobalKeywordMutationResult(
+      templates: [],
+      summary: OpenASOMCPMutationSummary(
+        inserted: 0,
+        updated: templates.count,
+        skipped: 0,
+        refreshed: 0,
+        failed: 0
+      )
+    )
+  }
+
   func scoreKeywords(
     appStoreID: Int64,
     storefronts: [String]? = nil,
@@ -547,6 +700,133 @@ final class OpenASOMCPService: Sendable {
     }
   }
 
+  func updateKeywordTrack(
+    trackIdentityKey: String,
+    keyword: String? = nil,
+    storefront: String? = nil,
+    platform: String? = nil,
+    notes: String? = nil
+  ) async throws -> OpenASOMCPKeywordTrackMutationResult {
+    let keyword = try keyword.map(OpenASOMCPValidation.keyword)
+    let storefront = try storefront.map(OpenASOMCPValidation.storefront)
+    let platform = try platform.map(OpenASOMCPValidation.platform)
+    return try await backgroundModelStore.write { modelContext in
+      var descriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.identityKey == trackIdentityKey
+        }
+      )
+      descriptor.fetchLimit = 1
+      guard let track = try modelContext.fetch(descriptor).first else {
+        throw OpenASOError.appNotFound
+      }
+
+      let newKeyword = keyword ?? track.term
+      let newStorefront = storefront ?? track.storefront
+      let newPlatform = platform ?? track.platform
+      let newIdentityKey = TrackedAppKeyword.makeIdentityKey(
+        appStoreID: track.appStoreID,
+        term: newKeyword,
+        storefront: newStorefront,
+        platform: newPlatform
+      )
+      if newIdentityKey != track.identityKey {
+        var duplicateDescriptor = FetchDescriptor<TrackedAppKeyword>(
+          predicate: #Predicate { candidate in
+            candidate.identityKey == newIdentityKey
+          }
+        )
+        duplicateDescriptor.fetchLimit = 1
+        guard try modelContext.fetch(duplicateDescriptor).isEmpty else {
+          throw OpenASOError.providerUnavailable(
+            "That keyword, country, and device already exist for this app.")
+        }
+        Self.deleteSnapshots(for: track, in: modelContext)
+        track.rankingAppCount = nil
+        track.lastRefreshAt = nil
+        track.statusMessage = "Edited. Refresh to collect rankings for the new keyword."
+      }
+
+      track.term = newKeyword
+      track.storefront = newStorefront
+      track.platform = newPlatform
+      track.identityKey = newIdentityKey
+      track.query = try KeywordQuery.fetchOrInsert(
+        term: newKeyword,
+        storefront: newStorefront,
+        platform: newPlatform,
+        in: modelContext
+      )
+      if let notes {
+        track.notes = notes
+      }
+
+      let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
+      return OpenASOMCPKeywordTrackMutationResult(
+        track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+        summary: OpenASOMCPMutationSummary(
+          inserted: 0,
+          updated: 1,
+          skipped: 0,
+          refreshed: 0,
+          failed: 0
+        )
+      )
+    }
+  }
+
+  func deleteKeywordTrack(trackIdentityKey: String) async throws -> OpenASOMCPKeywordTrackMutationResult {
+    try await backgroundModelStore.write { modelContext in
+      var descriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.identityKey == trackIdentityKey
+        }
+      )
+      descriptor.fetchLimit = 1
+      guard let track = try modelContext.fetch(descriptor).first else {
+        throw OpenASOError.appNotFound
+      }
+      Self.deleteSnapshots(for: track, in: modelContext)
+      modelContext.delete(track)
+      return OpenASOMCPKeywordTrackMutationResult(
+        track: nil,
+        summary: OpenASOMCPMutationSummary(
+          inserted: 0,
+          updated: 1,
+          skipped: 0,
+          refreshed: 0,
+          failed: 0
+        )
+      )
+    }
+  }
+
+  func resetKeywords(appStoreID: Int64) async throws -> OpenASOMCPKeywordTrackMutationResult {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    return try await backgroundModelStore.write { modelContext in
+      let descriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.appStoreID == appStoreID
+        }
+      )
+      let tracks = try modelContext.fetch(descriptor)
+      for track in tracks {
+        Self.deleteSnapshots(for: track, in: modelContext)
+        modelContext.delete(track)
+      }
+      return OpenASOMCPKeywordTrackMutationResult(
+        track: nil,
+        summary: OpenASOMCPMutationSummary(
+          inserted: 0,
+          updated: tracks.count,
+          skipped: 0,
+          refreshed: 0,
+          failed: 0
+        )
+      )
+    }
+  }
+
   func listScreenshots(
     appStoreID: Int64,
     storefronts: [String]? = nil,
@@ -636,6 +916,69 @@ final class OpenASOMCPService: Sendable {
       ),
       completed: result.completed.map(Self.exportedScreenshot),
       failed: result.failed.map(Self.failedScreenshotExport)
+    )
+  }
+
+  func compareAppPricing(
+    appStoreIDs: [Int64],
+    storefronts: [String]? = nil,
+    progress: (@Sendable (Int, Int, Int) async -> Void)? = nil
+  ) async throws -> OpenASOMCPAppPricingComparison {
+    let appStoreIDs = try appStoreIDs
+      .prefix(ResponseLimits.maximumPricingAppCount)
+      .map(OpenASOMCPValidation.appStoreID)
+    guard !appStoreIDs.isEmpty else {
+      throw OpenASOError.invalidAppStoreID
+    }
+
+    let requestedStorefronts = try OpenASOMCPValidation.storefronts(storefronts)
+    let storefronts = try await pricingStorefronts(requestedStorefronts)
+    let requests = appStoreIDs.flatMap { appStoreID in
+      storefronts.map { storefront in
+        AppPricingFetchRequest(appStoreID: appStoreID, storefront: storefront)
+      }
+    }
+    await progress?(0, requests.count, 0)
+
+    let prices = await Self.fetchAppPricing(
+      requests: requests,
+      httpClient: httpClient,
+      concurrency: ResponseLimits.pricingFetchConcurrency
+    )
+    let currencyByRequest = Dictionary(
+      uniqueKeysWithValues: prices.compactMap { price -> (AppPricingFetchRequest, String)? in
+        guard let currency = price.currency else { return nil }
+        return (
+          AppPricingFetchRequest(
+            appStoreID: Int64(price.appStoreID) ?? 0,
+            storefront: price.storefront
+          ),
+          currency
+        )
+      }.filter { $0.0.appStoreID > 0 }
+    )
+    let exchangeRates = await Self.fetchUSDExchangeRates(httpClient: httpClient)
+    let plans = await Self.fetchAppStorefrontPlans(
+      requests: requests,
+      currenciesByRequest: currencyByRequest,
+      exchangeRatesPerUSD: exchangeRates,
+      httpClient: httpClient,
+      concurrency: ResponseLimits.planPriceFetchConcurrency,
+      progress: progress
+    )
+    return OpenASOMCPAppPricingComparison(
+      generatedAt: now(),
+      appStoreIDs: appStoreIDs.map(String.init),
+      storefronts: storefronts,
+      prices: prices,
+      plans: plans,
+      localizedPricing: Self.localizedPricingComparisons(from: plans),
+      notes: [
+        "Base app prices come from the public iTunes lookup endpoint.",
+        "Plan prices come from the public App Store page's visible In-App Purchases rows. Apple does not reliably expose full subscription duration, intro offer, eligibility, or complete App Store Connect price schedule data through this public page.",
+        "USD-normalized plan comparisons use Frankfurter's ECB-backed exchange-rate API when available; if rates are unavailable, local display prices are still returned but USD deltas are nil.",
+        "Localized price deltas are tax-adjusted for storefronts where App Store customer prices are typically tax-inclusive. Raw customer-price deltas are still returned separately."
+      ]
     )
   }
 
@@ -823,22 +1166,11 @@ final class OpenASOMCPService: Sendable {
       )
     }
 
-    var fetched: [(RankingRefreshRequest, SearchRankingPage?, OpenASOError?)] = []
-    for request in requestBatch.requests {
-      do {
-        let page = try await Self.withRankingSearchTimeout {
-          try await provider.search(
-            keyword: request.term,
-            storefrontCode: request.storefront,
-            platform: request.platform,
-            limit: resultLimit
-          )
-        }
-        fetched.append((request, page, nil))
-      } catch {
-        fetched.append((request, nil, OpenASOError.map(error)))
-      }
-    }
+    let fetched = await Self.fetchRankingPages(
+      requests: requestBatch.requests,
+      provider: provider,
+      limit: resultLimit
+    )
 
     let fetchedResults = fetched
     return try await backgroundModelStore.write { modelContext in
@@ -903,6 +1235,149 @@ final class OpenASOMCPService: Sendable {
           failed: failures
         ),
         outcomes: outcomes
+      )
+    }
+  }
+
+  func listKeywordRankingHistory(
+    appStoreID: Int64,
+    storefronts: [String]? = nil,
+    platform: String? = nil,
+    keyword: String? = nil,
+    trackIdentityKey: String? = nil,
+    page: OpenASOMCPPageRequest = OpenASOMCPPageRequest(limit: nil, cursor: nil)
+  ) async throws -> OpenASOMCPPage<OpenASOMCPKeywordRankingSnapshot> {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
+    let platform = try platform.map(OpenASOMCPValidation.platform)
+    let keyword = try keyword.map(OpenASOMCPValidation.keyword)
+    return try await backgroundModelStore.read { modelContext in
+      let descriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.appStoreID == appStoreID
+        },
+        sortBy: [
+          SortDescriptor(\.storefront, order: .forward),
+          SortDescriptor(\.term, order: .forward),
+        ]
+      )
+      let snapshots = try modelContext.fetch(descriptor)
+        .filter { track in
+          if let trackIdentityKey, track.identityKey != trackIdentityKey { return false }
+          if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return false }
+          if let platform, track.platform != platform { return false }
+          if let keyword, track.term.localizedCaseInsensitiveCompare(keyword) != .orderedSame {
+            return false
+          }
+          return true
+        }
+        .flatMap { track in
+          track.snapshots.map { Self.keywordRankingSnapshot($0, track: track) }
+        }
+        .sorted { lhs, rhs in
+          if lhs.searchedAt == rhs.searchedAt {
+            return lhs.trackIdentityKey < rhs.trackIdentityKey
+          }
+          return lhs.searchedAt > rhs.searchedAt
+        }
+      let total = snapshots.count
+      let items = Array(snapshots.dropFirst(page.offset).prefix(page.limit))
+      return OpenASOMCPPage(
+        items: items,
+        nextCursor: OpenASOMCPValidation.nextCursor(
+          offset: page.offset,
+          limit: page.limit,
+          returnedCount: items.count,
+          totalCount: total
+        ),
+        total: total
+      )
+    }
+  }
+
+  func listKeywordRankingResults(
+    appStoreID: Int64,
+    storefronts: [String]? = nil,
+    platform: String? = nil,
+    keyword: String? = nil,
+    queryKey: String? = nil,
+    page: OpenASOMCPPageRequest = OpenASOMCPPageRequest(limit: nil, cursor: nil)
+  ) async throws -> OpenASOMCPPage<OpenASOMCPKeywordRankingCrawl> {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
+    let platform = try platform.map(OpenASOMCPValidation.platform)
+    let keyword = try keyword.map(OpenASOMCPValidation.keyword)
+    return try await backgroundModelStore.read { modelContext in
+      let trackedQueryKeys = try Self.trackedQueryKeys(
+        appStoreID: appStoreID,
+        storefronts: storefronts,
+        platform: platform,
+        keyword: keyword,
+        queryKey: queryKey,
+        in: modelContext
+      )
+      guard !trackedQueryKeys.isEmpty else {
+        return OpenASOMCPPage(items: [], nextCursor: nil, total: 0)
+      }
+
+      let descriptor = FetchDescriptor<KeywordRankingCrawl>(
+        predicate: #Predicate { crawl in
+          trackedQueryKeys.contains(crawl.queryKey)
+        },
+        sortBy: [SortDescriptor(\.observedAt, order: .reverse)]
+      )
+      let crawls = try modelContext.fetch(descriptor).filter { crawl in
+        if !storefronts.isEmpty && !storefronts.contains(crawl.storefront) { return false }
+        if let platform, crawl.platform != platform { return false }
+        if let keyword, crawl.keyword.localizedCaseInsensitiveCompare(keyword) != .orderedSame {
+          return false
+        }
+        if let queryKey, crawl.queryKey != queryKey { return false }
+        return true
+      }.map(Self.keywordRankingCrawl)
+      let total = crawls.count
+      let items = Array(crawls.dropFirst(page.offset).prefix(page.limit))
+      return OpenASOMCPPage(
+        items: items,
+        nextCursor: OpenASOMCPValidation.nextCursor(
+          offset: page.offset,
+          limit: page.limit,
+          returnedCount: items.count,
+          totalCount: total
+        ),
+        total: total
+      )
+    }
+  }
+
+  func listRatingHistory(
+    appStoreID: Int64,
+    storefronts: [String]? = nil,
+    page: OpenASOMCPPageRequest = OpenASOMCPPageRequest(limit: nil, cursor: nil)
+  ) async throws -> OpenASOMCPPage<OpenASOMCPRatingHistoryItem> {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
+    return try await backgroundModelStore.read { modelContext in
+      let descriptor = FetchDescriptor<AppDailyRating>(
+        predicate: #Predicate { rating in
+          rating.appStoreID == appStoreID
+        },
+        sortBy: [SortDescriptor(\.observedAt, order: .reverse)]
+      )
+      let ratings = try modelContext.fetch(descriptor).filter { rating in
+        storefronts.isEmpty || storefronts.contains(rating.storefront)
+      }.map(Self.ratingHistoryItem)
+      let total = ratings.count
+      let items = Array(ratings.dropFirst(page.offset).prefix(page.limit))
+      return OpenASOMCPPage(
+        items: items,
+        nextCursor: OpenASOMCPValidation.nextCursor(
+          offset: page.offset,
+          limit: page.limit,
+          returnedCount: items.count,
+          totalCount: total
+        ),
+        total: total
       )
     }
   }
@@ -1634,6 +2109,788 @@ final class OpenASOMCPService: Sendable {
       return result
     }
   }
+
+  private static func fetchRankingPages(
+    requests: [RankingRefreshRequest],
+    provider: any SearchRankingProvider,
+    limit: Int
+  ) async -> [(RankingRefreshRequest, SearchRankingPage?, OpenASOError?)] {
+    guard !requests.isEmpty else { return [] }
+
+    return await withTaskGroup(
+      of: (Int, RankingRefreshRequest, SearchRankingPage?, OpenASOError?).self,
+      returning: [(RankingRefreshRequest, SearchRankingPage?, OpenASOError?)].self
+    ) { group in
+      var nextRequestIndex = 0
+      var activeFetchCount = 0
+      var results: [(Int, RankingRefreshRequest, SearchRankingPage?, OpenASOError?)] = []
+      results.reserveCapacity(requests.count)
+
+      func enqueueNextFetchIfPossible() {
+        guard activeFetchCount < ResponseLimits.keywordRefreshConcurrency,
+          nextRequestIndex < requests.count
+        else {
+          return
+        }
+
+        let index = nextRequestIndex
+        let request = requests[index]
+        nextRequestIndex += 1
+        activeFetchCount += 1
+        group.addTask {
+          do {
+            let page = try await Self.withRankingSearchTimeout {
+              try await provider.search(
+                keyword: request.term,
+                storefrontCode: request.storefront,
+                platform: request.platform,
+                limit: limit
+              )
+            }
+            return (index, request, page, nil)
+          } catch {
+            return (index, request, nil, OpenASOError.map(error))
+          }
+        }
+      }
+
+      for _ in 0..<min(ResponseLimits.keywordRefreshConcurrency, requests.count) {
+        enqueueNextFetchIfPossible()
+      }
+
+      while let result = await group.next() {
+        activeFetchCount -= 1
+        results.append(result)
+        enqueueNextFetchIfPossible()
+      }
+
+      return results
+        .sorted { $0.0 < $1.0 }
+        .map { (_, request, page, error) in (request, page, error) }
+    }
+  }
+
+  private func pricingStorefronts(_ requestedStorefronts: [String]) async throws -> [String] {
+    if !requestedStorefronts.isEmpty {
+      return requestedStorefronts
+    }
+
+    let storefronts = try await backgroundModelStore.read { modelContext in
+      try modelContext.fetch(
+        FetchDescriptor<Storefront>(sortBy: [SortDescriptor(\.code, order: .forward)])
+      ).map(\.code)
+    }
+    if !storefronts.isEmpty {
+      return storefronts
+    }
+
+    if let bundledStorefronts = try? StorefrontCatalog.bundledStorefrontCodes(),
+       !bundledStorefronts.isEmpty
+    {
+      return bundledStorefronts
+    }
+
+    return Self.defaultLocalizationStorefronts
+  }
+
+  private static func fetchAppPricing(
+    requests: [AppPricingFetchRequest],
+    httpClient: any HTTPClient,
+    concurrency: Int
+  ) async -> [OpenASOMCPAppStorefrontPrice] {
+    guard !requests.isEmpty else { return [] }
+
+    return await withTaskGroup(
+      of: (Int, OpenASOMCPAppStorefrontPrice).self,
+      returning: [OpenASOMCPAppStorefrontPrice].self
+    ) { group in
+      var nextRequestIndex = 0
+      var activeFetchCount = 0
+      var results: [(Int, OpenASOMCPAppStorefrontPrice)] = []
+      results.reserveCapacity(requests.count)
+
+      func enqueueNextFetchIfPossible() {
+        guard activeFetchCount < concurrency,
+              nextRequestIndex < requests.count
+        else {
+          return
+        }
+
+        let index = nextRequestIndex
+        let request = requests[index]
+        nextRequestIndex += 1
+        activeFetchCount += 1
+        group.addTask {
+          (index, await appPrice(for: request, httpClient: httpClient))
+        }
+      }
+
+      for _ in 0..<min(concurrency, requests.count) {
+        enqueueNextFetchIfPossible()
+      }
+
+      while let result = await group.next() {
+        activeFetchCount -= 1
+        results.append(result)
+        enqueueNextFetchIfPossible()
+      }
+
+      return results.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+  }
+
+  private static func appPrice(
+    for request: AppPricingFetchRequest,
+    httpClient: any HTTPClient
+  ) async -> OpenASOMCPAppStorefrontPrice {
+    do {
+      var components = URLComponents(string: "https://itunes.apple.com/lookup")!
+      components.queryItems = [
+        URLQueryItem(name: "id", value: String(request.appStoreID)),
+        URLQueryItem(name: "country", value: request.storefront)
+      ]
+      guard let url = components.url else {
+        throw OpenASOError.unexpectedResponse
+      }
+
+      var urlRequest = URLRequest(url: url)
+      urlRequest.timeoutInterval = 20
+      let data = try await validatedData(for: urlRequest, using: httpClient)
+      let response = try JSONDecoder().decode(AppPricingLookupResponse.self, from: data)
+      guard let payload = response.results.first else {
+        throw OpenASOError.appNotFound
+      }
+
+      return OpenASOMCPAppStorefrontPrice(
+        appStoreID: String(request.appStoreID),
+        storefront: request.storefront,
+        currency: payload.currency,
+        price: payload.price,
+        formattedPrice: payload.formattedPrice,
+        isFree: payload.price.map { $0 == 0 },
+        error: nil
+      )
+    } catch {
+      return OpenASOMCPAppStorefrontPrice(
+        appStoreID: String(request.appStoreID),
+        storefront: request.storefront,
+        currency: nil,
+        price: nil,
+        formattedPrice: nil,
+        isFree: nil,
+        error: OpenASOMCPErrorDTO(OpenASOError.map(error))
+      )
+    }
+  }
+
+  static func fetchUSDExchangeRates(httpClient: any HTTPClient) async -> [String: Double] {
+    guard let url = URL(string: "https://api.frankfurter.app/latest?from=USD") else { return [:] }
+    do {
+      let request = URLRequest(url: url, timeoutInterval: 20)
+      let data = try await validatedData(for: request, using: httpClient)
+      let response = try JSONDecoder().decode(USDExchangeRateResponse.self, from: data)
+      return response.rates
+    } catch {
+      return [:]
+    }
+  }
+
+  static func fetchAppStorefrontPlans(
+    requests: [AppPricingFetchRequest],
+    currenciesByRequest: [AppPricingFetchRequest: String],
+    exchangeRatesPerUSD: [String: Double],
+    httpClient: any HTTPClient,
+    concurrency: Int,
+    progress: (@Sendable (Int, Int, Int) async -> Void)? = nil
+  ) async -> [OpenASOMCPAppStorefrontPlan] {
+    guard !requests.isEmpty else { return [] }
+
+    return await withTaskGroup(
+      of: (Int, [OpenASOMCPAppStorefrontPlan]).self,
+      returning: [OpenASOMCPAppStorefrontPlan].self
+    ) { group in
+      var nextRequestIndex = 0
+      var activeFetchCount = 0
+      var completedFetchCount = 0
+      var failureCount = 0
+      var results: [(Int, [OpenASOMCPAppStorefrontPlan])] = []
+      results.reserveCapacity(requests.count)
+
+      func enqueueNextFetchIfPossible() {
+        guard activeFetchCount < concurrency,
+              nextRequestIndex < requests.count
+        else {
+          return
+        }
+
+        let index = nextRequestIndex
+        let request = requests[index]
+        nextRequestIndex += 1
+        activeFetchCount += 1
+        group.addTask {
+          (
+            index,
+            await appStorefrontPlans(
+              for: request,
+              currency: currenciesByRequest[request],
+              exchangeRatesPerUSD: exchangeRatesPerUSD,
+              httpClient: httpClient
+            )
+          )
+        }
+      }
+
+      for _ in 0..<min(concurrency, requests.count) {
+        enqueueNextFetchIfPossible()
+      }
+
+      while let result = await group.next() {
+        activeFetchCount -= 1
+        completedFetchCount += 1
+        if result.1.contains(where: { $0.error != nil }) {
+          failureCount += 1
+        }
+        results.append(result)
+        await progress?(completedFetchCount, requests.count, failureCount)
+        enqueueNextFetchIfPossible()
+      }
+
+      return results.sorted { $0.0 < $1.0 }.flatMap(\.1)
+    }
+  }
+
+  private static func appStorefrontPlans(
+    for request: AppPricingFetchRequest,
+    currency: String?,
+    exchangeRatesPerUSD: [String: Double],
+    httpClient: any HTTPClient
+  ) async -> [OpenASOMCPAppStorefrontPlan] {
+    do {
+      guard let url = URL(string: "https://apps.apple.com/\(request.storefront)/app/id\(request.appStoreID)") else {
+        throw OpenASOError.invalidAppStoreID
+      }
+      var urlRequest = URLRequest(url: url, timeoutInterval: 20)
+      urlRequest.setValue(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        forHTTPHeaderField: "User-Agent"
+      )
+      urlRequest.setValue(
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        forHTTPHeaderField: "Accept"
+      )
+      let data = try await validatedData(for: urlRequest, using: httpClient)
+      guard let html = String(data: data, encoding: .utf8) else {
+        throw OpenASOError.decodingFailed
+      }
+      let rows = try inAppPurchaseRows(fromAppStoreHTML: html)
+      let parsedRows = rows.enumerated().map { index, row in
+        let parsedPrice = parsedPlanPrice(row.displayPrice, currency: currency)
+        return AppStorefrontParsedPlanRow(
+          index: index,
+          row: row,
+          price: parsedPrice.amount,
+          currency: parsedPrice.currency,
+          priceUSD: usdValue(
+            amount: parsedPrice.amount,
+            currency: parsedPrice.currency,
+            exchangeRatesPerUSD: exchangeRatesPerUSD
+          ),
+          explicitBillingCadence: inferredBillingCadence(name: row.name)
+        )
+      }
+      let inferredCadences = inferredBillingCadences(for: parsedRows)
+      return parsedRows.map { parsedRow in
+        let row = parsedRow.row
+        return OpenASOMCPAppStorefrontPlan(
+          appStoreID: String(request.appStoreID),
+          storefront: request.storefront,
+          name: row.name,
+          displayPrice: row.displayPrice,
+          currency: parsedRow.currency,
+          price: parsedRow.price,
+          priceUSD: parsedRow.priceUSD,
+          billingCadence: inferredCadences[parsedRow.index],
+          source: "app_store_page_in_app_purchases",
+          error: nil
+        )
+      }
+    } catch {
+      return [
+        OpenASOMCPAppStorefrontPlan(
+          appStoreID: String(request.appStoreID),
+          storefront: request.storefront,
+          name: "",
+          displayPrice: "",
+          currency: currency,
+          price: nil,
+          priceUSD: nil,
+          billingCadence: nil,
+          source: "app_store_page_in_app_purchases",
+          error: OpenASOMCPErrorDTO(OpenASOError.map(error))
+        )
+      ]
+    }
+  }
+
+  static func localizedPricingComparisons(
+    from plans: [OpenASOMCPAppStorefrontPlan]
+  ) -> [OpenASOMCPLocalizedPricingComparison] {
+    let successfulPlans = plans.filter { $0.error == nil && !$0.name.isEmpty }
+    let usPlansByKey = Dictionary(grouping: successfulPlans.filter { $0.storefront == "us" }) {
+      localizedPricingPlanKey($0)
+    }.compactMapValues { plans in
+      plans.first { $0.priceUSD != nil } ?? plans.first
+    }
+    let adjustmentFactorsByStorefront = storefrontAdjustmentFactors(
+      plans: successfulPlans,
+      usPlansByKey: usPlansByKey
+    )
+
+    return successfulPlans.compactMap { plan -> OpenASOMCPLocalizedPricingComparison? in
+      guard plan.storefront != "us",
+            let usPlan = usPlansByKey[localizedPricingPlanKey(plan)]
+      else {
+        return nil
+      }
+      let taxRate = appStoreTaxInclusiveRate(for: plan.storefront)
+      let adjustedPriceUSD = taxAdjustedPriceUSD(plan.priceUSD, storefront: plan.storefront)
+      let usAdjustedPriceUSD = taxAdjustedPriceUSD(usPlan.priceUSD, storefront: usPlan.storefront)
+      let rawDifference = percentDifference(plan.priceUSD, baseline: usPlan.priceUSD)
+      let factor = priceFactor(adjustedPriceUSD, baseline: usAdjustedPriceUSD)
+      let storefrontAdjustmentFactor = adjustmentFactorsByStorefront[storefrontAdjustmentKey(plan)]
+      let storefrontAdjustmentDifference = storefrontAdjustmentFactor.map { ($0 - 1) * 100 }
+      let taxAdjustedDifference = percentDifference(adjustedPriceUSD, baseline: usAdjustedPriceUSD)
+      let difference = appleAdjustedPercentDifference(
+        factor: factor,
+        storefrontAdjustmentFactor: storefrontAdjustmentFactor
+      ) ?? taxAdjustedDifference
+      return OpenASOMCPLocalizedPricingComparison(
+        appStoreID: plan.appStoreID,
+        planName: plan.name,
+        storefront: plan.storefront,
+        displayPrice: plan.displayPrice,
+        currency: plan.currency,
+        price: plan.price,
+        priceUSD: plan.priceUSD,
+        taxAdjustedPriceUSD: adjustedPriceUSD,
+        estimatedTaxRate: taxRate,
+        priceIncludesTax: taxRate != nil,
+        usDisplayPrice: usPlan.displayPrice,
+        usPrice: usPlan.price,
+        usPriceUSD: usPlan.priceUSD,
+        usTaxAdjustedPriceUSD: usAdjustedPriceUSD,
+        rawPercentDifferenceFromUS: rawDifference,
+        appleStorefrontAdjustmentPercentFromUS: storefrontAdjustmentDifference,
+        percentDifferenceFromUS: difference,
+        isLowerThanUS: difference.map { $0 < -1 },
+        isHigherThanUS: difference.map { $0 > 1 }
+      )
+    }
+  }
+
+  private static func storefrontAdjustmentFactors(
+    plans: [OpenASOMCPAppStorefrontPlan],
+    usPlansByKey: [String: OpenASOMCPAppStorefrontPlan]
+  ) -> [String: Double] {
+    let candidates = plans.compactMap { plan -> LocalizedPricingAdjustmentCandidate? in
+      guard normalizedPricingStorefront(plan.storefront) != "us",
+            let usPlan = usPlansByKey[localizedPricingPlanKey(plan)],
+            let cadence = normalizedPricingCadence(plan.billingCadence),
+            let factor = priceFactor(
+              taxAdjustedPriceUSD(plan.priceUSD, storefront: plan.storefront),
+              baseline: taxAdjustedPriceUSD(usPlan.priceUSD, storefront: usPlan.storefront)
+            )
+      else {
+        return nil
+      }
+      return LocalizedPricingAdjustmentCandidate(
+        appStoreID: plan.appStoreID,
+        storefront: normalizedPricingStorefront(plan.storefront),
+        cadence: cadence,
+        factor: factor
+      )
+    }
+
+    let reliableCandidates = Dictionary(grouping: candidates) { candidate in
+      [candidate.appStoreID, candidate.storefront].joined(separator: "::")
+    }.values.flatMap { appStorefrontCandidates -> [LocalizedPricingAdjustmentCandidate] in
+      let cadences = Set(appStorefrontCandidates.map(\.cadence))
+      guard appStorefrontCandidates.count >= 2, cadences.count >= 2 else {
+        return []
+      }
+      let center = median(appStorefrontCandidates.map(\.factor))
+      guard center > 0 else { return [] }
+      let largestDeviation = appStorefrontCandidates
+        .map { abs(($0.factor / center) - 1) }
+        .max() ?? 0
+      return largestDeviation <= 0.075 ? appStorefrontCandidates : []
+    }
+
+    let factorsByStorefront = Dictionary(grouping: reliableCandidates) { candidate in
+      [candidate.storefront, candidate.cadence].joined(separator: "::")
+    }
+
+    return factorsByStorefront.mapValues { values in
+      median(values.map(\.factor))
+    }
+  }
+
+  private static func appleAdjustedPercentDifference(
+    factor: Double?,
+    storefrontAdjustmentFactor: Double?
+  ) -> Double? {
+    guard let factor,
+          let storefrontAdjustmentFactor,
+          storefrontAdjustmentFactor > 0
+    else {
+      return nil
+    }
+    let difference = ((factor / storefrontAdjustmentFactor) - 1) * 100
+    return abs(difference) <= 2.5 ? 0 : difference
+  }
+
+  private static func priceFactor(_ value: Double?, baseline: Double?) -> Double? {
+    guard let value,
+          let baseline,
+          baseline > 0
+    else {
+      return nil
+    }
+    return value / baseline
+  }
+
+  private static func median(_ values: [Double]) -> Double {
+    let sorted = values.sorted()
+    guard !sorted.isEmpty else { return 1 }
+    let middle = sorted.count / 2
+    if sorted.count.isMultiple(of: 2) {
+      return (sorted[middle - 1] + sorted[middle]) / 2
+    }
+    return sorted[middle]
+  }
+
+  private static func percentDifference(_ value: Double?, baseline: Double?) -> Double? {
+    guard let value,
+          let baseline,
+          baseline > 0
+    else {
+      return nil
+    }
+    return ((value - baseline) / baseline) * 100
+  }
+
+  private static func taxAdjustedPriceUSD(_ value: Double?, storefront: String) -> Double? {
+    guard let value else { return nil }
+    guard let taxRate = appStoreTaxInclusiveRate(for: storefront) else {
+      return value
+    }
+    return value / (1 + taxRate)
+  }
+
+  private static func appStoreTaxInclusiveRate(for storefront: String) -> Double? {
+    appStoreTaxInclusiveRatesByStorefront[
+      normalizedPricingStorefront(storefront)
+    ]
+  }
+
+  private static func normalizedPricingStorefront(_ storefront: String) -> String {
+    storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  private struct LocalizedPricingAdjustmentCandidate {
+    let appStoreID: String
+    let storefront: String
+    let cadence: String
+    let factor: Double
+  }
+
+  private static func inAppPurchaseRows(fromAppStoreHTML html: String) throws -> [AppStorefrontPlanRow] {
+    guard let serializedData = AppStoreWebMetadataProvider.serializedServerData(from: html) else {
+      throw OpenASOError.decodingFailed
+    }
+    let jsonData = Data(AppStoreWebMetadataProvider.htmlDecoded(serializedData).utf8)
+    guard let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+      throw OpenASOError.decodingFailed
+    }
+    var rows: [AppStorefrontPlanRow] = []
+    collectInAppPurchaseRows(from: json, into: &rows)
+    var seen = Set<String>()
+    return rows.filter { row in
+      !isConsumablePricingRow(row)
+        && seen.insert("\(normalizedPricingPlanName(row.name))::\(row.displayPrice)").inserted
+    }
+  }
+
+  private static func collectInAppPurchaseRows(from value: Any, into rows: inout [AppStorefrontPlanRow]) {
+    if let dictionary = value as? [String: Any] {
+      if isInAppPurchasesSectionTitle(dictionary["title"] as? String) {
+        if let pairs = dictionary["items_V3"] as? [[String: Any]] {
+          for pair in pairs {
+            guard let name = pair["leadingText"] as? String,
+                  let displayPrice = pair["trailingText"] as? String
+            else {
+              continue
+            }
+            rows.append(AppStorefrontPlanRow(name: name, displayPrice: displayPrice))
+          }
+        }
+        if let items = dictionary["items"] as? [[String: Any]] {
+          for item in items {
+            guard let textPairs = item["textPairs"] as? [[String]] else { continue }
+            for pair in textPairs where pair.count >= 2 {
+              rows.append(AppStorefrontPlanRow(name: pair[0], displayPrice: pair[1]))
+            }
+          }
+        }
+      }
+      for child in dictionary.values {
+        collectInAppPurchaseRows(from: child, into: &rows)
+      }
+    } else if let array = value as? [Any] {
+      for child in array {
+        collectInAppPurchaseRows(from: child, into: &rows)
+      }
+    }
+  }
+
+  private static func parsedPlanPrice(
+    _ displayPrice: String,
+    currency fallbackCurrency: String?
+  ) -> (amount: Double?, currency: String?) {
+    let amountString = displayPrice
+      .replacingOccurrences(of: "\u{00A0}", with: " ")
+      .components(separatedBy: CharacterSet(charactersIn: "0123456789.,").inverted)
+      .compactMap(normalizedDecimalPrice)
+      .first
+    let amount = amountString.flatMap(Double.init)
+    let currency = fallbackCurrency ?? currencyCode(fromDisplayPrice: displayPrice)
+    return (amount, currency)
+  }
+
+  private static func normalizedDecimalPrice(_ value: String) -> String? {
+    let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard raw.contains(where: \.isNumber) else { return nil }
+
+    let separators = raw.enumerated().filter { $0.element == "." || $0.element == "," }
+    guard let lastSeparator = separators.last else {
+      return raw.filter(\.isNumber)
+    }
+
+    let decimalSeparator = lastSeparator.element
+    let separatorIndex = raw.index(raw.startIndex, offsetBy: lastSeparator.offset)
+    let fractionalDigitCount = raw[raw.index(after: separatorIndex)...]
+      .filter(\.isNumber)
+      .count
+    let treatsLastSeparatorAsDecimal = fractionalDigitCount == 2
+      || (separators.count == 1 && fractionalDigitCount > 0 && fractionalDigitCount < 3)
+
+    var normalized = ""
+    for (offset, character) in raw.enumerated() {
+      if character.isNumber {
+        normalized.append(character)
+      } else if treatsLastSeparatorAsDecimal && offset == lastSeparator.offset && character == decimalSeparator {
+        normalized.append(".")
+      }
+    }
+    return normalized
+  }
+
+  private static func currencyCode(fromDisplayPrice displayPrice: String) -> String? {
+    let value = displayPrice.trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.contains("R$") { return "BRL" }
+    if value.contains("₩") { return "KRW" }
+    if value.contains("₹") { return "INR" }
+    if value.contains("€") { return "EUR" }
+    if value.contains("£") { return "GBP" }
+    if value.contains("¥") { return "JPY" }
+    if value.contains("$") { return "USD" }
+    return nil
+  }
+
+  private static func usdValue(
+    amount: Double?,
+    currency: String?,
+    exchangeRatesPerUSD: [String: Double]
+  ) -> Double? {
+    guard let amount, let currency else { return nil }
+    if currency == "USD" { return amount }
+    guard let rate = exchangeRatesPerUSD[currency], rate > 0 else { return nil }
+    return amount / rate
+  }
+
+  private static func inferredBillingCadence(name: String) -> String? {
+    let normalized = name.lowercased()
+    if normalized.contains("annual") || normalized.contains("year") || normalized.contains("yr") {
+      return "yearly"
+    }
+    if normalized.contains("quarter") {
+      return "quarterly"
+    }
+    if normalized.contains("month") || normalized.contains("monthly") {
+      return "monthly"
+    }
+    if normalized.contains("week") || normalized.contains("weekly") {
+      return "weekly"
+    }
+    return nil
+  }
+
+  private static func inferredBillingCadences(
+    for rows: [AppStorefrontParsedPlanRow]
+  ) -> [Int: String] {
+    var cadences: [Int: String] = [:]
+    for row in rows {
+      if let explicitBillingCadence = row.explicitBillingCadence {
+        cadences[row.index] = explicitBillingCadence
+      }
+    }
+
+    let groupedRows = Dictionary(grouping: rows) { row in
+      normalizedPricingPlanName(row.row.name)
+    }
+
+    for group in groupedRows.values {
+      let unknownRows = group.filter { cadences[$0.index] == nil && $0.price != nil }
+      guard !unknownRows.isEmpty else { continue }
+
+      let knownRows = group.filter { cadences[$0.index] != nil && $0.price != nil }
+      if let monthlyPrice = knownRows.first(where: { cadences[$0.index] == "monthly" })?.price {
+        for row in unknownRows {
+          guard let price = row.price else { continue }
+          if price > monthlyPrice {
+            cadences[row.index] = "yearly"
+          } else if price < monthlyPrice {
+            cadences[row.index] = "weekly"
+          } else {
+            cadences[row.index] = "monthly"
+          }
+        }
+        continue
+      }
+
+      let uniquePrices = Array(Set(unknownRows.compactMap(\.price))).sorted(by: >)
+      guard !uniquePrices.isEmpty else { continue }
+
+      for row in unknownRows {
+        guard let price = row.price else { continue }
+        if uniquePrices.count == 1 {
+          cadences[row.index] = "monthly"
+        } else if uniquePrices.count == 2 {
+          cadences[row.index] = price == uniquePrices[0] ? "yearly" : "monthly"
+        } else if price == uniquePrices.first {
+          cadences[row.index] = "yearly"
+        } else if price == uniquePrices.last {
+          cadences[row.index] = "weekly"
+        } else {
+          cadences[row.index] = "monthly"
+        }
+      }
+    }
+
+    return cadences
+  }
+
+  private static func localizedPricingPlanKey(_ plan: OpenASOMCPAppStorefrontPlan) -> String {
+    let cadence = normalizedPricingCadence(plan.billingCadence)
+    if let cadence, !cadence.isEmpty {
+      return [
+        plan.appStoreID,
+        "cadence",
+        cadence
+      ].joined(separator: "::")
+    }
+    return [
+      plan.appStoreID,
+      "name",
+      normalizedPricingPlanName(plan.name)
+    ].joined(separator: "::")
+  }
+
+  private static func storefrontAdjustmentKey(_ plan: OpenASOMCPAppStorefrontPlan) -> String {
+    [
+      normalizedPricingStorefront(plan.storefront),
+      normalizedPricingCadence(plan.billingCadence) ?? "unknown"
+    ].joined(separator: "::")
+  }
+
+  private static func normalizedPricingCadence(_ cadence: String?) -> String? {
+    let normalized = cadence?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard let normalized, !normalized.isEmpty else { return nil }
+    return normalized
+  }
+
+  private static func normalizedPricingPlanName(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  private static func isConsumablePricingRow(_ row: AppStorefrontPlanRow) -> Bool {
+    let tokens = normalizedPricingPlanName(row.name)
+      .split { !$0.isLetter && !$0.isNumber }
+      .map(String.init)
+    return tokens.contains("pearl") || tokens.contains("pearls")
+  }
+
+  private static func isInAppPurchasesSectionTitle(_ title: String?) -> Bool {
+    guard let title else { return false }
+    let normalized = title
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+      .replacingOccurrences(of: "\u{2011}", with: "-")
+      .replacingOccurrences(of: "\u{2013}", with: "-")
+      .replacingOccurrences(of: "\u{2014}", with: "-")
+    return localizedInAppPurchaseSectionTitles.contains(normalized)
+  }
+
+  private static let localizedInAppPurchaseSectionTitles: Set<String> = [
+    "in-app purchases",
+    "in-app purchase",
+    "in-app-käufe",
+    "achats intégrés",
+    "compras dentro do app",
+    "compras dentro de la app",
+    "compras dentro de la aplicación",
+    "in-app aankopen",
+    "acquisti in-app",
+    "köp inuti app",
+    "アプリ内課金",
+    "앱 내 구입",
+    "앱 내 구매",
+    "内购项目",
+    "app内課金"
+  ]
+}
+
+struct AppPricingFetchRequest: Sendable, Hashable {
+  let appStoreID: Int64
+  let storefront: String
+}
+
+private struct AppPricingLookupResponse: Decodable {
+  let results: [AppPricingLookupPayload]
+}
+
+private struct AppPricingLookupPayload: Decodable {
+  let price: Double?
+  let formattedPrice: String?
+  let currency: String?
+}
+
+private struct AppStorefrontPlanRow: Sendable {
+  let name: String
+  let displayPrice: String
+}
+
+private struct AppStorefrontParsedPlanRow: Sendable {
+  let index: Int
+  let row: AppStorefrontPlanRow
+  let price: Double?
+  let currency: String?
+  let priceUSD: Double?
+  let explicitBillingCadence: String?
+}
+
+private struct USDExchangeRateResponse: Decodable {
+  let rates: [String: Double]
 }
 
 extension OpenASOMCPService {
@@ -2700,6 +3957,142 @@ extension OpenASOMCPService {
     )
   }
 
+  fileprivate static func globalKeywordTemplates() -> [GlobalTrackedKeywordTemplate] {
+    let json = UserDefaults.standard.string(forKey: globalKeywordTemplatesKey) ?? "[]"
+    return GlobalTrackedKeywordTemplate.decodeList(from: json)
+      .sorted {
+        if $0.storefront == $1.storefront {
+          if $0.platformRaw == $1.platformRaw {
+            return $0.term.localizedStandardCompare($1.term) == .orderedAscending
+          }
+          return $0.platformRaw < $1.platformRaw
+        }
+        return $0.storefront < $1.storefront
+      }
+  }
+
+  fileprivate static func setGlobalKeywordTemplates(_ templates: [GlobalTrackedKeywordTemplate]) {
+    UserDefaults.standard.set(
+      GlobalTrackedKeywordTemplate.encodeList(templates),
+      forKey: globalKeywordTemplatesKey
+    )
+  }
+
+  fileprivate static func globalKeywordTemplate(_ template: GlobalTrackedKeywordTemplate)
+    -> OpenASOMCPGlobalKeywordTemplate
+  {
+    OpenASOMCPGlobalKeywordTemplate(
+      id: template.id,
+      keyword: template.term,
+      storefront: template.storefront,
+      platform: template.platform.rawValue,
+      createdAt: template.createdAt
+    )
+  }
+
+  fileprivate static func deleteSnapshots(for track: TrackedAppKeyword, in modelContext: ModelContext) {
+    for snapshot in track.snapshots {
+      for result in snapshot.topResults {
+        modelContext.delete(result)
+      }
+      snapshot.topResults.removeAll()
+      modelContext.delete(snapshot)
+    }
+    track.snapshots.removeAll()
+  }
+
+  fileprivate static func keywordRankingSnapshot(
+    _ snapshot: TrackedKeywordDailyRanking,
+    track: TrackedAppKeyword
+  ) -> OpenASOMCPKeywordRankingSnapshot {
+    OpenASOMCPKeywordRankingSnapshot(
+      id: snapshot.snapshotKey,
+      trackIdentityKey: track.identityKey,
+      appStoreID: String(track.appStoreID),
+      keyword: track.term,
+      queryKey: track.queryKey,
+      storefront: track.storefront,
+      platform: track.platform.rawValue,
+      rank: snapshot.rank,
+      searchedAt: snapshot.searchedAt,
+      source: snapshot.source.rawValue,
+      resultCount: snapshot.resultCount,
+      errorMessage: snapshot.errorMessage,
+      topResults: snapshot.sortedTopResults.map(trackedKeywordRankedResult)
+    )
+  }
+
+  fileprivate static func trackedKeywordRankedResult(_ result: TrackedKeywordRankedResult)
+    -> OpenASOMCPTrackedKeywordRankedResult
+  {
+    OpenASOMCPTrackedKeywordRankedResult(
+      position: result.position,
+      appStoreID: String(result.appStoreID),
+      bundleID: result.bundleID,
+      name: result.name,
+      subtitle: result.subtitle,
+      sellerName: result.sellerName
+    )
+  }
+
+  fileprivate static func keywordRankingCrawl(_ crawl: KeywordRankingCrawl)
+    -> OpenASOMCPKeywordRankingCrawl
+  {
+    OpenASOMCPKeywordRankingCrawl(
+      id: crawl.observationKey,
+      queryKey: crawl.queryKey,
+      keyword: crawl.keyword,
+      storefront: crawl.storefront,
+      platform: crawl.platform.rawValue,
+      observedAt: crawl.observedAt,
+      observedHour: crawl.observedHour,
+      source: crawl.source.rawValue,
+      resultCount: crawl.resultCount,
+      submissionCount: crawl.submissionCount,
+      winningCount: crawl.winningCount,
+      confidence: crawl.confidenceRaw,
+      items: crawl.sortedItems.map(keywordRankingItem)
+    )
+  }
+
+  fileprivate static func keywordRankingItem(_ item: KeywordAppRanking) -> OpenASOMCPRankedApp {
+    OpenASOMCPRankedApp(
+      id: String(item.appStoreID),
+      appStoreID: String(item.appStoreID),
+      position: item.position,
+      name: item.name,
+      subtitle: item.subtitle,
+      sellerName: item.sellerName,
+      bundleID: item.bundleID,
+      iconURLString: nil,
+      primaryGenreName: nil,
+      ratingCount: nil,
+      averageRating: nil,
+      screenshotURLs: []
+    )
+  }
+
+  fileprivate static func ratingHistoryItem(_ rating: AppDailyRating) -> OpenASOMCPRatingHistoryItem {
+    OpenASOMCPRatingHistoryItem(
+      id: rating.identityKey,
+      appStoreID: String(rating.appStoreID),
+      storefront: rating.storefront,
+      ratingDate: rating.ratingDate,
+      ratingCount: rating.ratingCount,
+      averageRating: rating.averageRating,
+      oneStarRatingCount: rating.oneStarRatingCount,
+      twoStarRatingCount: rating.twoStarRatingCount,
+      threeStarRatingCount: rating.threeStarRatingCount,
+      fourStarRatingCount: rating.fourStarRatingCount,
+      fiveStarRatingCount: rating.fiveStarRatingCount,
+      observedAt: rating.observedAt,
+      submissionCount: rating.submissionCount,
+      winningCount: rating.winningCount,
+      confidence: rating.confidenceRaw,
+      source: rating.source.rawValue
+    )
+  }
+
   fileprivate static func keywordScore(_ keyword: OpenASOMCPKeywordSummary)
     -> OpenASOMCPKeywordScore
   {
@@ -3273,6 +4666,30 @@ extension OpenASOMCPService {
         difficultyScore: $0.difficultyScore
       )
     }
+  }
+
+  fileprivate static func trackedQueryKeys(
+    appStoreID: Int64,
+    storefronts: Set<String>,
+    platform: AppPlatform?,
+    keyword: String?,
+    queryKey: String?,
+    in modelContext: ModelContext
+  ) throws -> [String] {
+    let descriptor = FetchDescriptor<TrackedAppKeyword>(
+      predicate: #Predicate { track in
+        track.appStoreID == appStoreID
+      }
+    )
+    return Array(Set(try modelContext.fetch(descriptor).compactMap { track in
+      if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return nil }
+      if let platform, track.platform != platform { return nil }
+      if let keyword, track.term.localizedCaseInsensitiveCompare(keyword) != .orderedSame {
+        return nil
+      }
+      if let queryKey, track.queryKey != queryKey { return nil }
+      return track.queryKey
+    }))
   }
 
   fileprivate static func deriveCompetitors(

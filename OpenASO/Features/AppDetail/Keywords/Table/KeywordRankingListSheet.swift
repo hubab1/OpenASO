@@ -610,7 +610,7 @@ private struct AppStorefrontMetadataDisplayValue {
     }
 }
 
-private struct AppStoreScreenshotDisplayValue: Identifiable, Hashable {
+private struct AppStoreScreenshotDisplayValue: Identifiable, Hashable, Sendable {
     let id: String
     let platformRaw: String
     let displayTypeRaw: String
@@ -649,7 +649,7 @@ private struct AppStoreScreenshotDisplayValue: Identifiable, Hashable {
     }
 }
 
-private struct ScreenshotPlatformGroup: Identifiable, Hashable {
+private struct ScreenshotPlatformGroup: Identifiable, Hashable, Sendable {
     let platformRaw: String
     let screenshots: [AppStoreScreenshotDisplayValue]
 
@@ -1451,7 +1451,7 @@ private struct KeywordRankingListHeader: View {
     }
 }
 
-private struct KeywordRankingScreenshotExportApp {
+private struct KeywordRankingScreenshotExportApp: Sendable {
     let rank: Int
     let appStoreID: Int64
     let name: String
@@ -1465,13 +1465,13 @@ private struct KeywordRankingScreenshotExportApp {
     }
 }
 
-private struct KeywordRankingScreenshotExportSummary {
+private struct KeywordRankingScreenshotExportSummary: Sendable {
     let downloadedCount: Int
     let failureCount: Int
     let skippedAppCount: Int
 }
 
-private final class KeywordRankingScreenshotExportService {
+private final class KeywordRankingScreenshotExportService: Sendable {
     private let downloader: ScreenshotDownloadService
 
     init(downloader: ScreenshotDownloadService) {
@@ -1644,14 +1644,14 @@ private final class KeywordRankingScreenshotExportService {
         return formatter
     }
 
-    private struct PlannedApp {
+    private struct PlannedApp: Sendable {
         let rank: Int
         let appStoreID: Int64
         let name: String
         let screenshots: [PlannedScreenshot]
     }
 
-    private struct PlannedScreenshot {
+    private struct PlannedScreenshot: Sendable {
         let job: ScreenshotDownloadJob
         let platformRaw: String
         let displayTypeRaw: String

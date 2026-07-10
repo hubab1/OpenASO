@@ -59,7 +59,8 @@ struct OpenASOMCPServerFactory: Sendable {
 
     private func registerResources(on server: Server) async {
         await server.withMethodHandler(ListResources.self) { _ in
-            ListResources.Result(resources: Self.resources)
+            let apps = try await service.listApps()
+            return ListResources.Result(resources: Self.resources(apps: apps.items))
         }
 
         await server.withMethodHandler(ReadResource.self) { parameters -> ReadResource.Result in
@@ -76,6 +77,9 @@ struct OpenASOMCPServerFactory: Sendable {
             case "openaso://apps":
                 let apps = try await service.listApps()
                 return try Self.resourceResult(uri: parameters.uri, value: apps)
+            case "openaso://keywords/global":
+                let keywords = try service.listGlobalKeywords()
+                return try Self.resourceResult(uri: parameters.uri, value: keywords)
             default:
                 return try await readAppResource(uri: parameters.uri)
             }
@@ -118,6 +122,24 @@ struct OpenASOMCPServerFactory: Sendable {
                 lookbackDays: 180
             )
             return try Self.resourceResult(uri: uri, value: competitors)
+        case .rankingHistory:
+            let rankings = try await service.listKeywordRankingHistory(
+                appStoreID: resource.appStoreID,
+                page: .init(limit: 100, cursor: nil)
+            )
+            return try Self.resourceResult(uri: uri, value: rankings)
+        case .rankingResults:
+            let rankings = try await service.listKeywordRankingResults(
+                appStoreID: resource.appStoreID,
+                page: .init(limit: 100, cursor: nil)
+            )
+            return try Self.resourceResult(uri: uri, value: rankings)
+        case .ratingHistory:
+            let ratings = try await service.listRatingHistory(
+                appStoreID: resource.appStoreID,
+                page: .init(limit: 100, cursor: nil)
+            )
+            return try Self.resourceResult(uri: uri, value: ratings)
         }
     }
 
@@ -194,6 +216,13 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "list_global_keywords":
+            let result = try service.listGlobalKeywords(
+                storefronts: arguments.stringArray("storefronts"),
+                platform: arguments.string("platform")
+            )
+            return try Self.toolResult(result)
+
         case "score_keywords":
             let result = try await service.scoreKeywords(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
@@ -211,6 +240,14 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "add_global_keywords":
+            let result = try service.addGlobalKeywords(
+                keywords: try arguments.requiredStringArray("keywords"),
+                storefronts: try arguments.requiredStringArray("storefronts"),
+                platform: arguments.string("platform")
+            )
+            return try Self.toolResult(result)
+
         case "update_keyword_notes":
             let result = try await service.updateKeywordNotes(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
@@ -219,6 +256,45 @@ struct OpenASOMCPServerFactory: Sendable {
                 platform: arguments.string("platform"),
                 notes: try arguments.requiredString("notes")
             )
+            return try Self.toolResult(result)
+
+        case "update_keyword_track":
+            let result = try await service.updateKeywordTrack(
+                trackIdentityKey: try arguments.requiredString("track_identity_key"),
+                keyword: arguments.string("keyword"),
+                storefront: arguments.string("storefront"),
+                platform: arguments.string("platform"),
+                notes: arguments.string("notes")
+            )
+            return try Self.toolResult(result)
+
+        case "delete_keyword_track":
+            let result = try await service.deleteKeywordTrack(
+                trackIdentityKey: try arguments.requiredString("track_identity_key")
+            )
+            return try Self.toolResult(result)
+
+        case "reset_keywords":
+            let result = try await service.resetKeywords(
+                appStoreID: try arguments.requiredInt64("appStoreID")
+            )
+            return try Self.toolResult(result)
+
+        case "update_global_keyword":
+            let result = try service.updateGlobalKeyword(
+                id: try arguments.requiredString("id"),
+                keyword: try arguments.requiredString("keyword"),
+                storefront: try arguments.requiredString("storefront"),
+                platform: arguments.string("platform")
+            )
+            return try Self.toolResult(result)
+
+        case "delete_global_keyword":
+            let result = service.deleteGlobalKeyword(id: try arguments.requiredString("id"))
+            return try Self.toolResult(result)
+
+        case "reset_global_keywords":
+            let result = service.resetGlobalKeywords()
             return try Self.toolResult(result)
 
         case "list_screenshots":
@@ -236,6 +312,13 @@ struct OpenASOMCPServerFactory: Sendable {
                 storefronts: arguments.stringArray("storefronts"),
                 platform: arguments.string("platform"),
                 destinationDirectoryPath: try arguments.requiredString("destination_directory_path")
+            )
+            return try Self.toolResult(result)
+
+        case "compare_app_pricing":
+            let result = try await service.compareAppPricing(
+                appStoreIDs: try arguments.requiredInt64Array("appStoreIDs"),
+                storefronts: arguments.stringArray("storefronts")
             )
             return try Self.toolResult(result)
 
@@ -287,6 +370,36 @@ struct OpenASOMCPServerFactory: Sendable {
                 storefronts: arguments.stringArray("storefronts"),
                 platform: arguments.string("platform"),
                 limit: arguments.int("limit")
+            )
+            return try Self.toolResult(result)
+
+        case "list_keyword_ranking_history":
+            let result = try await service.listKeywordRankingHistory(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                storefronts: arguments.stringArray("storefronts"),
+                platform: arguments.string("platform"),
+                keyword: arguments.string("keyword"),
+                trackIdentityKey: arguments.string("track_identity_key"),
+                page: .init(limit: arguments.int("limit"), cursor: arguments.string("cursor"))
+            )
+            return try Self.toolResult(result)
+
+        case "list_keyword_ranking_results":
+            let result = try await service.listKeywordRankingResults(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                storefronts: arguments.stringArray("storefronts"),
+                platform: arguments.string("platform"),
+                keyword: arguments.string("keyword"),
+                queryKey: arguments.string("query_key"),
+                page: .init(limit: arguments.int("limit"), cursor: arguments.string("cursor"))
+            )
+            return try Self.toolResult(result)
+
+        case "list_rating_history":
+            let result = try await service.listRatingHistory(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                storefronts: arguments.stringArray("storefronts"),
+                page: .init(limit: arguments.int("limit"), cursor: arguments.string("cursor"))
             )
             return try Self.toolResult(result)
 
@@ -437,6 +550,9 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "cursor": .string]) { current, _ in current }
             ), readOnly: true),
+            tool("list_global_keywords", "List reusable global keyword templates.", schema(
+                optional: ["storefronts": .stringArray, "platform": .string]
+            ), readOnly: true),
             tool("score_keywords", "Classify tracked keywords into defend, attack, long-tail, brand, experimental, or noisy buckets using rank, popularity, and phrase-quality heuristics.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters
@@ -445,10 +561,38 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID", "keywords", "storefronts"],
                 optional: ["appStoreID": .integer, "keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
             ), readOnly: false, destructive: false, idempotent: true),
+            tool("add_global_keywords", "Add reusable global keyword templates.", schema(
+                required: ["keywords", "storefronts"],
+                optional: ["keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
+            ), readOnly: false, destructive: false, idempotent: true),
             tool("update_keyword_notes", "Update notes for one tracked keyword.", schema(
                 required: ["appStoreID", "keyword", "storefront", "notes"],
                 optional: ["appStoreID": .integer, "keyword": .string, "storefront": .string, "platform": .string, "notes": .string]
             ), readOnly: false, destructive: false, idempotent: true),
+            tool("update_keyword_track", "Edit a per-app tracked keyword term, storefront, platform, or notes by track identity key. Ranking snapshots for the old target are cleared when the tracked query changes.", schema(
+                required: ["track_identity_key"],
+                optional: [
+                    "track_identity_key": .string,
+                    "keyword": .string,
+                    "storefront": .string,
+                    "platform": .string,
+                    "notes": .string
+                ]
+            ), readOnly: false, destructive: false, idempotent: true),
+            tool("delete_keyword_track", "Delete one per-app tracked keyword by track identity key.", schema(
+                required: ["track_identity_key"],
+                optional: ["track_identity_key": .string]
+            ), readOnly: false, destructive: true, idempotent: false),
+            tool("reset_keywords", "Delete all tracked keywords for one app.", appIDSchema, readOnly: false, destructive: true, idempotent: false),
+            tool("update_global_keyword", "Edit one reusable global keyword template by id.", schema(
+                required: ["id", "keyword", "storefront"],
+                optional: ["id": .string, "keyword": .string, "storefront": .string, "platform": .string]
+            ), readOnly: false, destructive: false, idempotent: true),
+            tool("delete_global_keyword", "Delete one reusable global keyword template by id.", schema(
+                required: ["id"],
+                optional: ["id": .string]
+            ), readOnly: false, destructive: true, idempotent: false),
+            tool("reset_global_keywords", "Delete all reusable global keyword templates.", schema(optional: [:]), readOnly: false, destructive: true, idempotent: false),
             tool("list_screenshots", "List stored App Store screenshot metadata.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "cursor": .string]) { current, _ in current }
@@ -457,6 +601,10 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID", "destination_directory_path"],
                 optional: commonAppFilters.merging(["destination_directory_path": .string]) { current, _ in current }
             ), readOnly: false, destructive: false, idempotent: false, openWorld: true),
+            tool("compare_app_pricing", "Fetch public App Store app price and currency across storefronts for one or more apps, plus visible in-app purchase/subscription rows with inferred monthly/yearly cadence and localized USD comparison when public data allows it.", schema(
+                required: ["appStoreIDs"],
+                optional: ["appStoreIDs": .integerArray, "storefronts": .stringArray]
+            ), readOnly: true, openWorld: true),
             tool("fetch_website_markdown", "Fetch markdown for a website through markdown.new.", schema(
                 required: ["url"],
                 optional: ["url": .string]
@@ -491,6 +639,33 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer]) { current, _ in current }
             ), readOnly: false, destructive: false, idempotent: false, openWorld: true),
+            tool("list_keyword_ranking_history", "List persisted per-app keyword rank snapshots with top ranking results.", schema(
+                required: ["appStoreID"],
+                optional: commonAppFilters.merging([
+                    "keyword": .string,
+                    "track_identity_key": .string,
+                    "limit": .integer,
+                    "cursor": .string
+                ]) { current, _ in current }
+            ), readOnly: true),
+            tool("list_keyword_ranking_results", "List raw shared keyword ranking crawls and ranked apps for queries tracked by an app.", schema(
+                required: ["appStoreID"],
+                optional: commonAppFilters.merging([
+                    "keyword": .string,
+                    "query_key": .string,
+                    "limit": .integer,
+                    "cursor": .string
+                ]) { current, _ in current }
+            ), readOnly: true),
+            tool("list_rating_history", "List persisted daily rating history for one app.", schema(
+                required: ["appStoreID"],
+                optional: [
+                    "appStoreID": .integer,
+                    "storefronts": .stringArray,
+                    "limit": .integer,
+                    "cursor": .string
+                ]
+            ), readOnly: true),
             tool("refresh_keyword_metrics", "Refresh keyword popularity metrics when Apple Ads is configured; otherwise return actionable setup status per keyword.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters
@@ -541,22 +716,95 @@ private extension OpenASOMCPServerFactory {
         ]
     }
 
-    static let resources: [Resource] = [
-        Resource(
-            name: "workspace_summary",
-            uri: "openaso://workspace/summary",
-            title: "Workspace Summary",
-            description: "Tracked app count and high-level app summaries.",
-            mimeType: jsonMimeType
-        ),
-        Resource(
-            name: "apps",
-            uri: "openaso://apps",
-            title: "Apps",
-            description: "Tracked apps with high-level metrics.",
-            mimeType: jsonMimeType
-        )
-    ]
+    static func resources(apps: [OpenASOMCPAppSummary]) -> [Resource] {
+        var resources = [
+            Resource(
+                name: "workspace_summary",
+                uri: "openaso://workspace/summary",
+                title: "Workspace Summary",
+                description: "Tracked app count and high-level app summaries.",
+                mimeType: jsonMimeType
+            ),
+            Resource(
+                name: "apps",
+                uri: "openaso://apps",
+                title: "Apps",
+                description: "Tracked apps with high-level metrics.",
+                mimeType: jsonMimeType
+            ),
+            Resource(
+                name: "global_keywords",
+                uri: "openaso://keywords/global",
+                title: "Global Keywords",
+                description: "Reusable global keyword templates.",
+                mimeType: jsonMimeType
+            )
+        ]
+
+        for app in apps {
+            let appID = app.appStoreID
+            let appName = app.name
+            resources.append(contentsOf: [
+                Resource(
+                    name: "app_\(appID)_overview",
+                    uri: "openaso://apps/\(appID)",
+                    title: "\(appName) Overview",
+                    description: "Metadata, ratings, review summary, keyword summary, screenshots, and competitors.",
+                    mimeType: jsonMimeType
+                ),
+                Resource(
+                    name: "app_\(appID)_reviews",
+                    uri: "openaso://apps/\(appID)/reviews",
+                    title: "\(appName) Reviews",
+                    description: "Stored App Store reviews.",
+                    mimeType: jsonMimeType
+                ),
+                Resource(
+                    name: "app_\(appID)_keywords",
+                    uri: "openaso://apps/\(appID)/keywords",
+                    title: "\(appName) Keywords",
+                    description: "Tracked keywords with latest rank and metrics.",
+                    mimeType: jsonMimeType
+                ),
+                Resource(
+                    name: "app_\(appID)_ranking_history",
+                    uri: "openaso://apps/\(appID)/ranking-history",
+                    title: "\(appName) Ranking History",
+                    description: "Persisted per-app keyword rank snapshots.",
+                    mimeType: jsonMimeType
+                ),
+                Resource(
+                    name: "app_\(appID)_ranking_results",
+                    uri: "openaso://apps/\(appID)/ranking-results",
+                    title: "\(appName) Ranking Results",
+                    description: "Raw shared keyword ranking crawls for tracked queries.",
+                    mimeType: jsonMimeType
+                ),
+                Resource(
+                    name: "app_\(appID)_rating_history",
+                    uri: "openaso://apps/\(appID)/rating-history",
+                    title: "\(appName) Rating History",
+                    description: "Persisted daily rating history.",
+                    mimeType: jsonMimeType
+                ),
+                Resource(
+                    name: "app_\(appID)_screenshots",
+                    uri: "openaso://apps/\(appID)/screenshots",
+                    title: "\(appName) Screenshots",
+                    description: "Stored App Store screenshot metadata.",
+                    mimeType: jsonMimeType
+                ),
+                Resource(
+                    name: "app_\(appID)_competitors",
+                    uri: "openaso://apps/\(appID)/competitors",
+                    title: "\(appName) Competitors",
+                    description: "Competitors derived from shared keyword rankings.",
+                    mimeType: jsonMimeType
+                )
+            ])
+        }
+        return resources
+    }
 
     static let prompts: [Prompt] = [
         prompt("review_theme_analysis", "Summarize review praise, complaints, feature requests, regressions, pricing objections, and version-specific issues."),
@@ -724,6 +972,7 @@ private extension OpenASOMCPServerFactory {
 private enum JSONSchemaType: Sendable {
     case boolean
     case integer
+    case integerArray
     case string
     case stringArray
 
@@ -733,6 +982,8 @@ private enum JSONSchemaType: Sendable {
             return ["type": "boolean"]
         case .integer:
             return ["type": "integer"]
+        case .integerArray:
+            return ["type": "array", "items": ["type": "integer"]]
         case .string:
             return ["type": "string"]
         case .stringArray:
@@ -753,6 +1004,9 @@ private struct OpenASOMCPAppResource: Sendable {
         case keywords
         case screenshots
         case competitors
+        case rankingHistory
+        case rankingResults
+        case ratingHistory
     }
 
     let appStoreID: Int64
@@ -780,6 +1034,12 @@ private struct OpenASOMCPAppResource: Sendable {
             self.kind = .screenshots
         case "competitors":
             self.kind = .competitors
+        case "ranking-history":
+            self.kind = .rankingHistory
+        case "ranking-results":
+            self.kind = .rankingResults
+        case "rating-history":
+            self.kind = .ratingHistory
         default:
             return nil
         }
@@ -808,6 +1068,19 @@ private extension Dictionary where Key == String, Value == MCP.Value {
             throw MCPError.invalidParams("Missing required integer argument: \(key)")
         }
         return Int64(intValue)
+    }
+
+    func int64Array(_ key: String) -> [Int64]? {
+        self[key]?.arrayValue?.compactMap { value in
+            Int(value).map(Int64.init)
+        }
+    }
+
+    func requiredInt64Array(_ key: String) throws -> [Int64] {
+        guard let values = int64Array(key), !values.isEmpty else {
+            throw MCPError.invalidParams("Missing required integer array argument: \(key)")
+        }
+        return values
     }
 
     func bool(_ key: String) -> Bool? {

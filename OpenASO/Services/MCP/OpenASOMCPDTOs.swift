@@ -219,6 +219,24 @@ struct OpenASOMCPKeywordNotesResult: Codable, Sendable {
     let summary: OpenASOMCPMutationSummary
 }
 
+struct OpenASOMCPKeywordTrackMutationResult: Codable, Sendable {
+    let track: OpenASOMCPKeywordSummary?
+    let summary: OpenASOMCPMutationSummary
+}
+
+struct OpenASOMCPGlobalKeywordTemplate: Codable, Identifiable, Sendable {
+    let id: String
+    let keyword: String
+    let storefront: String
+    let platform: String
+    let createdAt: Date
+}
+
+struct OpenASOMCPGlobalKeywordMutationResult: Codable, Sendable {
+    let templates: [OpenASOMCPGlobalKeywordTemplate]
+    let summary: OpenASOMCPMutationSummary
+}
+
 struct OpenASOMCPKeywordScoreResult: Codable, Sendable {
     let appStoreID: String
     let storefronts: [String]
@@ -295,6 +313,65 @@ struct OpenASOMCPScreenshotExportFailure: Codable, Sendable {
     let relativePath: String?
     let errorDescription: String
     let metadata: [String: String]
+}
+
+struct OpenASOMCPAppPricingComparison: Codable, Sendable {
+    let generatedAt: Date
+    let appStoreIDs: [String]
+    let storefronts: [String]
+    let prices: [OpenASOMCPAppStorefrontPrice]
+    let plans: [OpenASOMCPAppStorefrontPlan]
+    let localizedPricing: [OpenASOMCPLocalizedPricingComparison]
+    let notes: [String]
+}
+
+struct OpenASOMCPAppStorefrontPrice: Codable, Sendable {
+    let appStoreID: String
+    let storefront: String
+    let currency: String?
+    let price: Double?
+    let formattedPrice: String?
+    let isFree: Bool?
+    let error: OpenASOMCPErrorDTO?
+}
+
+struct OpenASOMCPAppStorefrontPlan: Codable, Identifiable, Sendable {
+    let appStoreID: String
+    let storefront: String
+    let name: String
+    let displayPrice: String
+    let currency: String?
+    let price: Double?
+    let priceUSD: Double?
+    let billingCadence: String?
+    let source: String
+    let error: OpenASOMCPErrorDTO?
+
+    var id: String {
+        [appStoreID, storefront, name, displayPrice].joined(separator: "::")
+    }
+}
+
+struct OpenASOMCPLocalizedPricingComparison: Codable, Sendable {
+    let appStoreID: String
+    let planName: String
+    let storefront: String
+    let displayPrice: String
+    let currency: String?
+    let price: Double?
+    let priceUSD: Double?
+    let taxAdjustedPriceUSD: Double?
+    let estimatedTaxRate: Double?
+    let priceIncludesTax: Bool
+    let usDisplayPrice: String
+    let usPrice: Double?
+    let usPriceUSD: Double?
+    let usTaxAdjustedPriceUSD: Double?
+    let rawPercentDifferenceFromUS: Double?
+    let appleStorefrontAdjustmentPercentFromUS: Double?
+    let percentDifferenceFromUS: Double?
+    let isLowerThanUS: Bool?
+    let isHigherThanUS: Bool?
 }
 
 struct OpenASOMCPWebsiteMarkdownResult: Codable, Sendable {
@@ -440,6 +517,47 @@ struct OpenASOMCPKeywordRefreshResult: Codable, Sendable {
     let outcomes: [OpenASOMCPKeywordRefreshOutcome]
 }
 
+struct OpenASOMCPTrackedKeywordRankedResult: Codable, Sendable {
+    let position: Int
+    let appStoreID: String
+    let bundleID: String?
+    let name: String
+    let subtitle: String?
+    let sellerName: String?
+}
+
+struct OpenASOMCPKeywordRankingSnapshot: Codable, Identifiable, Sendable {
+    let id: String
+    let trackIdentityKey: String
+    let appStoreID: String
+    let keyword: String
+    let queryKey: String
+    let storefront: String
+    let platform: String
+    let rank: Int?
+    let searchedAt: Date
+    let source: String
+    let resultCount: Int
+    let errorMessage: String?
+    let topResults: [OpenASOMCPTrackedKeywordRankedResult]
+}
+
+struct OpenASOMCPKeywordRankingCrawl: Codable, Identifiable, Sendable {
+    let id: String
+    let queryKey: String
+    let keyword: String
+    let storefront: String
+    let platform: String
+    let observedAt: Date
+    let observedHour: Int
+    let source: String
+    let resultCount: Int
+    let submissionCount: Int
+    let winningCount: Int
+    let confidence: String?
+    let items: [OpenASOMCPRankedApp]
+}
+
 struct OpenASOMCPCompetitorReviewRefreshResult: Codable, Sendable {
     let competitors: [OpenASOMCPCompetitorSummary]
     let summary: OpenASOMCPMutationSummary
@@ -557,6 +675,25 @@ struct OpenASOMCPLocalizationFetchError: Codable, Sendable, Equatable {
     let appStoreID: String
     let storefront: String
     let error: OpenASOMCPErrorDTO
+}
+
+struct OpenASOMCPRatingHistoryItem: Codable, Identifiable, Sendable {
+    let id: String
+    let appStoreID: String
+    let storefront: String
+    let ratingDate: String
+    let ratingCount: Int?
+    let averageRating: Double?
+    let oneStarRatingCount: Int?
+    let twoStarRatingCount: Int?
+    let threeStarRatingCount: Int?
+    let fourStarRatingCount: Int?
+    let fiveStarRatingCount: Int?
+    let observedAt: Date
+    let submissionCount: Int
+    let winningCount: Int
+    let confidence: String?
+    let source: String
 }
 
 extension OpenASOError {

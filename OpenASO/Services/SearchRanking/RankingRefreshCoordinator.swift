@@ -77,6 +77,9 @@ struct RankingStatsRebuildRequest: Hashable, Sendable {
 }
 
 final class RankingRefreshCoordinator: Sendable {
+    private static let rankingFetchConcurrency = 4
+    private static let rankingPersistenceBatchSize = 5
+
     private let rankingProvider: any SearchRankingProvider
     private let appCatalogService: AppCatalogService
     private let analyticsService: AnalyticsService
@@ -378,6 +381,12 @@ final class RankingRefreshCoordinator: Sendable {
             }
             pruneRankedResults(for: snapshot, keeping: page.items.map(\.appStoreID), in: modelContext)
             pruneObservationItems(for: observation, keeping: page.items.map(\.appStoreID), in: modelContext)
+            upsertKeywordDifficulty(
+                for: track,
+                page: page,
+                searchedAt: snapshot.searchedAt,
+                in: modelContext
+            )
 
             if rebuildDerivedStats {
                 self.rebuildDerivedStats(for: [RankingStatsRebuildRequest(track: track)], in: modelContext)
@@ -520,6 +529,44 @@ final class RankingRefreshCoordinator: Sendable {
         ))
         if observationItem.observation !== observation {
             observationItem.observation = observation
+        }
+    }
+
+    private func upsertKeywordDifficulty(
+        for track: TrackedAppKeyword,
+        page: SearchRankingPage,
+        searchedAt: Date,
+        in modelContext: ModelContext
+    ) {
+        let result = KeywordDifficultyEstimator.estimate(
+            keyword: track.term,
+            resultCount: page.resultCount,
+            topResults: page.items
+        )
+        let metrics: KeywordDailyMetric
+        if let existing = try? fetchKeywordMetrics(queryKey: track.queryKey, in: modelContext) {
+            metrics = existing
+        } else {
+            metrics = KeywordDailyMetric(
+                queryKey: track.queryKey,
+                keyword: track.term,
+                storefront: track.storefront,
+                platform: track.platform,
+                popularityScore: nil,
+                difficultyScore: result.score,
+                source: .rankingDifficulty
+            )
+            modelContext.insert(metrics)
+        }
+
+        metrics.keyword = track.term
+        metrics.storefront = track.storefront
+        metrics.platform = track.platform
+        metrics.difficultyScore = result.score
+        metrics.updatedAt = searchedAt
+        metrics.notes = result.notes
+        if metrics.popularityScore == nil {
+            metrics.source = .rankingDifficulty
         }
     }
 
@@ -820,44 +867,114 @@ final class RankingRefreshCoordinator: Sendable {
 
         var outcomes: [RefreshOutcome] = []
         var statsRebuildRequests = Set<RankingStatsRebuildRequest>()
+        var pendingPageResults: [RankingRefreshPageResult] = []
         var completedCount = 0
         var failureCount = 0
         if !tracks.isEmpty {
             await progress?(0, tracks.count, 0)
         }
-        for track in tracks {
-            let result = await refresh(
-                track: track,
-                in: modelContext,
-                limit: limit,
-                recordsTrigger: false,
-                rebuildDerivedStats: false
-            )
-            switch result {
-            case .success(let snapshot):
-                statsRebuildRequests.insert(RankingStatsRebuildRequest(track: track))
-                outcomes.append(RefreshOutcome(
-                    trackID: track.persistentModelID,
-                    snapshotID: snapshot.persistentModelID,
-                    rank: snapshot.rank,
-                    searchedAt: snapshot.searchedAt,
-                    error: nil
-                ))
-            case .failure(let error):
-                track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
-                try? modelContext.save()
-                outcomes.append(RefreshOutcome(
-                    trackID: track.persistentModelID,
-                    snapshotID: nil,
-                    rank: nil,
-                    searchedAt: nil,
-                    error: error
-                ))
-                failureCount += 1
+
+        func flushPendingPageResults() {
+            guard !pendingPageResults.isEmpty else { return }
+
+            let pageResults = pendingPageResults
+            pendingPageResults.removeAll(keepingCapacity: true)
+            for pageResult in pageResults {
+                do {
+                    let snapshot = try persistRankingPage(
+                        pageResult,
+                        in: modelContext,
+                        rebuildDerivedStats: false,
+                        saveChanges: false
+                    )
+                    statsRebuildRequests.insert(RankingStatsRebuildRequest(track: snapshot.keywordTrack))
+                    outcomes.append(RefreshOutcome(
+                        trackID: snapshot.keywordTrack.persistentModelID,
+                        snapshotID: snapshot.persistentModelID,
+                        rank: snapshot.rank,
+                        searchedAt: snapshot.searchedAt,
+                        error: nil
+                    ))
+                } catch {
+                    let mappedError = OpenASOError.map(error)
+                    _ = try? recordRefreshFailure(
+                        identityKey: pageResult.request.identityKey,
+                        error: mappedError,
+                        in: modelContext,
+                        saveChanges: false
+                    )
+                    outcomes.append(RefreshOutcome(
+                        trackID: tracks.first { $0.identityKey == pageResult.request.identityKey }?.persistentModelID ?? tracks[0].persistentModelID,
+                        snapshotID: nil,
+                        rank: nil,
+                        searchedAt: nil,
+                        error: mappedError
+                    ))
+                    failureCount += 1
+                }
             }
-            completedCount += 1
-            await progress?(completedCount, tracks.count, failureCount)
+            try? modelContext.save()
         }
+
+        let rankingRequests = tracks.map(RankingRefreshRequest.init)
+        let rankingPageFetcher = makeRankingPageFetcher(limit: limit)
+        await withTaskGroup(of: (RankingRefreshRequest, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
+            var nextRequestIndex = 0
+            var activeFetchCount = 0
+
+            func enqueueNextFetchIfPossible() {
+                guard activeFetchCount < Self.rankingFetchConcurrency,
+                      nextRequestIndex < rankingRequests.count
+                else {
+                    return
+                }
+
+                let rankingRequest = rankingRequests[nextRequestIndex]
+                nextRequestIndex += 1
+                activeFetchCount += 1
+                group.addTask {
+                    let result = await rankingPageFetcher(rankingRequest)
+                    return (rankingRequest, result)
+                }
+            }
+
+            for _ in 0..<min(Self.rankingFetchConcurrency, rankingRequests.count) {
+                enqueueNextFetchIfPossible()
+            }
+
+            while let (rankingRequest, result) = await group.next() {
+                activeFetchCount -= 1
+
+                switch result {
+                case .success(let pageResult):
+                    pendingPageResults.append(pageResult)
+                    if pendingPageResults.count >= Self.rankingPersistenceBatchSize {
+                        flushPendingPageResults()
+                    }
+                case .failure(let error):
+                    _ = try? recordRefreshFailure(
+                        identityKey: rankingRequest.identityKey,
+                        error: error,
+                        in: modelContext,
+                        saveChanges: false
+                    )
+                    outcomes.append(RefreshOutcome(
+                        trackID: tracks.first { $0.identityKey == rankingRequest.identityKey }?.persistentModelID ?? tracks[0].persistentModelID,
+                        snapshotID: nil,
+                        rank: nil,
+                        searchedAt: nil,
+                        error: error
+                    ))
+                    failureCount += 1
+                }
+
+                completedCount += 1
+                await progress?(completedCount, tracks.count, failureCount)
+                enqueueNextFetchIfPossible()
+            }
+        }
+
+        flushPendingPageResults()
         if !statsRebuildRequests.isEmpty {
             rebuildDerivedStats(for: statsRebuildRequests, in: modelContext)
             try? modelContext.save()
@@ -1119,6 +1236,141 @@ final class RankingRefreshCoordinator: Sendable {
         object[keyPath: keyPath] = value
         return true
     }
+}
+
+private enum KeywordDifficultyEstimator {
+    static func estimate(
+        keyword: String,
+        resultCount: Int,
+        topResults: [SearchRankingItem]
+    ) -> KeywordDifficultyEstimate {
+        let keywordTokens = tokens(keyword)
+        guard !keywordTokens.isEmpty else {
+            return KeywordDifficultyEstimate(score: nil, notes: "Difficulty unavailable: empty keyword.")
+        }
+
+        let rankedResults = topResults
+            .sorted { $0.position < $1.position }
+            .prefix(10)
+        guard !rankedResults.isEmpty else {
+            return KeywordDifficultyEstimate(score: nil, notes: "Difficulty unavailable: no ranking results.")
+        }
+
+        let weightedResults = rankedResults.map { item -> (weight: Double, score: Double) in
+            let positionWeight = 1 / sqrt(Double(max(item.position, 1)))
+            return (
+                positionWeight,
+                appCompetitionScore(item: item, keywordTokens: keywordTokens)
+            )
+        }
+        let totalWeight = weightedResults.reduce(0) { $0 + $1.weight }
+        let weightedCompetition = weightedResults.reduce(0) { $0 + ($1.score * $1.weight) } / max(totalWeight, 1)
+        let titleSaturation = saturationScore(
+            topResults: Array(rankedResults),
+            keywordTokens: keywordTokens,
+            text: { [$0.name, $0.subtitle].compactMap(\.self).joined(separator: " ") }
+        )
+        let phrase = keywordTokens.joined(separator: " ")
+        let exactTitlePressure = rankedResults.contains {
+            normalizedText($0.name).contains(phrase)
+        } ? 10.0 : 0.0
+        let depthPressure = min(12, log10(Double(max(resultCount, rankedResults.count)) + 1) * 8)
+
+        let score = Int(
+            min(100, max(0, round(weightedCompetition * 0.66 + titleSaturation * 0.16 + exactTitlePressure + depthPressure)))
+        )
+        let notes = [
+            "Difficulty is derived from latest top App Store ranking results.",
+            "Signals: top-10 app rating volume/quality, title/subtitle keyword match, result depth, and exact-title pressure.",
+            "Score \(score): \(label(for: score))."
+        ].joined(separator: " ")
+        return KeywordDifficultyEstimate(score: score, notes: notes)
+    }
+
+    private static func appCompetitionScore(
+        item: SearchRankingItem,
+        keywordTokens: [String]
+    ) -> Double {
+        let ratingVolume = min(1, log10(Double(max(item.ratingCount ?? 0, 0)) + 1) / 5)
+        let ratingQuality = min(1, max(0, ((item.averageRating ?? 3.5) - 3) / 2))
+        let metadataMatch = metadataMatchScore(item: item, keywordTokens: keywordTokens)
+        let rankAuthority = 1 / sqrt(Double(max(item.position, 1)))
+
+        return min(
+            100,
+            ratingVolume * 42
+                + ratingQuality * 14
+                + metadataMatch * 34
+                + rankAuthority * 10
+        )
+    }
+
+    private static func metadataMatchScore(
+        item: SearchRankingItem,
+        keywordTokens: [String]
+    ) -> Double {
+        let phrase = keywordTokens.joined(separator: " ")
+        let title = normalizedText(item.name)
+        let subtitle = normalizedText(item.subtitle ?? "")
+        let combined = [title, subtitle].filter { !$0.isEmpty }.joined(separator: " ")
+
+        if title.contains(phrase) { return 1 }
+        if subtitle.contains(phrase) { return 0.8 }
+
+        let titleTokens = Set(tokens(title))
+        let combinedTokens = Set(tokens(combined))
+        let titleCoverage = tokenCoverage(keywordTokens, in: titleTokens)
+        let combinedCoverage = tokenCoverage(keywordTokens, in: combinedTokens)
+        return max(titleCoverage * 0.75, combinedCoverage * 0.55)
+    }
+
+    private static func saturationScore(
+        topResults: [SearchRankingItem],
+        keywordTokens: [String],
+        text: (SearchRankingItem) -> String
+    ) -> Double {
+        guard !topResults.isEmpty else { return 0 }
+        let matches = topResults.filter { item in
+            tokenCoverage(keywordTokens, in: Set(tokens(text(item)))) >= 0.75
+        }.count
+        return (Double(matches) / Double(topResults.count)) * 100
+    }
+
+    private static func tokenCoverage(_ keywordTokens: [String], in candidateTokens: Set<String>) -> Double {
+        guard !keywordTokens.isEmpty else { return 0 }
+        let matchCount = keywordTokens.filter { candidateTokens.contains($0) }.count
+        return Double(matchCount) / Double(keywordTokens.count)
+    }
+
+    private static func tokens(_ value: String) -> [String] {
+        normalizedText(value)
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func normalizedText(_ value: String) -> String {
+        value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func label(for score: Int) -> String {
+        switch score {
+        case 0..<30:
+            return "low competition"
+        case 30..<60:
+            return "moderate competition"
+        default:
+            return "high competition"
+        }
+    }
+}
+
+private struct KeywordDifficultyEstimate {
+    let score: Int?
+    let notes: String
 }
 
 struct RefreshOutcome {
