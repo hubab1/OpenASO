@@ -915,7 +915,8 @@ struct ManageKeywordListsSheet: View {
 struct GlobalKeywordsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    @Query(sort: [SortDescriptor(\TrackedApp.name, order: .forward)])
+    // TrackedApp.name is computed, not a schema field — do not sort on it.
+    @Query(sort: [SortDescriptor(\TrackedApp.appStoreID, order: .forward)])
     private var trackedApps: [TrackedApp]
 
     var body: some View {

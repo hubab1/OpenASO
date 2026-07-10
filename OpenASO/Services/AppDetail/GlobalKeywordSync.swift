@@ -44,8 +44,9 @@ enum GlobalKeywordSync {
         )).sorted()
 
         var outcome = Outcome()
+        // TrackedApp.name is computed, not a schema field — sort in memory.
         let apps = try modelContext.fetch(FetchDescriptor<TrackedApp>(
-            sortBy: [SortDescriptor(\.name, order: .forward)]
+            sortBy: [SortDescriptor(\.appStoreID, order: .forward)]
         ))
         outcome.appCount = apps.count
 

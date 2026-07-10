@@ -868,6 +868,63 @@ private actor ControlledRatingsHTTPClient: HTTPClient {
     }
 }
 
+@MainActor
+struct GlobalKeywordSyncTests {
+    @Test
+    func syncCreatesAndRemovesTracksAcrossStorefronts() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        modelContext.insert(TrackedApp(
+            appStoreID: 842842640,
+            bundleID: "com.google.Docs",
+            name: "Google Docs",
+            sellerName: "Google",
+            defaultPlatform: .iphone
+        ))
+        modelContext.insert(TrackedApp(
+            appStoreID: 361309726,
+            bundleID: "com.google.Sheets",
+            name: "Google Sheets",
+            sellerName: "Google",
+            defaultPlatform: .iphone
+        ))
+        try modelContext.save()
+
+        let store = BackgroundModelStore(modelContainer: container)
+        let templates = [
+            GlobalTrackedKeywordTemplate(term: "notes"),
+            GlobalTrackedKeywordTemplate(term: "docs editor"),
+        ]
+
+        let outcome = try await store.write { context in
+            try GlobalKeywordSync.sync(
+                templates: templates,
+                storefrontCodes: ["us", "gb", "de"],
+                in: context
+            )
+        }
+
+        #expect(outcome.appCount == 2)
+        #expect(outcome.insertedTrackCount == 12)
+        #expect(outcome.removedTrackCount == 0)
+
+        // Removing a keyword cleans its synced tracks everywhere.
+        let secondOutcome = try await store.write { context in
+            try GlobalKeywordSync.sync(
+                templates: [GlobalTrackedKeywordTemplate(term: "notes")],
+                storefrontCodes: ["us", "gb", "de"],
+                in: context
+            )
+        }
+        #expect(secondOutcome.insertedTrackCount == 0)
+        #expect(secondOutcome.removedTrackCount == 6)
+
+        let remaining = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        #expect(remaining.count == 6)
+        #expect(remaining.allSatisfy { $0.term == "notes" })
+    }
+}
+
 private func makeInMemoryContainer() throws -> ModelContainer {
     let schema = Schema([
         AppFolder.self,
