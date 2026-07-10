@@ -156,18 +156,80 @@ struct KeywordRankingListSheet: View {
             )
         }
         .task(id: crawlKey) {
-            loadRankingItems()
-            loadEnrichedRows(includeScreenshots: isShowingScreenshots)
+            await reloadFromStore(includeScreenshots: isShowingScreenshots)
         }
         .task(id: isShowingScreenshots) {
             guard isShowingScreenshots, !enrichedRowsIncludeScreenshots else { return }
-            loadEnrichedRows(includeScreenshots: true)
+            await reloadFromStore(includeScreenshots: true)
         }
         .frame(minWidth: 1_260, idealWidth: 1_420, minHeight: 720, idealHeight: 920)
     }
 
-    private func loadRankingItems() {
-        guard let crawlKey else { return }
+    // Runs the ranking-item fetch and all enrichment joins in a single
+    // background read so the sheet opens without blocking the main actor.
+    private func reloadFromStore(includeScreenshots: Bool) async {
+        let targetCrawlKey = crawlKey
+        let fallbackItems = items
+        let normalizedStorefront = storefrontCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if let backgroundModelStore = services.backgroundModelStore {
+            let loaded: ([KeywordRankingListItem], EnrichmentPayload)? = try? await backgroundModelStore.read { modelContext in
+                let loadedItems = Self.fetchRankingItems(crawlKey: targetCrawlKey, in: modelContext) ?? fallbackItems
+                let payload = Self.makeEnrichmentPayload(
+                    appStoreIDs: loadedItems.map(\.appStoreID),
+                    normalizedStorefront: normalizedStorefront,
+                    includeScreenshots: includeScreenshots,
+                    in: modelContext
+                )
+                return (loadedItems, payload)
+            }
+            guard let loaded else { return }
+            applyEnrichment(items: loaded.0, payload: loaded.1, includeScreenshots: includeScreenshots)
+        } else {
+            let loadedItems = Self.fetchRankingItems(crawlKey: targetCrawlKey, in: modelContext) ?? fallbackItems
+            let payload = Self.makeEnrichmentPayload(
+                appStoreIDs: loadedItems.map(\.appStoreID),
+                normalizedStorefront: normalizedStorefront,
+                includeScreenshots: includeScreenshots,
+                in: modelContext
+            )
+            applyEnrichment(items: loadedItems, payload: payload, includeScreenshots: includeScreenshots)
+        }
+    }
+
+    private func applyEnrichment(
+        items newItems: [KeywordRankingListItem],
+        payload: EnrichmentPayload,
+        includeScreenshots: Bool
+    ) {
+        items = newItems
+        storefrontLanguageCode = payload.storefront?.languageCode
+        storefrontFlagEmoji = payload.storefront?.flagEmoji
+
+        guard !newItems.isEmpty else {
+            enrichedRows = []
+            enrichedRowsIncludeScreenshots = false
+            return
+        }
+
+        enrichedRows = newItems.map { item in
+            KeywordRankingCatalogRow(
+                item: item,
+                storeApp: payload.storeAppsByID[item.appStoreID],
+                storefrontMetadata: payload.storefrontMetadataByID[item.appStoreID],
+                usMetadata: payload.usMetadataByID[item.appStoreID],
+                latestRating: payload.latestByID[item.appStoreID],
+                ratingSnapshots: payload.snapshotsByID[item.appStoreID] ?? []
+            )
+        }
+        enrichedRowsIncludeScreenshots = includeScreenshots
+    }
+
+    nonisolated private static func fetchRankingItems(
+        crawlKey: String?,
+        in modelContext: ModelContext
+    ) -> [KeywordRankingListItem]? {
+        guard let crawlKey else { return nil }
 
         let targetCrawlKey = crawlKey
         let descriptor = FetchDescriptor<KeywordAppRanking>(
@@ -179,47 +241,55 @@ struct KeywordRankingListSheet: View {
             ]
         )
 
-        items = ((try? modelContext.fetch(descriptor)) ?? [])
+        return ((try? modelContext.fetch(descriptor)) ?? [])
             .map(KeywordRankingAppSummary.init)
             .map { KeywordRankingListItem(result: $0) }
     }
 
-    private func loadEnrichedRows(includeScreenshots: Bool) {
-        let appStoreIDs = items.map(\.appStoreID)
-        let appStoreIDSet = Set(appStoreIDs)
-        let normalizedStorefront = storefrontCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    nonisolated private static func makeEnrichmentPayload(
+        appStoreIDs: [Int64],
+        normalizedStorefront: String,
+        includeScreenshots: Bool,
+        in modelContext: ModelContext
+    ) -> EnrichmentPayload {
+        let storefront = Self.storefrontDisplay(for: normalizedStorefront, in: modelContext)
 
         guard !appStoreIDs.isEmpty else {
-            enrichedRows = []
-            enrichedRowsIncludeScreenshots = false
-            return
+            return EnrichmentPayload(
+                storefront: storefront,
+                storeAppsByID: [:],
+                storefrontMetadataByID: [:],
+                usMetadataByID: [:],
+                latestByID: [:],
+                snapshotsByID: [:]
+            )
         }
 
+        let appStoreIDSet = Set(appStoreIDs)
         let storeAppsDescriptor = FetchDescriptor<StoreApp>(
             predicate: #Predicate { app in
                 appStoreIDs.contains(app.appStoreID)
             }
         )
         let storeApps = (try? modelContext.fetch(storeAppsDescriptor)) ?? []
-        let catalogAppsByID = Dictionary(
+        let storeAppsByID = Dictionary(
             uniqueKeysWithValues: storeApps
                 .map { ($0.appStoreID, StoreAppDisplayValue($0)) }
         )
-        let storefrontDisplay = storefrontDisplay(for: normalizedStorefront)
-        storefrontLanguageCode = storefrontDisplay?.languageCode
-        storefrontFlagEmoji = storefrontDisplay?.flagEmoji
 
         let storefrontMetadataByID = storefrontMetadataByAppStoreID(
             storefront: normalizedStorefront,
             appStoreIDSet: appStoreIDSet,
-            includeScreenshots: includeScreenshots
+            includeScreenshots: includeScreenshots,
+            in: modelContext
         )
         let usMetadataByID = normalizedStorefront == "us"
             ? storefrontMetadataByID
             : storefrontMetadataByAppStoreID(
                 storefront: "us",
                 appStoreIDSet: appStoreIDSet,
-                includeScreenshots: includeScreenshots
+                includeScreenshots: includeScreenshots,
+                in: modelContext
             )
 
         let latestDescriptor = FetchDescriptor<LatestAppRating>(
@@ -246,20 +316,20 @@ struct KeywordRankingListSheet: View {
         let snapshotsByID = Dictionary(grouping: ((try? modelContext.fetch(snapshotDescriptor)) ?? [])
             .map(RatingSnapshotDisplayValue.init), by: \.appStoreID)
 
-        enrichedRows = items.map { item in
-            KeywordRankingCatalogRow(
-                item: item,
-                storeApp: catalogAppsByID[item.appStoreID],
-                storefrontMetadata: storefrontMetadataByID[item.appStoreID],
-                usMetadata: usMetadataByID[item.appStoreID],
-                latestRating: latestByID[item.appStoreID],
-                ratingSnapshots: snapshotsByID[item.appStoreID] ?? []
-            )
-        }
-        enrichedRowsIncludeScreenshots = includeScreenshots
+        return EnrichmentPayload(
+            storefront: storefront,
+            storeAppsByID: storeAppsByID,
+            storefrontMetadataByID: storefrontMetadataByID,
+            usMetadataByID: usMetadataByID,
+            latestByID: latestByID,
+            snapshotsByID: snapshotsByID
+        )
     }
 
-    private func storefrontDisplay(for storefront: String) -> StorefrontDisplayValue? {
+    nonisolated private static func storefrontDisplay(
+        for storefront: String,
+        in modelContext: ModelContext
+    ) -> StorefrontDisplayValue? {
         let targetStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let descriptor = FetchDescriptor<Storefront>(
             predicate: #Predicate { storefront in
@@ -269,10 +339,11 @@ struct KeywordRankingListSheet: View {
         return (try? modelContext.fetch(descriptor).first).map(StorefrontDisplayValue.init)
     }
 
-    private func storefrontMetadataByAppStoreID(
+    nonisolated private static func storefrontMetadataByAppStoreID(
         storefront: String,
         appStoreIDSet: Set<Int64>,
-        includeScreenshots: Bool
+        includeScreenshots: Bool,
+        in modelContext: ModelContext
     ) -> [Int64: AppStorefrontMetadataDisplayValue] {
         let targetStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let descriptor = FetchDescriptor<AppStorefrontMetadata>(
@@ -399,6 +470,15 @@ struct KeywordRankingListSheet: View {
         appIconStore: services.appIconStore
     )
     .openASOPreviewEnvironment(previewContainer)
+}
+
+private struct EnrichmentPayload: Sendable {
+    let storefront: StorefrontDisplayValue?
+    let storeAppsByID: [Int64: StoreAppDisplayValue]
+    let storefrontMetadataByID: [Int64: AppStorefrontMetadataDisplayValue]
+    let usMetadataByID: [Int64: AppStorefrontMetadataDisplayValue]
+    let latestByID: [Int64: RatingLatestDisplayValue]
+    let snapshotsByID: [Int64: [RatingSnapshotDisplayValue]]
 }
 
 private struct KeywordRankingCatalogRow: Identifiable {
@@ -552,7 +632,7 @@ private struct KeywordRankingCatalogRow: Identifiable {
     }
 }
 
-private struct StorefrontDisplayValue {
+private struct StorefrontDisplayValue: Sendable {
     let flagEmoji: String
     let languageCode: String
 
@@ -562,7 +642,7 @@ private struct StorefrontDisplayValue {
     }
 }
 
-private struct StoreAppDisplayValue {
+private struct StoreAppDisplayValue: Sendable {
     let appStoreID: Int64
     let name: String
     let subtitle: String?
@@ -586,7 +666,7 @@ private struct StoreAppDisplayValue {
     }
 }
 
-private struct AppStorefrontMetadataDisplayValue {
+private struct AppStorefrontMetadataDisplayValue: Sendable {
     let appStoreID: Int64
     let name: String
     let subtitle: String?
@@ -702,7 +782,7 @@ private struct ScreenshotPlatformGroup: Identifiable, Hashable, Sendable {
     }
 }
 
-private struct RatingLatestDisplayValue {
+private struct RatingLatestDisplayValue: Sendable {
     let appStoreID: Int64
     let ratingCount: Int?
     let averageRating: Double?
@@ -714,7 +794,7 @@ private struct RatingLatestDisplayValue {
     }
 }
 
-private struct RatingSnapshotDisplayValue {
+private struct RatingSnapshotDisplayValue: Sendable {
     let appStoreID: Int64
     let ratingDate: String
     let ratingCount: Int?

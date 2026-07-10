@@ -33,7 +33,7 @@ import SwiftUI
     .openASOPreviewEnvironment(previewContainer, allowsIconNetworkFetches: true)
 }
 
-struct KeywordRankingListItem: Identifiable {
+struct KeywordRankingListItem: Identifiable, Sendable {
     let id: Int64
     let position: Int
     let appStoreID: Int64

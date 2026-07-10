@@ -6,13 +6,16 @@ import Testing
 @MainActor
 struct AppServicesDependencyTests {
     @Test
-    func modelContainerFactoryUsesV1MigrationPlan() throws {
+    func modelContainerFactoryUsesV2MigrationPlan() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 1)
+        #expect(OpenASOSchemaV2.versionIdentifier == Schema.Version(1, 1, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 2)
         #expect(OpenASOMigrationPlan.schemas.first?.versionIdentifier == OpenASOSchemaV1.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas.last?.versionIdentifier == OpenASOSchemaV2.versionIdentifier)
         #expect(OpenASOSchemaV1.models.count == 17)
+        #expect(OpenASOSchemaV2.models.count == 18)
         #expect(container.migrationPlan != nil)
     }
 
@@ -180,7 +183,8 @@ struct AppServicesDependencyTests {
             session: session
         )
 
-        #expect(requestBodies.map(\.terms.count) == [100, 1])
+        // Chunks are fetched concurrently, so request order is nondeterministic.
+        #expect(requestBodies.map(\.terms.count).sorted() == [1, 100])
         #expect(requestBodies.allSatisfy { $0.storefronts == ["US"] })
         #expect(requestHeaders["Accept"] == "application/json")
         #expect(requestHeaders["Content-Type"] == "application/json")

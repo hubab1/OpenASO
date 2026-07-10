@@ -25,6 +25,9 @@ struct AddKeywordsSheet: View {
     @State private var errorMessage: String?
     @State private var statusMessage: String?
     @State private var isSubmitting = false
+    // Cache of the decoded reusable-keyword list; kept in sync with
+    // globalKeywordTemplatesJSON so the JSON isn't parsed on every render.
+    @State private var globalKeywordTemplates: [GlobalTrackedKeywordTemplate] = []
 
     init(
         trackedApp: TrackedApp,
@@ -136,6 +139,12 @@ struct AddKeywordsSheet: View {
         }
         .padding(24)
         .frame(minWidth: 780, minHeight: 780)
+        .onAppear {
+            globalKeywordTemplates = GlobalTrackedKeywordTemplate.decodeList(from: globalKeywordTemplatesJSON)
+        }
+        .onChange(of: globalKeywordTemplatesJSON) { _, newValue in
+            globalKeywordTemplates = GlobalTrackedKeywordTemplate.decodeList(from: newValue)
+        }
     }
 
     @ViewBuilder
@@ -189,9 +198,16 @@ struct AddKeywordsSheet: View {
                 || storefront.code.localizedCaseInsensitiveContains(normalizedSearch)
         }
 
+        // Build the count grouping once per render pass instead of once per
+        // sort comparison.
+        let counts = keywordCountsByStorefront
+        func count(for code: String) -> Int {
+            counts[code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), default: 0]
+        }
+
         return matchingStorefronts.sorted { lhs, rhs in
-            let lhsCount = keywordCount(for: lhs.code)
-            let rhsCount = keywordCount(for: rhs.code)
+            let lhsCount = count(for: lhs.code)
+            let rhsCount = count(for: rhs.code)
             if lhsCount == rhsCount {
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
@@ -204,10 +220,6 @@ struct AddKeywordsSheet: View {
             grouping: trackedKeywords.filter { $0.platform == selectedPlatform }, by: \.storefront
         )
         .mapValues(\.count)
-    }
-
-    private var globalKeywordTemplates: [GlobalTrackedKeywordTemplate] {
-        GlobalTrackedKeywordTemplate.decodeList(from: globalKeywordTemplatesJSON)
     }
 
     private var reusableKeywordsForSelection: [GlobalTrackedKeywordTemplate] {
@@ -331,17 +343,53 @@ struct AddKeywordsSheet: View {
         errorMessage = nil
         statusMessage = nil
 
-        let existingKeys: Set<String>
-        do {
-            existingKeys = try existingDuplicateKeys()
-        } catch {
-            errorMessage = OpenASOError.map(error).localizedDescription
-            isSubmitting = false
-            return
-        }
-        var mutableExistingKeys = existingKeys
+        // The @Query already holds this app's tracks with the same predicate;
+        // no need to re-fetch them.
+        var mutableExistingKeys = Set(
+            trackedKeywords.map {
+                duplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform)
+            }
+        )
         var insertedCount = 0
         var insertedTracks: [TrackedAppKeyword] = []
+
+        // Resolve every needed keyword query with one batch fetch instead of
+        // one fetch per candidate.
+        let neededQueryKeys = Array(Set(
+            candidates
+                .filter { candidate in
+                    !mutableExistingKeys.contains(duplicateKey(
+                        term: candidate.keyword,
+                        storefront: candidate.storefrontCode,
+                        platform: candidate.platform
+                    ))
+                }
+                .map { candidate in
+                    KeywordQuery.makeQueryKey(
+                        term: candidate.keyword,
+                        storefront: candidate.storefrontCode,
+                        platform: candidate.platform
+                    )
+                }
+        ))
+        var queriesByKey: [String: KeywordQuery] = [:]
+        if !neededQueryKeys.isEmpty {
+            do {
+                let targetQueryKeys = neededQueryKeys
+                let descriptor = FetchDescriptor<KeywordQuery>(
+                    predicate: #Predicate { query in
+                        targetQueryKeys.contains(query.queryKey)
+                    }
+                )
+                for query in try modelContext.fetch(descriptor) {
+                    queriesByKey[query.queryKey] = query
+                }
+            } catch {
+                errorMessage = OpenASOError.map(error).localizedDescription
+                isSubmitting = false
+                return
+            }
+        }
 
         for candidate in candidates {
             let identityKey = duplicateKey(
@@ -350,18 +398,22 @@ struct AddKeywordsSheet: View {
 
             guard !mutableExistingKeys.contains(identityKey) else { continue }
 
+            let queryKey = KeywordQuery.makeQueryKey(
+                term: candidate.keyword,
+                storefront: candidate.storefrontCode,
+                platform: candidate.platform
+            )
             let query: KeywordQuery
-            do {
-                query = try KeywordQuery.fetchOrInsert(
+            if let existing = queriesByKey[queryKey] {
+                query = existing
+            } else {
+                query = KeywordQuery(
                     term: candidate.keyword,
                     storefront: candidate.storefrontCode,
-                    platform: candidate.platform,
-                    in: modelContext
+                    platform: candidate.platform
                 )
-            } catch {
-                errorMessage = OpenASOError.map(error).localizedDescription
-                isSubmitting = false
-                return
+                modelContext.insert(query)
+                queriesByKey[queryKey] = query
             }
 
             let track = TrackedAppKeyword(
@@ -443,21 +495,6 @@ struct AddKeywordsSheet: View {
             storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             platform.rawValue,
         ].joined(separator: "::")
-    }
-
-    private func existingDuplicateKeys() throws -> Set<String> {
-        let appStoreID = trackedApp.appStoreID
-        let descriptor = FetchDescriptor<TrackedAppKeyword>(
-            predicate: #Predicate { track in
-                track.appStoreID == appStoreID
-            }
-        )
-        return Set(
-            try modelContext.fetch(descriptor)
-                .map {
-                    duplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform)
-                }
-        )
     }
 
     private var parsedKeywords: [String] {

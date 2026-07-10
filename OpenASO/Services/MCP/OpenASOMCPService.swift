@@ -1404,26 +1404,17 @@ final class OpenASOMCPService: Sendable {
       }.map(\.identityKey)
     }
 
-    var refreshErrorsByIdentityKey: [String: String] = [:]
+    var refreshOutcomes: [KeywordMetricsRefreshOutcome]? = nil
+    var precomputedErrorsByIdentityKey: [String: String] = [:]
     if let keywordMetricsService {
       let popularityContextAppStoreID = await popularityContextAppStoreIDProvider()
       let webSession = await appleAdsWebSessionProvider()
-      let refreshOutcomes = try await keywordMetricsService.refreshMetrics(
+      refreshOutcomes = try await keywordMetricsService.refreshMetrics(
         for: trackIdentityKeys,
         popularityContextAppStoreID: popularityContextAppStoreID,
         webSession: webSession,
         using: backgroundModelStore
       )
-      refreshErrorsByIdentityKey = try await backgroundModelStore.read { modelContext in
-        var errors: [String: String] = [:]
-        for outcome in refreshOutcomes where outcome.errorMessage != nil {
-          guard let track = modelContext.model(for: outcome.trackID) as? TrackedAppKeyword else {
-            continue
-          }
-          errors[track.identityKey] = outcome.errorMessage
-        }
-        return errors
-      }
     } else {
       let message = "Popularity failed to fetch. Connect an Apple Ads web session in Settings."
       try await backgroundModelStore.write { modelContext in
@@ -1433,12 +1424,25 @@ final class OpenASOMCPService: Sendable {
           track.statusMessage = message
         }
       }
-      refreshErrorsByIdentityKey = Dictionary(
+      precomputedErrorsByIdentityKey = Dictionary(
         uniqueKeysWithValues: trackIdentityKeys.map { ($0, message) })
     }
 
-    let refreshErrors = refreshErrorsByIdentityKey
+    // Resolve outcome errors inside the final read so only one background
+    // round trip runs after the refresh.
+    let capturedOutcomes = refreshOutcomes
+    let capturedPrecomputedErrors = precomputedErrorsByIdentityKey
     return try await backgroundModelStore.read { modelContext in
+      var refreshErrors = capturedPrecomputedErrors
+      if let capturedOutcomes {
+        for outcome in capturedOutcomes where outcome.errorMessage != nil {
+          guard let track = modelContext.model(for: outcome.trackID) as? TrackedAppKeyword else {
+            continue
+          }
+          refreshErrors[track.identityKey] = outcome.errorMessage
+        }
+      }
+
       let tracks = try trackIdentityKeys.compactMap {
         try Self.fetchTrackedKeyword(identityKey: $0, in: modelContext)
       }

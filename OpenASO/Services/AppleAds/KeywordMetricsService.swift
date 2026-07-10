@@ -7,7 +7,10 @@ final class KeywordMetricsService: Sendable {
     @MainActor private let popularityClient: AppleAdsPopularityClient
     @MainActor private let settingsStore: AppSettingsStore
     private let metricsTTL: TimeInterval = 60 * 60 * 24 * 7
-    private static let popularityStorefrontConcurrency = 2
+    // Mirrors the ranking fetch window; kept modest to protect the private
+    // app-ads.apple.com session from rate limiting.
+    private static let popularityStorefrontConcurrency = 4
+    private static let popularityMaxAttempts = 3
 
     @MainActor
     init(
@@ -129,16 +132,17 @@ final class KeywordMetricsService: Sendable {
             )
             let tracks = try modelContext.fetch(descriptor)
             let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
+            let metricsByKey = try self.metricsMap(for: Array(uniqueTracks.keys), in: modelContext)
             return uniqueTracks.values.map { track in
                 KeywordMetricsRefreshCandidate(
                     trackID: track.persistentModelID,
                     trackIdentityKey: track.identityKey,
                     term: track.term,
                     storefront: track.storefront,
+                    queryKey: track.queryKey,
                     shouldRefresh: Self.shouldRefreshMetrics(
                         metricsTTL: metricsTTL,
-                        for: track.queryKey,
-                        in: modelContext
+                        metric: metricsByKey[track.queryKey]
                     )
                 )
             }
@@ -151,28 +155,32 @@ final class KeywordMetricsService: Sendable {
         var failureCount = 0
         await progress?(0, totalCount, 0)
 
+        var candidatesMissingContext: [KeywordMetricsRefreshCandidate] = []
         for candidate in candidates {
             guard candidate.shouldRefresh else {
                 outcomes.append(KeywordMetricsRefreshOutcome(trackID: candidate.trackID, errorMessage: nil))
                 completedCount += 1
-                await progress?(completedCount, totalCount, failureCount)
                 continue
             }
 
             guard popularityContextAppStoreID != nil else {
-                let outcome = try await persistMetricsPayload(
-                    Self.makeAppleAdsMetrics(popularityResult: .missingContextApp),
-                    for: candidate,
-                    using: modelStore
-                )
-                outcomes.append(outcome)
-                if outcome.errorMessage != nil { failureCount += 1 }
-                completedCount += 1
-                await progress?(completedCount, totalCount, failureCount)
+                candidatesMissingContext.append(candidate)
                 continue
             }
 
             tracksNeedingPopularity.append(candidate)
+        }
+        await progress?(completedCount, totalCount, failureCount)
+
+        if !candidatesMissingContext.isEmpty {
+            let batchOutcomes = try await persistMetricsPayloads(
+                candidatesMissingContext.map { ($0, Self.makeAppleAdsMetrics(popularityResult: .missingContextApp)) },
+                using: modelStore
+            )
+            outcomes.append(contentsOf: batchOutcomes)
+            failureCount += batchOutcomes.filter { $0.errorMessage != nil }.count
+            completedCount += batchOutcomes.count
+            await progress?(completedCount, totalCount, failureCount)
         }
 
         guard let popularityContextAppStoreID else {
@@ -180,17 +188,14 @@ final class KeywordMetricsService: Sendable {
         }
 
         guard let webSession, webSession.isComplete else {
-            for candidate in tracksNeedingPopularity {
-                let outcome = try await persistMetricsPayload(
-                    Self.makeAppleAdsMetrics(popularityResult: .missingCredentials),
-                    for: candidate,
-                    using: modelStore
-                )
-                outcomes.append(outcome)
-                if outcome.errorMessage != nil { failureCount += 1 }
-                completedCount += 1
-                await progress?(completedCount, totalCount, failureCount)
-            }
+            let batchOutcomes = try await persistMetricsPayloads(
+                tracksNeedingPopularity.map { ($0, Self.makeAppleAdsMetrics(popularityResult: .missingCredentials)) },
+                using: modelStore
+            )
+            outcomes.append(contentsOf: batchOutcomes)
+            failureCount += batchOutcomes.filter { $0.errorMessage != nil }.count
+            completedCount += batchOutcomes.count
+            await progress?(completedCount, totalCount, failureCount)
             return outcomes
         }
 
@@ -210,7 +215,7 @@ final class KeywordMetricsService: Sendable {
             popularityContextAppStoreID: popularityContextAppStoreID,
             webSession: webSession
         ) {
-            for candidate in batchResult.candidates {
+            let entries: [(KeywordMetricsRefreshCandidate, KeywordMetricsPayload)] = batchResult.candidates.map { candidate in
                 let result: AppleAdsPopularityResult
                 if let errorMessage = batchResult.errorMessage {
                     result = .failure(errorMessage)
@@ -219,17 +224,14 @@ final class KeywordMetricsService: Sendable {
                 } else {
                     result = .notFound
                 }
-
-                let outcome = try await persistMetricsPayload(
-                    Self.makeAppleAdsMetrics(popularityResult: result),
-                    for: candidate,
-                    using: modelStore
-                )
-                outcomes.append(outcome)
-                if outcome.errorMessage != nil { failureCount += 1 }
-                completedCount += 1
-                await progress?(completedCount, totalCount, failureCount)
+                return (candidate, Self.makeAppleAdsMetrics(popularityResult: result))
             }
+
+            let batchOutcomes = try await persistMetricsPayloads(entries, using: modelStore)
+            outcomes.append(contentsOf: batchOutcomes)
+            failureCount += batchOutcomes.filter { $0.errorMessage != nil }.count
+            completedCount += batchOutcomes.count
+            await progress?(completedCount, totalCount, failureCount)
         }
 
         return outcomes
@@ -258,24 +260,35 @@ final class KeywordMetricsService: Sendable {
                         nextBatchIndex += 1
                         activeFetchCount += 1
                         group.addTask {
-                            do {
-                                let popularities = try await cmPopularityClient.keywordPopularities(
-                                    for: batch.candidates.map(\.term),
-                                    storefrontCode: batch.storefront,
-                                    adamId: popularityContextAppStoreID,
-                                    session: webSession
-                                )
-                                return KeywordMetricsStorefrontBatchResult(
-                                    candidates: batch.candidates,
-                                    popularities: popularities,
-                                    errorMessage: nil
-                                )
-                            } catch {
-                                return KeywordMetricsStorefrontBatchResult(
-                                    candidates: batch.candidates,
-                                    popularities: [:],
-                                    errorMessage: OpenASOError.map(error).localizedDescription
-                                )
+                            var attempt = 1
+                            while true {
+                                do {
+                                    let popularities = try await cmPopularityClient.keywordPopularities(
+                                        for: batch.candidates.map(\.term),
+                                        storefrontCode: batch.storefront,
+                                        adamId: popularityContextAppStoreID,
+                                        session: webSession
+                                    )
+                                    return KeywordMetricsStorefrontBatchResult(
+                                        candidates: batch.candidates,
+                                        popularities: popularities,
+                                        errorMessage: nil
+                                    )
+                                } catch {
+                                    let mappedError = OpenASOError.map(error)
+                                    if attempt < popularityMaxAttempts, isRetryablePopularityError(mappedError) {
+                                        // Back off before retrying so a transient
+                                        // rate limit doesn't discard the storefront.
+                                        try? await Task.sleep(for: .seconds(1 << (attempt - 1)))
+                                        attempt += 1
+                                        continue
+                                    }
+                                    return KeywordMetricsStorefrontBatchResult(
+                                        candidates: batch.candidates,
+                                        popularities: [:],
+                                        errorMessage: mappedError.localizedDescription
+                                    )
+                                }
                             }
                         }
                     }
@@ -322,30 +335,52 @@ final class KeywordMetricsService: Sendable {
             let descriptor = FetchDescriptor<TrackedAppKeyword>()
             let tracks = try modelContext.fetch(descriptor)
             let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
+            let metricsByKey = try self.metricsMap(for: Array(uniqueTracks.keys), in: modelContext)
             return uniqueTracks.values
                 .filter { track in
                     Self.shouldRefreshMetrics(
                         metricsTTL: metricsTTL,
-                        for: track.queryKey,
-                        in: modelContext
+                        metric: metricsByKey[track.queryKey]
                     )
                 }
                 .map(\.identityKey)
         }
     }
 
-    private func persistMetricsPayload(
-        _ payload: KeywordMetricsPayload,
-        for candidate: KeywordMetricsRefreshCandidate,
+    private func persistMetricsPayloads(
+        _ entries: [(candidate: KeywordMetricsRefreshCandidate, payload: KeywordMetricsPayload)],
         using modelStore: BackgroundModelStore
-    ) async throws -> KeywordMetricsRefreshOutcome {
-        try await modelStore.write { modelContext in
-            try Self.applyMetricsPayload(
-                payload,
-                forTrackIdentityKey: candidate.trackIdentityKey,
-                fallbackTrackID: candidate.trackID,
-                in: modelContext
+    ) async throws -> [KeywordMetricsRefreshOutcome] {
+        guard !entries.isEmpty else { return [] }
+
+        return try await modelStore.write { modelContext in
+            let targetIdentityKeys = entries.map(\.candidate.trackIdentityKey)
+            let descriptor = FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    targetIdentityKeys.contains(track.identityKey)
+                }
             )
+            let tracks = try modelContext.fetch(descriptor)
+            let tracksByIdentityKey = Dictionary(uniqueKeysWithValues: tracks.map { ($0.identityKey, $0) })
+            var metricsCache = try self.metricsMap(for: entries.map(\.candidate.queryKey), in: modelContext)
+
+            return entries.map { entry in
+                guard let track = tracksByIdentityKey[entry.candidate.trackIdentityKey] else {
+                    return KeywordMetricsRefreshOutcome(
+                        trackID: entry.candidate.trackID,
+                        errorMessage: OpenASOError.appNotFound.localizedDescription
+                    )
+                }
+
+                Self.upsertMetrics(entry.payload, for: track, in: modelContext, cache: &metricsCache)
+                if let statusMessage = entry.payload.statusMessage {
+                    track.statusMessage = statusMessage
+                    return KeywordMetricsRefreshOutcome(trackID: track.persistentModelID, errorMessage: statusMessage)
+                } else {
+                    Self.clearPopularityStatusIfNeeded(for: track)
+                    return KeywordMetricsRefreshOutcome(trackID: track.persistentModelID, errorMessage: nil)
+                }
+            }
         }
     }
 
@@ -359,30 +394,6 @@ final class KeywordMetricsService: Sendable {
             let payload = makeAppleAdsMetrics(popularityResult: result)
             applyMetricsPayload(payload, for: track, in: modelContext, outcomes: &outcomes)
         }
-    }
-
-    private static func applyMetricsPayload(
-        _ payload: KeywordMetricsPayload,
-        forTrackIdentityKey trackIdentityKey: String,
-        fallbackTrackID: PersistentIdentifier,
-        in modelContext: ModelContext
-    ) throws -> KeywordMetricsRefreshOutcome {
-        let targetIdentityKey = trackIdentityKey
-        let descriptor = FetchDescriptor<TrackedAppKeyword>(
-            predicate: #Predicate { track in
-                track.identityKey == targetIdentityKey
-            }
-        )
-        guard let track = try modelContext.fetch(descriptor).first else {
-            return KeywordMetricsRefreshOutcome(
-                trackID: fallbackTrackID,
-                errorMessage: OpenASOError.appNotFound.localizedDescription
-            )
-        }
-
-        var outcomes: [KeywordMetricsRefreshOutcome] = []
-        applyMetricsPayload(payload, for: track, in: modelContext, outcomes: &outcomes)
-        return outcomes.last ?? KeywordMetricsRefreshOutcome(trackID: fallbackTrackID, errorMessage: nil)
     }
 
     private static func applyMetricsPayload(
@@ -402,11 +413,15 @@ final class KeywordMetricsService: Sendable {
     }
 
     private static func shouldRefreshMetrics(metricsTTL: TimeInterval, for queryKey: String, in modelContext: ModelContext) -> Bool {
-        guard let metrics = try? fetchMetrics(queryKey: queryKey, in: modelContext) else {
+        shouldRefreshMetrics(metricsTTL: metricsTTL, metric: try? fetchMetrics(queryKey: queryKey, in: modelContext))
+    }
+
+    private static func shouldRefreshMetrics(metricsTTL: TimeInterval, metric: KeywordDailyMetric?) -> Bool {
+        guard let metric else {
             return true
         }
 
-        return metrics.popularityScore == nil || Date.now.timeIntervalSince(metrics.updatedAt) >= metricsTTL
+        return metric.popularityScore == nil || Date.now.timeIntervalSince(metric.updatedAt) >= metricsTTL
     }
 
     private static func fetchMetrics(queryKey: String, in modelContext: ModelContext) throws -> KeywordDailyMetric? {
@@ -420,8 +435,21 @@ final class KeywordMetricsService: Sendable {
     }
 
     private static func upsertMetrics(_ payload: KeywordMetricsPayload, for track: TrackedAppKeyword, in modelContext: ModelContext) {
-        let metrics: KeywordDailyMetric
+        var cache: [String: KeywordDailyMetric] = [:]
         if let existing = try? fetchMetrics(queryKey: track.queryKey, in: modelContext) {
+            cache[track.queryKey] = existing
+        }
+        upsertMetrics(payload, for: track, in: modelContext, cache: &cache)
+    }
+
+    private static func upsertMetrics(
+        _ payload: KeywordMetricsPayload,
+        for track: TrackedAppKeyword,
+        in modelContext: ModelContext,
+        cache: inout [String: KeywordDailyMetric]
+    ) {
+        let metrics: KeywordDailyMetric
+        if let existing = cache[track.queryKey] {
             metrics = existing
         } else {
             metrics = KeywordDailyMetric(
@@ -439,6 +467,7 @@ final class KeywordMetricsService: Sendable {
                 notes: payload.notes
             )
             modelContext.insert(metrics)
+            cache[track.queryKey] = metrics
         }
 
         metrics.keyword = track.term
@@ -516,6 +545,15 @@ final class KeywordMetricsService: Sendable {
         )
     }
 
+    private static func isRetryablePopularityError(_ error: OpenASOError) -> Bool {
+        switch error {
+        case .rateLimited, .networkUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func isUnsupportedAppleAdsStorefrontMessage(_ message: String) -> Bool {
         let lowercasedMessage = message.lowercased()
         return lowercasedMessage.contains("apple ads")
@@ -544,6 +582,7 @@ private struct KeywordMetricsRefreshCandidate: Sendable {
     let trackIdentityKey: String
     let term: String
     let storefront: String
+    let queryKey: String
     let shouldRefresh: Bool
 }
 

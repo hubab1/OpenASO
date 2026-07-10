@@ -22,8 +22,9 @@ struct AppKeywordsView: View {
 
     @State private var metricsByQueryKey: [String: KeywordMetricsSnapshot] = [:]
     @State private var insightsDataset = KeywordInsightsDataset(appStoreID: 0, series: [], source: .local)
+    @State private var materializedRows: [KeywordWorkspaceRow] = []
     @State private var keywordRows: [KeywordWorkspaceRow] = []
-    @State private var derivedRowsSignature: String?
+    @State private var derivedRowsSignature: Int?
 
     init(
         trackedApp: TrackedApp,
@@ -78,37 +79,45 @@ struct AppKeywordsView: View {
         }
     }
 
-    private var rowReloadSignature: String {
-        [
-            String(refreshToken),
-            String(services.backgroundModelStoreRevision),
-            String(trackedApp.appStoreID),
-            selectedPlatformFilter.id,
-            tracksSignature,
-            selectedDateRange.id,
-            searchText.trimmingCharacters(in: .whitespacesAndNewlines),
-            popularityFilterRange.description,
-            difficultyFilterRange.description,
-            positionFilterRange.description,
-            changeFilterRange.description,
-            String(showsOnlyChangedKeywords)
-        ].joined(separator: "::")
+    // Inputs that require re-running the expensive SwiftData row pipeline.
+    // Search text and the slider filters are intentionally excluded — they are
+    // applied in memory to the materialized rows.
+    private var rowMaterializationSignature: Int {
+        var hasher = Hasher()
+        hasher.combine(refreshToken)
+        hasher.combine(services.backgroundModelStoreRevision)
+        hasher.combine(trackedApp.appStoreID)
+        hasher.combine(selectedStorefrontFilter.id)
+        hasher.combine(selectedPlatformFilter.id)
+        hasher.combine(selectedDateRange.id)
+        hashTracks(into: &hasher)
+        return hasher.finalize()
     }
 
-    private var tracksSignature: String {
-        tracks.map { track in
-            [
-                track.identityKey,
-                String(track.lastRefreshAt?.timeIntervalSinceReferenceDate ?? 0),
-                String(track.rankingAppCount ?? -1),
-                track.statusMessage ?? ""
-            ].joined(separator: "|")
+    private var rowFilterSignature: Int {
+        var hasher = Hasher()
+        hasher.combine(rowMaterializationSignature)
+        hasher.combine(searchText.trimmingCharacters(in: .whitespacesAndNewlines))
+        hasher.combine(popularityFilterRange)
+        hasher.combine(difficultyFilterRange)
+        hasher.combine(positionFilterRange)
+        hasher.combine(changeFilterRange)
+        hasher.combine(showsOnlyChangedKeywords)
+        return hasher.finalize()
+    }
+
+    private func hashTracks(into hasher: inout Hasher) {
+        hasher.combine(tracks.count)
+        for track in tracks {
+            hasher.combine(track.identityKey)
+            hasher.combine(track.lastRefreshAt)
+            hasher.combine(track.rankingAppCount)
+            hasher.combine(track.statusMessage)
         }
-        .joined(separator: "::")
     }
 
     private var isLoadingKeywordRows: Bool {
-        derivedRowsSignature != rowReloadSignature
+        derivedRowsSignature != rowMaterializationSignature
     }
 
     private func insightsSignature(for rows: [KeywordWorkspaceRow]) -> String {
@@ -147,7 +156,7 @@ struct AppKeywordsView: View {
 
     private static let rankingFetchChunkSize = 500
 
-    private func makeFilteredRows(
+    private func makeRows(
         from tracks: [TrackedAppKeyword],
         snapshotBuckets: SnapshotBuckets
     ) -> [KeywordWorkspaceRow] {
@@ -168,10 +177,6 @@ struct AppKeywordsView: View {
         }
 
         return rows
-            .filter(matchesPosition)
-            .filter(matchesChange)
-            .filter(matchesChangedOnly)
-            .sorted(by: rowSort)
     }
 
     var body: some View {
@@ -202,34 +207,49 @@ struct AppKeywordsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: rowReloadSignature) {
-            await updateKeywordRows()
+        .task(id: rowMaterializationSignature) {
+            await materializeKeywordRows()
+        }
+        .task(id: rowFilterSignature) {
+            // Debounce keystroke and slider churn; only the cheap in-memory
+            // filters run here.
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            applyRowFilters()
         }
         .task(id: insightsSignature(for: rows)) {
             await reloadInsights(visibleTracks: rows.map(\.track))
         }
     }
 
-    private func updateKeywordRows() async {
-        let signature = rowReloadSignature
+    private func materializeKeywordRows() async {
+        let signature = rowMaterializationSignature
         do {
-            let searchFilteredTracks = tracks
-                .filter(matchesPlatform)
-                .filter(matchesSearch)
-            let loadedMetrics = try await loadMetricsSnapshots(for: searchFilteredTracks.map(\.queryKey))
+            let platformTracks = tracks.filter(matchesPlatform)
+            let loadedMetrics = try await loadMetricsSnapshots(for: platformTracks.map(\.queryKey))
             metricsByQueryKey = loadedMetrics
-            let filteredTracks = searchFilteredTracks.filter(matchesMetrics)
-            let snapshotBuckets = try fetchSnapshotBuckets(for: filteredTracks)
-            keywordRows = makeFilteredRows(
-                from: filteredTracks,
+            let snapshotBuckets = try fetchSnapshotBuckets(for: platformTracks)
+            materializedRows = makeRows(
+                from: platformTracks,
                 snapshotBuckets: snapshotBuckets
             )
         } catch {
             metricsByQueryKey = [:]
-            keywordRows = []
+            materializedRows = []
             reportError(OpenASOError.map(error).localizedDescription)
         }
         derivedRowsSignature = signature
+        applyRowFilters()
+    }
+
+    private func applyRowFilters() {
+        keywordRows = materializedRows
+            .filter { matchesSearch(for: $0.track) }
+            .filter { matchesMetrics(for: $0.track) }
+            .filter(matchesPosition)
+            .filter(matchesChange)
+            .filter(matchesChangedOnly)
+            .sorted(by: rowSort)
     }
 
     private func loadMetricsSnapshots(for queryKeys: [String]) async throws -> [String: KeywordMetricsSnapshot] {

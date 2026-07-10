@@ -1047,16 +1047,54 @@ struct AppleAdsCMPopularityClient: Sendable {
         let terms = Self.uniqueTerms(from: keywords)
         guard !terms.isEmpty else { return [:] }
 
+        let batches = terms.chunked(into: Self.maxTermsPerRequest)
         var popularities: [String: Int] = [:]
-        for batch in terms.chunked(into: Self.maxTermsPerRequest) {
-            let response = try await keywordPopularitiesBatch(
-                for: batch,
-                storefrontCode: storefrontCode,
-                adamId: adamId,
-                session: session
-            )
-            for keyword in response.data {
-                popularities[Self.normalizedKeywordKey(keyword.name)] = keyword.popularity
+
+        // Fast path: a single chunk needs no task group.
+        if batches.count <= 1 {
+            if let batch = batches.first {
+                let response = try await keywordPopularitiesBatch(
+                    for: batch,
+                    storefrontCode: storefrontCode,
+                    adamId: adamId,
+                    session: session
+                )
+                for keyword in response.data {
+                    popularities[Self.normalizedKeywordKey(keyword.name)] = keyword.popularity
+                }
+            }
+            return popularities
+        }
+
+        // Overlap chunk requests with a small window to avoid hammering the
+        // private endpoint.
+        let maxConcurrentChunks = 3
+        try await withThrowingTaskGroup(of: KeywordPopularityCMResponse.self) { group in
+            var nextIndex = 0
+
+            func addNextTaskIfPossible() {
+                guard nextIndex < batches.count else { return }
+                let batch = batches[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    try await self.keywordPopularitiesBatch(
+                        for: batch,
+                        storefrontCode: storefrontCode,
+                        adamId: adamId,
+                        session: session
+                    )
+                }
+            }
+
+            for _ in 0..<min(maxConcurrentChunks, batches.count) {
+                addNextTaskIfPossible()
+            }
+
+            while let response = try await group.next() {
+                for keyword in response.data {
+                    popularities[Self.normalizedKeywordKey(keyword.name)] = keyword.popularity
+                }
+                addNextTaskIfPossible()
             }
         }
 

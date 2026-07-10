@@ -31,6 +31,11 @@ struct RankingRefreshRequest: Sendable {
     }
 }
 
+private struct RankingRefreshCoordinatorWorkItem: Sendable {
+    let fetchRequest: RankingRefreshRequest
+    let targetRequests: [RankingRefreshRequest]
+}
+
 struct RankingRefreshPageResult: Sendable {
     let request: RankingRefreshRequest
     let page: SearchRankingPage
@@ -917,60 +922,89 @@ final class RankingRefreshCoordinator: Sendable {
         }
 
         let rankingRequests = tracks.map(RankingRefreshRequest.init)
+        // Group by queryKey so each unique term+storefront+platform is fetched
+        // once and the page is fanned out to every sharing track.
+        let workItems: [RankingRefreshCoordinatorWorkItem] =
+            Dictionary(grouping: rankingRequests, by: \.queryKey)
+                .values
+                .map { groupedRequests in
+                    let orderedRequests = groupedRequests.sorted { lhs, rhs in
+                        lhs.identityKey.localizedStandardCompare(rhs.identityKey) == .orderedAscending
+                    }
+                    return RankingRefreshCoordinatorWorkItem(
+                        fetchRequest: orderedRequests[0],
+                        targetRequests: orderedRequests
+                    )
+                }
+                .sorted { lhs, rhs in
+                    lhs.fetchRequest.queryKey.localizedStandardCompare(rhs.fetchRequest.queryKey) == .orderedAscending
+                }
         let rankingPageFetcher = makeRankingPageFetcher(limit: limit)
-        await withTaskGroup(of: (RankingRefreshRequest, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
-            var nextRequestIndex = 0
+        await withTaskGroup(of: (RankingRefreshCoordinatorWorkItem, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
+            var nextWorkItemIndex = 0
             var activeFetchCount = 0
 
             func enqueueNextFetchIfPossible() {
                 guard activeFetchCount < Self.rankingFetchConcurrency,
-                      nextRequestIndex < rankingRequests.count
+                      nextWorkItemIndex < workItems.count
                 else {
                     return
                 }
 
-                let rankingRequest = rankingRequests[nextRequestIndex]
-                nextRequestIndex += 1
+                let workItem = workItems[nextWorkItemIndex]
+                nextWorkItemIndex += 1
                 activeFetchCount += 1
                 group.addTask {
-                    let result = await rankingPageFetcher(rankingRequest)
-                    return (rankingRequest, result)
+                    let result = await rankingPageFetcher(workItem.fetchRequest)
+                    return (workItem, result)
                 }
             }
 
-            for _ in 0..<min(Self.rankingFetchConcurrency, rankingRequests.count) {
+            for _ in 0..<min(Self.rankingFetchConcurrency, workItems.count) {
                 enqueueNextFetchIfPossible()
             }
 
-            while let (rankingRequest, result) = await group.next() {
+            while let (workItem, result) = await group.next() {
                 activeFetchCount -= 1
+                enqueueNextFetchIfPossible()
 
                 switch result {
                 case .success(let pageResult):
-                    pendingPageResults.append(pageResult)
+                    for targetRequest in workItem.targetRequests {
+                        pendingPageResults.append(RankingRefreshPageResult(
+                            request: targetRequest,
+                            page: pageResult.page,
+                            searchedAt: pageResult.searchedAt,
+                            observedHour: pageResult.observedHour,
+                            submissionCount: pageResult.submissionCount,
+                            winningCount: pageResult.winningCount,
+                            confidence: workItem.targetRequests.count > 1 ? "shared_query_fetch" : pageResult.confidence
+                        ))
+                    }
                     if pendingPageResults.count >= Self.rankingPersistenceBatchSize {
                         flushPendingPageResults()
                     }
                 case .failure(let error):
-                    _ = try? recordRefreshFailure(
-                        identityKey: rankingRequest.identityKey,
-                        error: error,
-                        in: modelContext,
-                        saveChanges: false
-                    )
-                    outcomes.append(RefreshOutcome(
-                        trackID: tracks.first { $0.identityKey == rankingRequest.identityKey }?.persistentModelID ?? tracks[0].persistentModelID,
-                        snapshotID: nil,
-                        rank: nil,
-                        searchedAt: nil,
-                        error: error
-                    ))
-                    failureCount += 1
+                    for targetRequest in workItem.targetRequests {
+                        _ = try? recordRefreshFailure(
+                            identityKey: targetRequest.identityKey,
+                            error: error,
+                            in: modelContext,
+                            saveChanges: false
+                        )
+                        outcomes.append(RefreshOutcome(
+                            trackID: tracks.first { $0.identityKey == targetRequest.identityKey }?.persistentModelID ?? tracks[0].persistentModelID,
+                            snapshotID: nil,
+                            rank: nil,
+                            searchedAt: nil,
+                            error: error
+                        ))
+                        failureCount += 1
+                    }
                 }
 
-                completedCount += 1
+                completedCount += workItem.targetRequests.count
                 await progress?(completedCount, tracks.count, failureCount)
-                enqueueNextFetchIfPossible()
             }
         }
 

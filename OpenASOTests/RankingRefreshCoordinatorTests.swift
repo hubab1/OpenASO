@@ -467,7 +467,7 @@ struct RankingRefreshCoordinatorTests {
             refreshCoordinator: coordinator,
             appDetailRefresh: { request in
                 requests.append(request)
-                return AppDetailRefreshResult(keywordOutcomes: [], ratingOutcomes: [], reviewOutcomes: [], firstError: nil)
+                return AppDetailRefreshResult(keywordOutcomes: [], ratingOutcomes: [], reviewOutcomes: [], pricingComparison: nil, pricingError: nil, firstError: nil)
             },
             storefrontCodesProvider: { ["US", "gb"] }
         )
@@ -526,7 +526,7 @@ struct RankingRefreshCoordinatorTests {
             refreshCoordinator: coordinator,
             appDetailRefresh: { request in
                 requests.append(request)
-                return AppDetailRefreshResult(keywordOutcomes: [], ratingOutcomes: [], reviewOutcomes: [], firstError: nil)
+                return AppDetailRefreshResult(keywordOutcomes: [], ratingOutcomes: [], reviewOutcomes: [], pricingComparison: nil, pricingError: nil, firstError: nil)
             },
             storefrontCodesProvider: { ["us"] }
         )

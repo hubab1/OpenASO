@@ -180,6 +180,8 @@ private actor AppDetailRefreshQueue {
 
 final class AppDetailRefreshService: Sendable {
     private static let rankingFetchConcurrency = 4
+    // Mirrors AppStorefrontRatingService.ratingFetchConcurrency.
+    private static let reviewFetchConcurrency = 6
     private static let rankingPersistenceBatchSize = 5
 
     private let refreshQueue = AppDetailRefreshQueue()
@@ -247,26 +249,15 @@ final class AppDetailRefreshService: Sendable {
         let pricingError: OpenASOError?
 
         switch request.workspace {
-        case .keywords:
+        case .keywords, .ratings:
             pricingComparison = nil
             pricingError = nil
-            keywordOutcomes = await refreshKeywords(request)
-            if request.refreshRatings || request.refreshReviews {
-                (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
-            } else {
-                ratingOutcomes = []
-                reviewOutcomes = []
-            }
-        case .ratings:
-            pricingComparison = nil
-            pricingError = nil
-            if request.refreshRatings || request.refreshReviews {
-                (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
-            } else {
-                ratingOutcomes = []
-                reviewOutcomes = []
-            }
-            keywordOutcomes = await refreshKeywords(request)
+            // Keywords and ratings/reviews touch disjoint models and endpoints;
+            // run them concurrently and let writes serialize on the model store.
+            async let keywordsTask = refreshKeywords(request)
+            async let ratingsReviewsTask = refreshRatingsAndReviews(request)
+            keywordOutcomes = await keywordsTask
+            (ratingOutcomes, reviewOutcomes) = await ratingsReviewsTask
         case .pricing:
             keywordOutcomes = []
             ratingOutcomes = []
@@ -508,6 +499,9 @@ final class AppDetailRefreshService: Sendable {
 
             while let (workItem, result) = await group.next() {
                 activeFetchCount -= 1
+                // Refill the freed fetch slot before any persistence work so the
+                // fetch window stays saturated while batches flush to the store.
+                enqueueNextFetchIfPossible()
 
                 switch result {
                 case .success(let pageResult):
@@ -540,8 +534,6 @@ final class AppDetailRefreshService: Sendable {
                     total: totalRequestedCount,
                     failureCount: failureCount + missingFailureCount
                 )
-
-                enqueueNextFetchIfPossible()
             }
         }
 
@@ -681,62 +673,91 @@ final class AppDetailRefreshService: Sendable {
             return ([], [])
         }
 
-        do {
-            let storefrontCodes = request.storefrontSelection.codes
-            let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
-            if request.refreshRatings {
-                await progressStore?.updatePhase(.refreshingRatings)
-                ratingOutcomes = await appStorefrontRatingService.fetchRatingOutcomes(
-                    appStoreID: request.app.appStoreID,
-                    appName: request.app.name,
-                    storefronts: storefrontCodes,
-                    progress: { completed, total, failureCount in
-                        await self.progressStore?.updateStep(
-                            .ratings,
-                            status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
-                            completed: completed,
-                            total: total,
-                            failureCount: failureCount
-                        )
-                    }
-                )
-                try await persistRatingOutcomes(ratingOutcomes, for: request.app)
-            } else {
-                await progressStore?.updateStep(.ratings, status: .skipped, completed: 0, total: 0, failureCount: 0)
-                ratingOutcomes = []
-            }
+        let storefrontCodes = request.storefrontSelection.codes
+        // Ratings and reviews hit disjoint endpoints; overlap the network legs
+        // while writes stay serialized on the background model store.
+        async let ratingsTask = refreshRatingsBranch(request, storefrontCodes: storefrontCodes)
+        async let reviewsTask = refreshReviewsBranch(request, storefrontCodes: storefrontCodes)
+        let outcomes = (await ratingsTask, await reviewsTask)
+        if request.recordsRatingsReviewsRefresh, didSuccessfullyRefreshRatingsOrReviews(outcomes) {
+            await ratingsReviewsRefreshRecorder?(.now)
+        }
+        return outcomes
+    }
 
-            let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
-            if request.refreshReviews {
-                await progressStore?.updatePhase(.refreshingReviews)
-                reviewOutcomes = try await refreshReviews(
-                    request: request,
-                    storefrontCodes: storefrontCodes
+    private func refreshRatingsBranch(
+        _ request: AppDetailRefreshRequest,
+        storefrontCodes: [String]
+    ) async -> [AppStorefrontRatingRefreshOutcome] {
+        guard request.refreshRatings else {
+            await progressStore?.updateStep(.ratings, status: .skipped, completed: 0, total: 0, failureCount: 0)
+            return []
+        }
+
+        await progressStore?.updatePhase(.refreshingRatings)
+        let ratingOutcomes = await appStorefrontRatingService.fetchRatingOutcomes(
+            appStoreID: request.app.appStoreID,
+            appName: request.app.name,
+            storefronts: storefrontCodes,
+            progress: { completed, total, failureCount in
+                await self.progressStore?.updateStep(
+                    .ratings,
+                    status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
+                    completed: completed,
+                    total: total,
+                    failureCount: failureCount
                 )
-            } else {
-                await progressStore?.updateStep(.reviews, status: .skipped, completed: 0, total: 0, failureCount: 0)
-                reviewOutcomes = []
             }
-            let outcomes = (ratingOutcomes, reviewOutcomes)
-            if request.recordsRatingsReviewsRefresh, didSuccessfullyRefreshRatingsOrReviews(outcomes) {
-                await ratingsReviewsRefreshRecorder?(.now)
-            }
-            return outcomes
+        )
+        do {
+            try await persistRatingOutcomes(ratingOutcomes, for: request.app)
+            return ratingOutcomes
         } catch {
-            let mappedError = OpenASOError.map(error)
             await progressStore?.updateStep(
                 .ratings,
                 status: .failed,
-                completed: request.storefrontSelection.codes.count,
-                total: request.storefrontSelection.codes.count,
-                failureCount: max(1, request.storefrontSelection.codes.count)
+                completed: storefrontCodes.count,
+                total: storefrontCodes.count,
+                failureCount: max(1, storefrontCodes.count)
             )
-            let ratingOutcome = AppStorefrontRatingRefreshOutcome(
-                storefront: "all",
-                result: nil,
-                error: mappedError
+            return [
+                AppStorefrontRatingRefreshOutcome(
+                    storefront: "all",
+                    result: nil,
+                    error: OpenASOError.map(error)
+                )
+            ]
+        }
+    }
+
+    private func refreshReviewsBranch(
+        _ request: AppDetailRefreshRequest,
+        storefrontCodes: [String]
+    ) async -> [AppStorefrontReviewRefreshOutcome] {
+        guard request.refreshReviews else {
+            await progressStore?.updateStep(.reviews, status: .skipped, completed: 0, total: 0, failureCount: 0)
+            return []
+        }
+
+        await progressStore?.updatePhase(.refreshingReviews)
+        do {
+            return try await refreshReviews(request: request, storefrontCodes: storefrontCodes)
+        } catch {
+            await progressStore?.updateStep(
+                .reviews,
+                status: .failed,
+                completed: storefrontCodes.count,
+                total: storefrontCodes.count,
+                failureCount: max(1, storefrontCodes.count)
             )
-            return ([ratingOutcome], [])
+            return [
+                AppStorefrontReviewRefreshOutcome(
+                    storefront: "all",
+                    fetchedReviews: 0,
+                    storedReviews: 0,
+                    error: OpenASOError.map(error)
+                )
+            ]
         }
     }
 
@@ -850,50 +871,80 @@ final class AppDetailRefreshService: Sendable {
         var failureCount = 0
         await progressStore?.updateStep(.reviews, status: .running, completed: 0, total: targetStorefronts.count, failureCount: 0)
 
-        for storefront in targetStorefronts {
-            do {
-                var storedCount = 0
-                let fetchedCount = try await appStorefrontReviewService.fetchReviewPages(
-                    appStoreID: request.app.appStoreID,
-                    storefront: storefront
-                ) { pageReviews in
-                    let pageStoredCount = try await backgroundModelStore.write { modelContext in
-                        let storeApp = try storeApp(for: request.app, in: modelContext)
-                        return try appStorefrontReviewService.upsert(
-                            pageReviews,
-                            storeApp: storeApp,
-                            in: modelContext
+        // Overlap the per-storefront review crawls with a bounded window
+        // (mirrors AppStorefrontRatingService); writes stay serialized on the
+        // background model store.
+        await withTaskGroup(of: AppStorefrontReviewRefreshOutcome.self) { group in
+            var nextIndex = 0
+            var activeCount = 0
+
+            func enqueueNextFetchIfPossible() {
+                guard activeCount < Self.reviewFetchConcurrency,
+                      nextIndex < targetStorefronts.count else {
+                    return
+                }
+
+                let storefront = targetStorefronts[nextIndex]
+                nextIndex += 1
+                activeCount += 1
+                group.addTask {
+                    do {
+                        var storedCount = 0
+                        let fetchedCount = try await self.appStorefrontReviewService.fetchReviewPages(
+                            appStoreID: request.app.appStoreID,
+                            storefront: storefront
+                        ) { pageReviews in
+                            let pageStoredCount = try await self.backgroundModelStore.write { modelContext in
+                                let storeApp = try self.storeApp(for: request.app, in: modelContext)
+                                return try self.appStorefrontReviewService.upsert(
+                                    pageReviews,
+                                    storeApp: storeApp,
+                                    in: modelContext
+                                )
+                            }
+                            storedCount += pageStoredCount
+                            return pageStoredCount == pageReviews.count
+                        }
+                        return AppStorefrontReviewRefreshOutcome(
+                            storefront: storefront,
+                            fetchedReviews: fetchedCount,
+                            storedReviews: storedCount,
+                            error: nil
+                        )
+                    } catch {
+                        return AppStorefrontReviewRefreshOutcome(
+                            storefront: storefront,
+                            fetchedReviews: 0,
+                            storedReviews: 0,
+                            error: OpenASOError.map(error)
                         )
                     }
-                    storedCount += pageStoredCount
-                    return pageStoredCount == pageReviews.count
                 }
-                outcomes.append(AppStorefrontReviewRefreshOutcome(
-                    storefront: storefront,
-                    fetchedReviews: fetchedCount,
-                    storedReviews: storedCount,
-                    error: nil
-                ))
-            } catch {
-                failureCount += 1
-                outcomes.append(AppStorefrontReviewRefreshOutcome(
-                    storefront: storefront,
-                    fetchedReviews: 0,
-                    storedReviews: 0,
-                    error: OpenASOError.map(error)
-                ))
             }
 
-            completedCount += 1
-            await progressStore?.updateStep(
-                .reviews,
-                status: completedCount >= targetStorefronts.count ? (failureCount > 0 ? .failed : .completed) : .running,
-                completed: completedCount,
-                total: targetStorefronts.count,
-                failureCount: failureCount
-            )
+            for _ in 0..<min(Self.reviewFetchConcurrency, targetStorefronts.count) {
+                enqueueNextFetchIfPossible()
+            }
+
+            while let outcome = await group.next() {
+                activeCount -= 1
+                enqueueNextFetchIfPossible()
+                outcomes.append(outcome)
+                if outcome.error != nil {
+                    failureCount += 1
+                }
+                completedCount += 1
+                await progressStore?.updateStep(
+                    .reviews,
+                    status: completedCount >= targetStorefronts.count ? (failureCount > 0 ? .failed : .completed) : .running,
+                    completed: completedCount,
+                    total: targetStorefronts.count,
+                    failureCount: failureCount
+                )
+            }
         }
 
+        outcomes.sort { $0.storefront < $1.storefront }
         return outcomes
     }
 
