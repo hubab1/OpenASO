@@ -176,13 +176,18 @@ enum GlobalKeywordSync {
     }
 
     // Fetch rankings and metrics for sync-created tracks that have never been
-    // refreshed. Runs one coordinator pass so identical keyword+market queries
-    // shared by multiple apps are fetched exactly once.
+    // refreshed. Runs as ONE request through the AppDetailRefreshService queue
+    // so all persistence stays serialized on the background store (concurrent
+    // saves of the same unique-keyed crawls crash CoreData's merge policy),
+    // and identical keyword+market queries shared by multiple apps are fetched
+    // exactly once.
     @MainActor
     static func refreshUnfetchedSyncedTracks(
         services: AppServices,
         in modelContext: ModelContext
     ) async {
+        guard let refreshService = services.appDetailRefreshService else { return }
+
         let markerNote = globalTrackNote
         let descriptor = FetchDescriptor<TrackedAppKeyword>(
             predicate: #Predicate { track in
@@ -191,47 +196,30 @@ enum GlobalKeywordSync {
         )
         guard let tracks = try? modelContext.fetch(descriptor), !tracks.isEmpty else { return }
 
-        let progressStore = services.refreshProgressStore
-        progressStore.beginGlobalKeywordSync(trackTotal: tracks.count)
-
-        _ = await services.refreshCoordinator.refresh(
-            tracks: tracks,
-            in: modelContext,
-            analyticsTrigger: "global_keyword_sync",
-            progress: { completed, total, failureCount in
-                await progressStore.updateStep(
-                    .keywords,
-                    status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
-                    completed: completed,
-                    total: total,
-                    failureCount: failureCount
-                )
-            }
+        let storefrontCodes = (try? StorefrontCatalog.bundledStorefrontCodes()) ?? []
+        let request = AppDetailRefreshRequest(
+            app: AppDetailRefreshAppSnapshot(
+                appStoreID: 0,
+                bundleID: nil,
+                name: "Global keywords",
+                subtitle: nil,
+                sellerName: nil,
+                defaultPlatform: .iphone
+            ),
+            workspace: .keywords,
+            storefrontSelection: .all(codes: storefrontCodes),
+            trackIdentityKeys: tracks.map(\.identityKey),
+            trigger: "global_keyword_sync",
+            refreshRatings: false,
+            refreshReviews: false,
+            recordsRatingsReviewsRefresh: false,
+            popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
+            appleAdsWebSession: services.appleAdsWebSessionStore.session,
+            appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
         )
 
-        var metricsErrorMessage: String?
-        if let backgroundModelStore = services.backgroundModelStore {
-            let identityKeys = tracks.map(\.identityKey)
-            let outcomes = try? await services.keywordMetricsService.refreshMetrics(
-                for: identityKeys,
-                popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
-                webSession: services.appleAdsWebSessionStore.session,
-                using: backgroundModelStore,
-                progress: { completed, total, failureCount in
-                    await progressStore.updateStep(
-                        .metrics,
-                        status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
-                        completed: completed,
-                        total: total,
-                        failureCount: failureCount
-                    )
-                }
-            )
-            metricsErrorMessage = outcomes?.first { $0.errorMessage != nil }?.errorMessage
-        }
-
+        _ = await refreshService.refresh(request)
         services.markBackgroundModelStoreChanged()
-        progressStore.finish(error: metricsErrorMessage.map(OpenASOError.providerUnavailable))
     }
 
     private static func trackKey(term: String, storefront: String, platform: AppPlatform) -> String {
