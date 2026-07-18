@@ -213,58 +213,73 @@ struct AddKeywordsSheet: View {
         errorMessage = nil
         statusMessage = nil
 
-        let existingKeys: Set<String>
+        let requestedCandidates = AddKeywordsQueryResolver.pendingCandidates(
+            keywords: keywords,
+            storefrontCodes: storefrontCodes,
+            platform: platform,
+            existingDuplicateKeys: []
+        )
+
+        let persistedIdentityKeys: Set<String>
         do {
-            existingKeys = try existingDuplicateKeys()
+            persistedIdentityKeys = try AddKeywordsQueryResolver.existingTrackIdentityKeys(
+                for: requestedCandidates,
+                appStoreID: trackedApp.appStoreID,
+                in: modelContext
+            )
         } catch {
             errorMessage = OpenASOError.map(error).localizedDescription
             isSubmitting = false
             return
         }
-        var mutableExistingKeys = existingKeys
-        var insertedCount = 0
-        var insertedTracks: [TrackedAppKeyword] = []
 
-        for storefrontCode in storefrontCodes.sorted() {
-            for keyword in keywords {
-                let identityKey = duplicateKey(term: keyword, storefront: storefrontCode, platform: platform)
-
-                guard !mutableExistingKeys.contains(identityKey) else { continue }
-
-                let query: KeywordQuery
-                do {
-                    query = try KeywordQuery.fetchOrInsert(
-                        term: keyword,
-                        storefront: storefrontCode,
-                        platform: platform,
-                        in: modelContext
-                    )
-                } catch {
-                    errorMessage = OpenASOError.map(error).localizedDescription
-                    isSubmitting = false
-                    return
-                }
-
-                let track = TrackedAppKeyword(
-                    term: keyword,
-                    storefront: storefrontCode,
-                    platform: platform,
-                    trackedApp: trackedApp,
-                    query: query
-                )
-
-                trackedApp.keywordTracks.append(track)
-                modelContext.insert(track)
-                mutableExistingKeys.insert(identityKey)
-                insertedCount += 1
-                insertedTracks.append(track)
-            }
+        let localIdentityKeys = Set(
+            trackedKeywords.map(\.identityKey) + trackedApp.keywordTracks.map(\.identityKey)
+        )
+        let existingIdentityKeys = persistedIdentityKeys.union(localIdentityKeys)
+        let candidates = requestedCandidates.filter { candidate in
+            !existingIdentityKeys.contains(
+                candidate.trackIdentityKey(appStoreID: trackedApp.appStoreID)
+            )
         }
-
-        guard insertedCount > 0 else {
+        guard !candidates.isEmpty else {
             errorMessage = "All of those keyword and country combinations already exist."
             isSubmitting = false
             return
+        }
+
+        let queriesByKey: [String: KeywordQuery]
+        do {
+            queriesByKey = try AddKeywordsQueryResolver.resolveQueries(
+                for: candidates,
+                in: modelContext
+            )
+        } catch {
+            errorMessage = OpenASOError.map(error).localizedDescription
+            isSubmitting = false
+            return
+        }
+
+        var insertedTracks: [TrackedAppKeyword] = []
+
+        for candidate in candidates {
+            guard let query = queriesByKey[candidate.queryKey] else {
+                errorMessage = OpenASOError.unexpectedResponse.localizedDescription
+                isSubmitting = false
+                return
+            }
+
+            let track = TrackedAppKeyword(
+                term: candidate.term,
+                storefront: candidate.storefront,
+                platform: candidate.platform,
+                trackedApp: trackedApp,
+                query: query
+            )
+
+            trackedApp.keywordTracks.append(track)
+            modelContext.insert(track)
+            insertedTracks.append(track)
         }
 
         do {
@@ -311,27 +326,6 @@ struct AddKeywordsSheet: View {
             errorMessage = OpenASOError.map(error).localizedDescription
             isSubmitting = false
         }
-    }
-
-    private func duplicateKey(term: String, storefront: String, platform: AppPlatform) -> String {
-        [
-            term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            platform.rawValue
-        ].joined(separator: "::")
-    }
-
-    private func existingDuplicateKeys() throws -> Set<String> {
-        let appStoreID = trackedApp.appStoreID
-        let descriptor = FetchDescriptor<TrackedAppKeyword>(
-            predicate: #Predicate { track in
-                track.appStoreID == appStoreID
-            }
-        )
-        return Set(
-            try modelContext.fetch(descriptor)
-                .map { duplicateKey(term: $0.term, storefront: $0.storefront, platform: $0.platform) }
-        )
     }
 
     private var parsedKeywords: [String] {
