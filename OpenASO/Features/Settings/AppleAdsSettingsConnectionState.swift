@@ -146,6 +146,10 @@ enum AppleAdsConnectionState: Equatable {
     }
 
     static func classified(error: Error, hasSession: Bool) -> AppleAdsConnectionState {
+        if error is AppleAdsWebSessionExpiredError {
+            return .expiredSession("Apple Ads asked for sign-in again. Refresh the session to continue.")
+        }
+
         let message = OpenASOError.map(error).localizedDescription
         let lowercasedMessage = message.lowercased()
 

@@ -3,6 +3,16 @@ import Testing
 
 struct AppleAdsConnectionStateTests {
     @Test
+    func typedExpiredSessionErrorsMapToExpiredState() {
+        let state = AppleAdsConnectionState.classified(
+            error: AppleAdsWebSessionExpiredError(),
+            hasSession: true
+        )
+
+        #expect(state == .expiredSession("Apple Ads asked for sign-in again. Refresh the session to continue."))
+    }
+
+    @Test
     func expiredSessionErrorsMapToExpiredState() {
         let state = AppleAdsConnectionState.classified(
             error: OpenASOError.providerUnavailable("Apple Ads web session expired. Refresh it in Settings."),
@@ -31,6 +41,16 @@ struct AppleAdsConnectionStateTests {
         )
 
         #expect(state == .apiIssue("HTTP 500"))
+    }
+
+    @Test
+    func genericForbiddenErrorsRemainAPIIssues() {
+        let state = AppleAdsConnectionState.classified(
+            error: OpenASOError.providerUnavailable("HTTP 403"),
+            hasSession: true
+        )
+
+        #expect(state == .apiIssue("HTTP 403"))
     }
 
     @Test
