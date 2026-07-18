@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 
 struct AppleAdsWebSession: Codable, Equatable, Sendable {
     var cookieHeader: String
@@ -145,6 +146,13 @@ struct AppleAdsWebLoginCredentials: Codable, Equatable, Sendable {
 @MainActor
 @Observable
 final class AppleAdsWebSessionStore {
+    private struct ReadState {
+        let session: AppleAdsWebSession?
+        let shouldRetryTransientFailure: Bool
+    }
+
+    private static let logger = Logger(subsystem: OpenASOLog.subsystem, category: "keychain")
+
     private let defaults: UserDefaults
     private let keychainItemPresence: KeychainItemPresenceStore
     private let keychain: any KeychainService
@@ -154,6 +162,7 @@ final class AppleAdsWebSessionStore {
 
     private(set) var session: AppleAdsWebSession?
     private(set) var requiresReconnect: Bool
+    private var shouldRetryTransientRead: Bool
 
     init(
         defaults: UserDefaults = .openASOShared,
@@ -168,14 +177,44 @@ final class AppleAdsWebSessionStore {
         self.keychain = keychain
         self.keychainService = keychainService
         self.reconnectRequiredDefaultsKey = reconnectRequiredDefaultsKey
-        session = keychainItemPresence.contains(service: keychainService, account: Self.sessionAccount)
-            ? Self.readSession(service: keychainService, account: Self.sessionAccount, keychain: keychain)
-            : nil
+        if keychainItemPresence.contains(service: keychainService, account: Self.sessionAccount) {
+            let state = Self.readState(
+                service: keychainService,
+                account: Self.sessionAccount,
+                keychain: keychain
+            )
+            session = state.session
+            shouldRetryTransientRead = state.shouldRetryTransientFailure
+        } else {
+            session = nil
+            shouldRetryTransientRead = false
+        }
         requiresReconnect = defaults.bool(forKey: reconnectRequiredDefaultsKey)
     }
 
     var hasSession: Bool {
         session?.isComplete == true
+    }
+
+    var hasPendingTransientReadRecovery: Bool {
+        session == nil && shouldRetryTransientRead
+    }
+
+    /// Explicit action boundary for recovering a startup read that failed because the
+    /// login Keychain was temporarily unavailable. Passive UI property reads stay pure.
+    @discardableResult
+    func recoverSessionIfNeeded() -> AppleAdsWebSession? {
+        guard session == nil, shouldRetryTransientRead else { return session }
+        let state = Self.readState(
+            service: keychainService,
+            account: Self.sessionAccount,
+            keychain: keychain
+        )
+        if let recoveredSession = state.session {
+            session = recoveredSession
+        }
+        shouldRetryTransientRead = state.shouldRetryTransientFailure
+        return session
     }
 
     func save(_ session: AppleAdsWebSession) throws {
@@ -185,6 +224,7 @@ final class AppleAdsWebSessionStore {
             keychainItemPresence.markPresent(service: keychainService, account: Self.sessionAccount)
             self.session = session
             setReconnectRequired(false)
+            shouldRetryTransientRead = false
         } catch {
             throw OpenASOError.providerUnavailable("Could not save Apple Ads web session to Keychain.")
         }
@@ -209,6 +249,7 @@ final class AppleAdsWebSessionStore {
         keychainItemPresence.markAbsent(service: keychainService, account: Self.sessionAccount)
         session = nil
         setReconnectRequired(false)
+        shouldRetryTransientRead = false
     }
 
     private func setReconnectRequired(_ isRequired: Bool) {
@@ -220,13 +261,24 @@ final class AppleAdsWebSessionStore {
         requiresReconnect = isRequired
     }
 
-    private static func readSession(
+    private static func readState(
         service: String,
         account: String,
         keychain: any KeychainService
-    ) -> AppleAdsWebSession? {
-        guard let data = keychain.data(service: service, account: account) else { return nil }
-        return try? JSONDecoder().decode(AppleAdsWebSession.self, from: data)
+    ) -> ReadState {
+        switch keychain.readData(service: service, account: account) {
+        case .success(let data):
+            guard let session = try? JSONDecoder().decode(AppleAdsWebSession.self, from: data) else {
+                logger.error("Stored Apple Ads web session could not be decoded; preserving the Keychain item")
+                return ReadState(session: nil, shouldRetryTransientFailure: false)
+            }
+            return ReadState(session: session, shouldRetryTransientFailure: false)
+        case .notFound:
+            logger.warning("Apple Ads web-session presence marker exists, but its Keychain item was not found")
+            return ReadState(session: nil, shouldRetryTransientFailure: false)
+        case .failure(let failure):
+            return ReadState(session: nil, shouldRetryTransientFailure: failure.isTransient)
+        }
     }
 }
 
@@ -289,7 +341,7 @@ final class AppleAdsWebSessionManager {
     }
 
     func validateSession(adamId: Int64? = nil, keyword: String = "workout") async throws -> Int {
-        guard let session = sessionStore.session, session.isComplete else {
+        guard let session = sessionStore.recoverSessionIfNeeded(), session.isComplete else {
             throw OpenASOError.providerUnavailable("Connect an Apple Ads web session first.")
         }
 
@@ -316,7 +368,7 @@ final class AppleAdsWebSessionManager {
     }
 
     func resolveDefaultLinkedApp() async throws -> AppleAdsPromotedApp {
-        guard let session = sessionStore.session, session.isComplete else {
+        guard let session = sessionStore.recoverSessionIfNeeded(), session.isComplete else {
             throw OpenASOError.providerUnavailable("Connect an Apple Ads web session first.")
         }
 

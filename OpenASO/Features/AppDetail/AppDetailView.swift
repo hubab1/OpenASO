@@ -463,7 +463,7 @@ struct AppDetailView: View {
             refreshReviews: false,
             recordsRatingsReviewsRefresh: false,
             popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
-            appleAdsWebSession: services.appleAdsWebSessionStore.session,
+            appleAdsWebSession: services.appleAdsWebSessionStore.recoverSessionIfNeeded(),
             appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
         )
 
@@ -486,6 +486,7 @@ struct AppDetailView: View {
         scope: AppDetailManualRefreshScope
     ) throws -> AppDetailRefreshRequest {
         let allTracks = try fetchTrackedKeywords(for: appStoreID)
+        let appleAdsWebSession = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
         return try makeRefreshRequest(
             for: appSnapshot,
             tracks: allTracks
@@ -500,7 +501,8 @@ struct AppDetailView: View {
             defaultStorefront: trackedApp.storeApp.defaultStorefront,
             activeWorkspaceView: activeWorkspaceView,
             trigger: scope == .focused ? "manual" : "manual_all_storefronts",
-            scope: scope
+            scope: scope,
+            appleAdsWebSession: appleAdsWebSession
         )
     }
 
@@ -516,6 +518,7 @@ struct AppDetailView: View {
             grouping: allTracks,
             by: \.appStoreID
         )
+        let appleAdsWebSession = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
         return try orderedApps.map { app in
             try makeRefreshRequest(
                 for: AppDetailRefreshAppSnapshot(
@@ -536,7 +539,8 @@ struct AppDetailView: View {
                 defaultStorefront: app.storeApp.defaultStorefront,
                 activeWorkspaceView: activeWorkspaceView,
                 trigger: "manual_all",
-                scope: .focused
+                scope: .focused,
+                appleAdsWebSession: appleAdsWebSession
             )
         }
     }
@@ -571,7 +575,8 @@ struct AppDetailView: View {
         defaultStorefront: String?,
         activeWorkspaceView: AppDetailWorkspaceView,
         trigger: String,
-        scope: AppDetailManualRefreshScope
+        scope: AppDetailManualRefreshScope,
+        appleAdsWebSession: AppleAdsWebSession?
     ) throws -> AppDetailRefreshRequest {
         let bundledStorefronts = try services.storefrontCatalog.bundledStorefronts().map(\.code)
         let storefrontSelection = AppDetailManualRefreshScopeResolver.selection(
@@ -601,7 +606,7 @@ struct AppDetailView: View {
             trackIdentityKeys: trackIdentityKeys,
             trigger: trigger,
             popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
-            appleAdsWebSession: services.appleAdsWebSessionStore.session,
+            appleAdsWebSession: appleAdsWebSession,
             appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
         )
     }
@@ -1142,6 +1147,7 @@ struct AppDetailView: View {
         storefrontSelection: AppDetailRefreshStorefrontSelection
     ) -> [AppDetailRefreshRequest] {
         let tracksByAppStoreID = Dictionary(grouping: importedTracks, by: \.appStoreID)
+        let appleAdsWebSession = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
         let orderedAppStoreIDs = tracksByAppStoreID.keys.sorted { lhs, rhs in
             let lhsIsCurrentApp = lhs == trackedApp.appStoreID
             let rhsIsCurrentApp = rhs == trackedApp.appStoreID
@@ -1173,7 +1179,7 @@ struct AppDetailView: View {
                 refreshReviews: false,
                 recordsRatingsReviewsRefresh: false,
                 popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
-                appleAdsWebSession: services.appleAdsWebSessionStore.session,
+                appleAdsWebSession: appleAdsWebSession,
                 appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
             )
         }

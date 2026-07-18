@@ -270,7 +270,7 @@ struct AddAppSheet: View {
             refreshReviews: true,
             recordsRatingsReviewsRefresh: false,
             popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
-            appleAdsWebSession: services.appleAdsWebSessionStore.session,
+            appleAdsWebSession: services.appleAdsWebSessionStore.recoverSessionIfNeeded(),
             appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
         )
 

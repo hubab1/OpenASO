@@ -326,7 +326,7 @@ final class AppServices {
                                 refreshRatingsAndReviews: request.refreshRatingsAndReviews,
                                 popularityContextAppStoreID: settingsStore
                                     .popularityContextAppStoreID,
-                                appleAdsWebSession: appleAdsWebSessionStore.session,
+                                appleAdsWebSession: appleAdsWebSessionStore.recoverSessionIfNeeded(),
                                 appStoreConnectCredentials: appStoreConnectCredentialStore
                                     .credentials
                             )
@@ -408,7 +408,7 @@ final class AppServices {
                     settingsStore.popularityContextAppStoreID
                 },
                 appleAdsWebSessionProvider: {
-                    appleAdsWebSessionStore.session
+                    appleAdsWebSessionStore.recoverSessionIfNeeded()
                 }
             )
 
@@ -469,7 +469,7 @@ final class AppServices {
     func refreshStaleKeywordPopularityAfterAppleAdsConnection() {
         guard let backgroundModelStore,
               let popularityContextAppStoreID = settingsStore.popularityContextAppStoreID,
-              let webSession = appleAdsWebSessionStore.session,
+              let webSession = appleAdsWebSessionStore.recoverSessionIfNeeded(),
               webSession.isComplete
         else {
             return

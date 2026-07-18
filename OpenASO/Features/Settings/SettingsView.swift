@@ -100,13 +100,14 @@ struct SettingsView: View {
             )
             .navigationTitle("Settings")
             .onAppear {
+                let recoveredSession = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
                 loadCredentials()
                 loadAppStoreConnectCredentials()
                 loadDailyRefreshTime()
                 loadWebLoginCredentials()
                 loadDependencyStatus()
                 showsSavedLoginControls = services.appleAdsCredentialStore.hasWebLoginCredentials
-                    || services.appleAdsWebSessionStore.hasSession
+                    || recoveredSession?.isComplete == true
                 if initialConnectionState == nil {
                     connectionState = inferredConnectionState()
                 }
@@ -275,7 +276,11 @@ struct SettingsView: View {
                 Spacer()
 
                 Button("Check Status", action: validateAppleAdsAccess)
-                    .disabled(connectionState.isBusy || !services.appleAdsWebSessionStore.hasSession)
+                    .disabled(
+                        connectionState.isBusy
+                            || (!services.appleAdsWebSessionStore.hasSession
+                                && !services.appleAdsWebSessionStore.hasPendingTransientReadRecovery)
+                    )
 
                 Button("Clear", role: .destructive, action: clearWebSession)
                     .disabled(connectionState.isBusy || !services.appleAdsWebSessionStore.hasSession)
@@ -642,7 +647,7 @@ struct SettingsView: View {
     }
 
     private func validateAppleAdsAccess() {
-        guard services.appleAdsWebSessionStore.hasSession else {
+        guard services.appleAdsWebSessionStore.recoverSessionIfNeeded()?.isComplete == true else {
             connectionState = .notConnected
             return
         }
