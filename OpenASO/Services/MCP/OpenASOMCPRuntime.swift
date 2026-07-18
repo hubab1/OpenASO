@@ -2,7 +2,55 @@ import Foundation
 import MCP
 import SwiftData
 
+struct OpenASOMCPServerProvider: Sendable {
+    private let makeServerImplementation: @MainActor @Sendable () async throws -> Server
+
+    init(
+        makeServer: @escaping @MainActor @Sendable () async throws -> Server
+    ) {
+        self.makeServerImplementation = makeServer
+    }
+
+    @MainActor
+    func makeServer() async throws -> Server {
+        try await makeServerImplementation()
+    }
+}
+
 enum OpenASOMCPRuntime {
+    static func run(
+        serverProvider: OpenASOMCPServerProvider,
+        transport: any Transport
+    ) async throws {
+        let server = try await serverProvider.makeServer()
+        do {
+            try await server.start(transport: transport)
+            await withTaskCancellationHandler {
+                await server.waitUntilCompleted()
+            } onCancel: {
+                Task {
+                    await server.stop()
+                }
+            }
+            await server.stop()
+            try Task.checkCancellation()
+        } catch {
+            await server.stop()
+            throw error
+        }
+    }
+
+    static func runStdio(
+        serverProvider: OpenASOMCPServerProvider
+    ) async throws {
+        try await run(
+            serverProvider: serverProvider,
+            transport: StdioTransport()
+        )
+    }
+
+    // Retained for the dormant standalone target. The shipped app's --mcp-stdio
+    // path supplies AppServices.mcpServerProvider so HTTP and stdio share dependencies.
     static func makeServer(
         configuration: OpenASOMCPServerConfiguration = OpenASOMCPServerConfiguration()
     ) async throws -> Server {
@@ -62,9 +110,9 @@ enum OpenASOMCPRuntime {
     static func runStdio(
         configuration: OpenASOMCPServerConfiguration = OpenASOMCPServerConfiguration()
     ) async throws {
-        let server = try await makeServer(configuration: configuration)
-        let transport = StdioTransport()
-        try await server.start(transport: transport)
-        await server.waitUntilCompleted()
+        let serverProvider = OpenASOMCPServerProvider {
+            try await makeServer(configuration: configuration)
+        }
+        try await runStdio(serverProvider: serverProvider)
     }
 }
