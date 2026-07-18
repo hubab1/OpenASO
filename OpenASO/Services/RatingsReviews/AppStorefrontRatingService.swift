@@ -10,9 +10,13 @@ final class AppStorefrontRatingService: Sendable {
     init(
         httpClient: HTTPClient,
         retryPolicy: AppStorefrontRatingRetryPolicy = .default,
-        retrySleeper: @escaping @Sendable (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
+        retrySleeper: @escaping @Sendable (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
+        refreshMetricsRecorder: RefreshMetricsRecorder? = nil
     ) {
-        self.fetcher = AppStorefrontRatingFetcher(httpClient: httpClient)
+        self.fetcher = AppStorefrontRatingFetcher(
+            httpClient: httpClient,
+            refreshMetricsRecorder: refreshMetricsRecorder
+        )
         self.retryPolicy = retryPolicy
         self.retrySleeper = retrySleeper
     }
@@ -321,9 +325,11 @@ final class AppStorefrontRatingService: Sendable {
 
 private struct AppStorefrontRatingFetcher: Sendable {
     private let httpClient: HTTPClient
+    private let refreshMetricsRecorder: RefreshMetricsRecorder?
 
-    init(httpClient: HTTPClient) {
+    init(httpClient: HTTPClient, refreshMetricsRecorder: RefreshMetricsRecorder?) {
         self.httpClient = httpClient
+        self.refreshMetricsRecorder = refreshMetricsRecorder
     }
 
     func fetchRatings(
@@ -396,7 +402,24 @@ private struct AppStorefrontRatingFetcher: Sendable {
                 OpenASOLog.ratings.warning(
                     "Retrying ratings fetch source=\(source.rawValue, privacy: .public) storefront=\(normalizedStorefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) attempt=\(attempt + 1, privacy: .public) maxAttempts=\(retryPolicy.maxAttempts, privacy: .public) delayMs=\(delay / 1_000_000, privacy: .public) error=\(OpenASOError.map(finalError(from: error)).localizedDescription, privacy: .public)"
                 )
-                try await retrySleeper(delay)
+                do {
+                    try await retrySleeper(delay)
+                } catch {
+                    if
+                        isRefreshCancellation(error),
+                        let runID = RefreshObservationScope.runID,
+                        let refreshMetricsRecorder
+                    {
+                        await refreshMetricsRecorder.recordCancellation(runID: runID)
+                    }
+                    throw error
+                }
+                if let runID = RefreshObservationScope.runID, let refreshMetricsRecorder {
+                    await refreshMetricsRecorder.recordRetry(
+                        runID: runID,
+                        provider: source == .iTunesSearch ? .iTunesStore : .appStoreWeb
+                    )
+                }
                 attempt += 1
             }
         }
@@ -652,6 +675,13 @@ private struct AppStorefrontRatingFetcher: Sendable {
         return OpenASOError.providerUnavailable("HTTP \(httpFailure.statusCode)")
     }
 
+}
+
+private func isRefreshCancellation(_ error: any Error) -> Bool {
+    if error is CancellationError {
+        return true
+    }
+    return (error as? URLError)?.code == .cancelled
 }
 
 private struct AppStorefrontRatingStorefrontMismatch: LocalizedError {

@@ -10,6 +10,7 @@ final class AppServices {
     let appleAdsWebSessionManager: AppleAdsWebSessionManager
     let settingsStore: AppSettingsStore
     let analyticsService: AnalyticsService
+    let refreshMetricsRecorder: RefreshMetricsRecorder
     let appStoreConnectCredentialStore: AppStoreConnectCredentialStore
     let appStoreConnectReviewService: AppStoreConnectReviewService
     let dailyRefreshScheduler: DailyRefreshScheduler
@@ -44,8 +45,18 @@ final class AppServices {
         aiService: (any AIService)? = nil,
         loadsEnvironmentCredentials: Bool = true,
         allowsIconNetworkFetches: Bool = true,
-        backgroundModelStore: BackgroundModelStore? = nil
+        backgroundModelStore: BackgroundModelStore? = nil,
+        refreshObservationClock: RefreshObservationClock = .live,
+        refreshMetricsRecorder: RefreshMetricsRecorder? = nil
     ) {
+        let refreshMetricsRecorder = refreshMetricsRecorder ?? RefreshMetricsRecorder(
+            clock: refreshObservationClock
+        )
+        let httpClient = ObservedHTTPClient(
+            base: httpClient,
+            recorder: refreshMetricsRecorder,
+            clock: refreshObservationClock
+        )
         let appleAdsCredentialStore = AppleAdsCredentialStore(
             defaults: defaults,
             keychain: keychain,
@@ -77,7 +88,8 @@ final class AppServices {
         let screenshotDownloadService = ScreenshotDownloadService()
         let screenshotDownloadProgressStore = ScreenshotDownloadProgressStore()
         let appStorefrontRatingService = AppStorefrontRatingService(
-            httpClient: httpClient
+            httpClient: httpClient,
+            refreshMetricsRecorder: refreshMetricsRecorder
         )
         let appStorefrontReviewService = AppStorefrontReviewService(
             httpClient: httpClient
@@ -188,6 +200,7 @@ final class AppServices {
                 appStorefrontReviewService: appStorefrontReviewService,
                 appStoreConnectReviewService: appStoreConnectReviewService,
                 progressStore: refreshProgressStore,
+                refreshMetricsRecorder: refreshMetricsRecorder,
                 ratingsReviewsRefreshRecorder: { date in
                     await settingsStore.markRatingsReviewsRefreshed(on: date)
                 }
@@ -199,6 +212,7 @@ final class AppServices {
         self.appleAdsWebSessionManager = appleAdsWebSessionManager
         self.settingsStore = settingsStore
         self.analyticsService = analyticsService
+        self.refreshMetricsRecorder = refreshMetricsRecorder
         self.appStoreConnectCredentialStore = appStoreConnectCredentialStore
         self.appStoreConnectReviewService = appStoreConnectReviewService
         self.dailyRefreshScheduler = DailyRefreshScheduler(

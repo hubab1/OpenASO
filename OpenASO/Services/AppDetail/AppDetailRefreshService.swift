@@ -157,6 +157,7 @@ final class AppDetailRefreshService: Sendable {
     private let appStorefrontReviewService: AppStorefrontReviewService
     private let appStoreConnectReviewService: AppStoreConnectReviewService
     private let progressStore: AppRefreshProgressStore?
+    private let refreshMetricsRecorder: RefreshMetricsRecorder?
     private let ratingsReviewsRefreshRecorder: (@Sendable (Date) async -> Void)?
 
     init(
@@ -167,6 +168,7 @@ final class AppDetailRefreshService: Sendable {
         appStorefrontReviewService: AppStorefrontReviewService,
         appStoreConnectReviewService: AppStoreConnectReviewService,
         progressStore: AppRefreshProgressStore? = nil,
+        refreshMetricsRecorder: RefreshMetricsRecorder? = nil,
         ratingsReviewsRefreshRecorder: (@Sendable (Date) async -> Void)? = nil
     ) {
         self.backgroundModelStore = backgroundModelStore
@@ -176,6 +178,7 @@ final class AppDetailRefreshService: Sendable {
         self.appStorefrontReviewService = appStorefrontReviewService
         self.appStoreConnectReviewService = appStoreConnectReviewService
         self.progressStore = progressStore
+        self.refreshMetricsRecorder = refreshMetricsRecorder
         self.ratingsReviewsRefreshRecorder = ratingsReviewsRefreshRecorder
     }
 
@@ -183,7 +186,27 @@ final class AppDetailRefreshService: Sendable {
         await progressStore?.queuePendingAppRefresh()
         return await refreshQueue.enqueue(request) { [self] request in
             await progressStore?.beginPendingAppRefresh()
+            return await performObservedRefresh(request)
+        }
+    }
+
+    private func performObservedRefresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
+        guard let refreshMetricsRecorder else {
             return await performRefresh(request)
+        }
+
+        let runID = await refreshMetricsRecorder.begin(
+            trigger: RefreshObservationTrigger(rawValueForObservation: request.trigger),
+            workspace: RefreshObservationWorkspace(request.workspace),
+            requestedTrackCount: request.trackIdentityKeys.count,
+            requestedStorefrontCount: Set(request.storefrontSelection.codes.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }.filter { !$0.isEmpty }).count
+        )
+        return await RefreshObservationScope.$runID.withValue(runID) {
+            let result = await performRefresh(request)
+            await refreshMetricsRecorder.finish(runID: runID)
+            return result
         }
     }
 
@@ -199,6 +222,8 @@ final class AppDetailRefreshService: Sendable {
             if request.refreshRatings || request.refreshReviews {
                 (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
             } else {
+                await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
                 ratingOutcomes = []
                 reviewOutcomes = []
             }
@@ -206,6 +231,8 @@ final class AppDetailRefreshService: Sendable {
             if request.refreshRatings || request.refreshReviews {
                 (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
             } else {
+                await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
                 ratingOutcomes = []
                 reviewOutcomes = []
             }
@@ -233,9 +260,13 @@ final class AppDetailRefreshService: Sendable {
         guard request.refreshKeywords, !request.trackIdentityKeys.isEmpty else {
             await progressStore?.updateStep(.keywords, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await progressStore?.updateStep(.metrics, status: .skipped, completed: 0, total: 0, failureCount: 0)
+            await recordStage(.rankings, attemptedCount: 0, failureCount: 0, isSkipped: true)
+            await recordStage(.keywordMetrics, attemptedCount: 0, failureCount: 0, isSkipped: true)
             return []
         }
 
+        var didRecordRankingStage = false
+        var didRecordMetricsStage = false
         do {
             await progressStore?.updatePhase(.refreshingKeywords)
             let (rankingRequests, missingOutcomes) = try await backgroundModelStore.read { modelContext in
@@ -254,6 +285,11 @@ final class AppDetailRefreshService: Sendable {
             }
 
             let missingFailureCount = missingOutcomes.count
+            await recordRankingWork(
+                resolvedCount: rankingRequests.count,
+                uniqueQueryCount: Set(rankingRequests.map(\.queryKey)).count,
+                missingCount: missingFailureCount
+            )
             if rankingRequests.isEmpty {
                 await progressStore?.updateStep(
                     .keywords,
@@ -270,10 +306,17 @@ final class AppDetailRefreshService: Sendable {
                 missingFailureCount: missingFailureCount,
                 totalRequestedCount: request.trackIdentityKeys.count
             )
+            let combinedKeywordOutcomes = missingOutcomes + keywordOutcomes
+            await recordStage(
+                .rankings,
+                attemptedCount: combinedKeywordOutcomes.count,
+                failureCount: combinedKeywordOutcomes.filter { $0.error != nil }.count
+            )
+            didRecordRankingStage = true
 
             if request.refreshMetrics {
                 await progressStore?.updatePhase(.refreshingMetrics)
-                _ = try await keywordMetricsService.refreshMetrics(
+                let metricOutcomes = try await keywordMetricsService.refreshMetrics(
                     for: rankingRequests.map(\.identityKey),
                     popularityContextAppStoreID: request.popularityContextAppStoreID,
                     webSession: request.appleAdsWebSession,
@@ -288,11 +331,19 @@ final class AppDetailRefreshService: Sendable {
                         )
                     }
                 )
+                await recordStage(
+                    .keywordMetrics,
+                    attemptedCount: metricOutcomes.count,
+                    failureCount: metricOutcomes.filter { $0.errorMessage != nil }.count
+                )
+                didRecordMetricsStage = true
             } else {
                 await progressStore?.updateStep(.metrics, status: .skipped, completed: 0, total: 0, failureCount: 0)
+                await recordStage(.keywordMetrics, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                didRecordMetricsStage = true
             }
 
-            return missingOutcomes + keywordOutcomes
+            return combinedKeywordOutcomes
         } catch {
             let mappedError = OpenASOError.map(error)
             await progressStore?.updateStep(
@@ -302,6 +353,21 @@ final class AppDetailRefreshService: Sendable {
                 total: request.trackIdentityKeys.count,
                 failureCount: request.trackIdentityKeys.count
             )
+            if !didRecordRankingStage {
+                await recordStage(
+                    .rankings,
+                    attemptedCount: request.trackIdentityKeys.count,
+                    failureCount: request.trackIdentityKeys.count
+                )
+            }
+            if !didRecordMetricsStage {
+                await recordStage(
+                    .keywordMetrics,
+                    attemptedCount: request.refreshMetrics ? request.trackIdentityKeys.count : 0,
+                    failureCount: request.refreshMetrics ? request.trackIdentityKeys.count : 0,
+                    isSkipped: !request.refreshMetrics
+                )
+            }
             return request.trackIdentityKeys.map {
                 KeywordBackgroundRefreshOutcome(trackIdentityKey: $0, error: mappedError)
             }
@@ -508,9 +574,13 @@ final class AppDetailRefreshService: Sendable {
         guard request.refreshRatings || request.refreshReviews else {
             await progressStore?.updateStep(.ratings, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await progressStore?.updateStep(.reviews, status: .skipped, completed: 0, total: 0, failureCount: 0)
+            await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
+            await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
             return ([], [])
         }
 
+        var didRecordRatingsStage = false
+        var didRecordReviewsStage = false
         do {
             let storefrontCodes = request.storefrontSelection.codes
             let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
@@ -531,8 +601,16 @@ final class AppDetailRefreshService: Sendable {
                     }
                 )
                 try await persistRatingOutcomes(ratingOutcomes, for: request.app)
+                await recordStage(
+                    .ratings,
+                    attemptedCount: ratingOutcomes.count,
+                    failureCount: ratingOutcomes.filter { $0.error != nil }.count
+                )
+                didRecordRatingsStage = true
             } else {
                 await progressStore?.updateStep(.ratings, status: .skipped, completed: 0, total: 0, failureCount: 0)
+                await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                didRecordRatingsStage = true
                 ratingOutcomes = []
             }
 
@@ -543,8 +621,16 @@ final class AppDetailRefreshService: Sendable {
                     request: request,
                     storefrontCodes: storefrontCodes
                 )
+                await recordStage(
+                    .reviews,
+                    attemptedCount: reviewOutcomes.count,
+                    failureCount: reviewOutcomes.filter { $0.error != nil }.count
+                )
+                didRecordReviewsStage = true
             } else {
                 await progressStore?.updateStep(.reviews, status: .skipped, completed: 0, total: 0, failureCount: 0)
+                await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                didRecordReviewsStage = true
                 reviewOutcomes = []
             }
             let outcomes = (ratingOutcomes, reviewOutcomes)
@@ -554,6 +640,9 @@ final class AppDetailRefreshService: Sendable {
             return outcomes
         } catch {
             let mappedError = OpenASOError.map(error)
+            let storefrontCount = Set(request.storefrontSelection.codes.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }.filter { !$0.isEmpty }).count
             await progressStore?.updateStep(
                 .ratings,
                 status: .failed,
@@ -561,6 +650,24 @@ final class AppDetailRefreshService: Sendable {
                 total: request.storefrontSelection.codes.count,
                 failureCount: max(1, request.storefrontSelection.codes.count)
             )
+            if !didRecordRatingsStage {
+                let attemptedCount = request.refreshRatings ? max(1, storefrontCount) : 0
+                await recordStage(
+                    .ratings,
+                    attemptedCount: attemptedCount,
+                    failureCount: attemptedCount,
+                    isSkipped: !request.refreshRatings
+                )
+            }
+            if !didRecordReviewsStage {
+                let attemptedCount = request.refreshReviews ? max(1, storefrontCount) : 0
+                await recordStage(
+                    .reviews,
+                    attemptedCount: attemptedCount,
+                    failureCount: attemptedCount,
+                    isSkipped: !request.refreshReviews
+                )
+            }
             let ratingOutcome = AppStorefrontRatingRefreshOutcome(
                 storefront: "all",
                 result: nil,
@@ -764,6 +871,36 @@ final class AppDetailRefreshService: Sendable {
         if value != newValue {
             value = newValue
         }
+    }
+
+    private func recordRankingWork(
+        resolvedCount: Int,
+        uniqueQueryCount: Int,
+        missingCount: Int
+    ) async {
+        guard let runID = RefreshObservationScope.runID, let refreshMetricsRecorder else { return }
+        await refreshMetricsRecorder.recordRankingWork(
+            runID: runID,
+            resolvedCount: resolvedCount,
+            uniqueQueryCount: uniqueQueryCount,
+            missingCount: missingCount
+        )
+    }
+
+    private func recordStage(
+        _ stage: RefreshObservationStage,
+        attemptedCount: Int,
+        failureCount: Int,
+        isSkipped: Bool = false
+    ) async {
+        guard let runID = RefreshObservationScope.runID, let refreshMetricsRecorder else { return }
+        await refreshMetricsRecorder.recordStage(
+            runID: runID,
+            stage: stage,
+            attemptedCount: attemptedCount,
+            failureCount: failureCount,
+            isSkipped: isSkipped
+        )
     }
 
     private func firstRefreshError(

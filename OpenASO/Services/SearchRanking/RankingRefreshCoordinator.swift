@@ -425,7 +425,9 @@ final class RankingRefreshCoordinator: Sendable {
         guard !requests.isEmpty else { return }
 
         Task {
-            await metadataEnrichmentHandler(requests)
+            await RefreshObservationScope.$runID.withValue(nil) {
+                await metadataEnrichmentHandler(requests)
+            }
         }
     }
 
