@@ -9,6 +9,7 @@ struct ProviderRequestPolicy: Equatable, Sendable {
     let maximumBackoffNanoseconds: UInt64
     let maximumElapsedNanoseconds: UInt64
     let jitterFraction: Double
+    let maximumServerCooldownNanoseconds: UInt64
 
     init(
         minimumIntervalNanoseconds: UInt64,
@@ -16,7 +17,8 @@ struct ProviderRequestPolicy: Equatable, Sendable {
         baseBackoffNanoseconds: UInt64,
         maximumBackoffNanoseconds: UInt64,
         maximumElapsedNanoseconds: UInt64,
-        jitterFraction: Double
+        jitterFraction: Double,
+        maximumServerCooldownNanoseconds: UInt64 = 300_000_000_000
     ) {
         self.minimumIntervalNanoseconds = minimumIntervalNanoseconds
         self.maximumAttempts = max(1, maximumAttempts)
@@ -28,6 +30,7 @@ struct ProviderRequestPolicy: Equatable, Sendable {
         } else {
             self.jitterFraction = 0
         }
+        self.maximumServerCooldownNanoseconds = maximumServerCooldownNanoseconds
     }
 }
 
@@ -46,6 +49,76 @@ struct ProviderRequestPolicies: Sendable {
     func policy(for provider: RefreshObservationProvider) -> ProviderRequestPolicy {
         overrides[provider] ?? defaultPolicy
     }
+}
+
+extension ProviderRequestPolicies {
+    static let production = ProviderRequestPolicies(
+        default: ProviderRequestPolicy(
+            minimumIntervalNanoseconds: 0,
+            maximumAttempts: 1,
+            baseBackoffNanoseconds: 0,
+            maximumBackoffNanoseconds: 0,
+            maximumElapsedNanoseconds: 0,
+            jitterFraction: 0,
+            maximumServerCooldownNanoseconds: 300_000_000_000
+        ),
+        overrides: [
+            .iTunesStore: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 3_100_000_000,
+                maximumAttempts: 2,
+                baseBackoffNanoseconds: 3_750_000_000,
+                maximumBackoffNanoseconds: 20_000_000_000,
+                maximumElapsedNanoseconds: 30_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appStoreWeb: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 2_000_000_000,
+                maximumAttempts: 2,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 10_000_000_000,
+                maximumElapsedNanoseconds: 30_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appStoreConnect: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 1_250_000_000,
+                maximumAttempts: 1,
+                baseBackoffNanoseconds: 0,
+                maximumBackoffNanoseconds: 0,
+                maximumElapsedNanoseconds: 0,
+                jitterFraction: 0,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appleAdsAPI: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 1_000_000_000,
+                maximumAttempts: 5,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 20_000_000_000,
+                maximumElapsedNanoseconds: 60_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appleAdsWeb: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 2_000_000_000,
+                maximumAttempts: 3,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 10_000_000_000,
+                maximumElapsedNanoseconds: 45_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appleIdentity: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 1_000_000_000,
+                maximumAttempts: 3,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 10_000_000_000,
+                maximumElapsedNanoseconds: 45_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+        ]
+    )
 }
 
 struct ProviderRequestClock: Sendable {
@@ -112,6 +185,10 @@ struct ProviderRequestRandomness: Sendable {
 struct ProviderRequestGateSnapshot: Equatable, Sendable {
     let inFlightRequestCount: Int
     let waiterCount: Int
+}
+
+enum ProviderRequestObservationScope {
+    @TaskLocal static var isRetryAttempt = false
 }
 
 actor ProviderRequestGate: HTTPClient {
@@ -286,6 +363,7 @@ actor ProviderRequestGate: HTTPClient {
     private let policies: ProviderRequestPolicies
     private let clock: ProviderRequestClock
     private let randomness: ProviderRequestRandomness
+    private let cancellationObserver: @Sendable () async -> Void
     private var pacingStates: [PacingKey: PacingState] = [:]
     private var inFlightRequests: [RequestFingerprint: InFlightRequest] = [:]
 
@@ -293,42 +371,53 @@ actor ProviderRequestGate: HTTPClient {
         base: any HTTPClient,
         policies: ProviderRequestPolicies,
         clock: ProviderRequestClock = .live,
-        randomness: ProviderRequestRandomness = .live
+        randomness: ProviderRequestRandomness = .live,
+        cancellationObserver: @escaping @Sendable () async -> Void = {}
     ) {
         self.base = base
         self.policies = policies
         self.clock = clock
         self.randomness = randomness
+        self.cancellationObserver = cancellationObserver
     }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try Task.checkCancellation()
+        do {
+            try Task.checkCancellation()
 
-        let classification = RefreshRequestClassification(request.url)
-        let behavior = Self.behavior(for: request)
-        let pacingKey = PacingKey(classification: classification, url: request.url)
-        let policy = policies.policy(for: classification.provider)
+            let classification = RefreshRequestClassification(request.url)
+            let behavior = Self.behavior(for: request)
+            let pacingKey = PacingKey(classification: classification, url: request.url)
+            let policy = policies.policy(for: classification.provider)
+            let refreshRunID = RefreshObservationScope.runID
 
-        guard behavior.allowsDeduplication,
-              let fingerprint = RequestFingerprint(
-                  request: request,
-                  refreshRunID: RefreshObservationScope.runID
-              ) else {
-            return try await perform(
-                request,
+            guard behavior.allowsDeduplication,
+                  let fingerprint = RequestFingerprint(
+                      request: request,
+                      refreshRunID: refreshRunID
+                  ) else {
+                return try await perform(
+                    request,
+                    behavior: behavior,
+                    pacingKey: pacingKey,
+                    policy: policy
+                )
+            }
+
+            return try await deduplicatedData(
+                for: request,
+                fingerprint: fingerprint,
                 behavior: behavior,
                 pacingKey: pacingKey,
-                policy: policy
+                policy: policy,
+                refreshRunID: refreshRunID
             )
+        } catch {
+            if Self.classify(error) == .cancelled {
+                await cancellationObserver()
+            }
+            throw error
         }
-
-        return try await deduplicatedData(
-            for: request,
-            fingerprint: fingerprint,
-            behavior: behavior,
-            pacingKey: pacingKey,
-            policy: policy
-        )
     }
 
     func snapshot() -> ProviderRequestGateSnapshot {
@@ -343,7 +432,8 @@ actor ProviderRequestGate: HTTPClient {
         fingerprint: RequestFingerprint,
         behavior: RequestBehavior,
         pacingKey: PacingKey,
-        policy: ProviderRequestPolicy
+        policy: ProviderRequestPolicy,
+        refreshRunID: UUID?
     ) async throws -> Output {
         let waiterID = UUID()
         return try await withTaskCancellationHandler {
@@ -360,7 +450,8 @@ actor ProviderRequestGate: HTTPClient {
                         fingerprint: fingerprint,
                         behavior: behavior,
                         pacingKey: pacingKey,
-                        policy: policy
+                        policy: policy,
+                        refreshRunID: refreshRunID
                     )
                 }
                 try Task.checkCancellation()
@@ -383,7 +474,8 @@ actor ProviderRequestGate: HTTPClient {
         fingerprint: RequestFingerprint,
         behavior: RequestBehavior,
         pacingKey: PacingKey,
-        policy: ProviderRequestPolicy
+        policy: ProviderRequestPolicy,
+        refreshRunID: UUID?
     ) {
         if var existing = inFlightRequests[fingerprint] {
             existing.waiters[waiterID] = Waiter(continuation: continuation)
@@ -393,14 +485,16 @@ actor ProviderRequestGate: HTTPClient {
 
         let operationID = UUID()
         let task = Task {
-            await self.runSharedRequest(
-                request,
-                fingerprint: fingerprint,
-                operationID: operationID,
-                behavior: behavior,
-                pacingKey: pacingKey,
-                policy: policy
-            )
+            await RefreshObservationScope.$runID.withValue(refreshRunID) {
+                await self.runSharedRequest(
+                    request,
+                    fingerprint: fingerprint,
+                    operationID: operationID,
+                    behavior: behavior,
+                    pacingKey: pacingKey,
+                    policy: policy
+                )
+            }
         }
         inFlightRequests[fingerprint] = InFlightRequest(
             operationID: operationID,
@@ -491,7 +585,8 @@ actor ProviderRequestGate: HTTPClient {
                 pacingKey: pacingKey,
                 policy: policy,
                 notBeforeNanoseconds: notBeforeNanoseconds,
-                latestStartNanoseconds: retryBudgetDeadline
+                latestStartNanoseconds: retryBudgetDeadline,
+                isRetryAttempt: failedAttempt > 0
             ) else {
                 switch retrySource {
                 case .error(let error):
@@ -561,7 +656,8 @@ actor ProviderRequestGate: HTTPClient {
         pacingKey: PacingKey,
         policy: ProviderRequestPolicy,
         notBeforeNanoseconds: UInt64?,
-        latestStartNanoseconds: UInt64?
+        latestStartNanoseconds: UInt64?,
+        isRetryAttempt: Bool
     ) async throws -> DispatchAttempt? {
         let operationNotBefore = notBeforeNanoseconds ?? 0
 
@@ -592,11 +688,14 @@ actor ProviderRequestGate: HTTPClient {
             state.lastStartNanoseconds = startedAt
             pacingStates[pacingKey] = state
 
-            let result: SharedResult
-            do {
-                result = .success(try await base.data(for: request))
-            } catch {
-                result = .failure(error)
+            let result = await ProviderRequestObservationScope.$isRetryAttempt.withValue(
+                isRetryAttempt
+            ) {
+                do {
+                    return SharedResult.success(try await base.data(for: request))
+                } catch {
+                    return SharedResult.failure(error)
+                }
             }
             return DispatchAttempt(
                 startedAtNanoseconds: startedAt,
@@ -618,18 +717,28 @@ actor ProviderRequestGate: HTTPClient {
 
         let now = clock.nowNanoseconds()
         let delay: UInt64
+        let providerCooldownDelay: UInt64
         if let retryAfterNanoseconds = failure.retryAfterNanoseconds {
             delay = retryAfterNanoseconds
+            providerCooldownDelay = min(
+                retryAfterNanoseconds,
+                policy.maximumServerCooldownNanoseconds
+            )
         } else {
             delay = jitteredBackoff(
                 failedAttempt: failedAttempt,
                 policy: policy
             )
+            providerCooldownDelay = delay
         }
 
         let candidate = now.addingWithoutOverflow(delay)
+        let providerCooldownCandidate = now.addingWithoutOverflow(providerCooldownDelay)
         var state = pacingStates[pacingKey] ?? PacingState()
-        state.cooldownUntilNanoseconds = max(state.cooldownUntilNanoseconds, candidate)
+        state.cooldownUntilNanoseconds = max(
+            state.cooldownUntilNanoseconds,
+            providerCooldownCandidate
+        )
         pacingStates[pacingKey] = state
 
         guard failedAttempt < policy.maximumAttempts else { return nil }

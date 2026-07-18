@@ -1,17 +1,5 @@
 import Foundation
 
-struct AppStorefrontRatingRetryPolicy: Sendable {
-    let maxAttempts: Int
-    let baseDelaySeconds: Double
-    let maxDelaySeconds: Double
-
-    static let `default` = AppStorefrontRatingRetryPolicy(
-        maxAttempts: 3,
-        baseDelaySeconds: 1,
-        maxDelaySeconds: 15
-    )
-}
-
 struct ITunesLookupRatingsResponse: Decodable {
     let results: [ITunesLookupRatingsPayload]
 }

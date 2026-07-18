@@ -57,7 +57,7 @@ final class OpenASOMCPService: Sendable {
     backgroundModelStore: BackgroundModelStore,
     appResolver: any AppResolver,
     appCatalogService: AppCatalogService,
-    httpClient: any HTTPClient = URLSessionHTTPClient(),
+    httpClient: any HTTPClient,
     screenshotDownloadService: ScreenshotDownloadService = ScreenshotDownloadService(),
     rankingProvider: (any SearchRankingProvider)? = nil,
     rankingRefreshCoordinator: RankingRefreshCoordinator? = nil,
@@ -1623,7 +1623,7 @@ final class OpenASOMCPService: Sendable {
       group.addTask {
         try await Task.sleep(nanoseconds: ResponseLimits.rankingSearchTimeoutNanoseconds)
         throw OpenASOError.providerUnavailable(
-          "Ranking search timed out after 5 seconds. Reduce the keyword/storefront batch size and retry."
+          "Ranking search timed out after 20 seconds. Reduce the keyword/storefront batch size and retry."
         )
       }
 

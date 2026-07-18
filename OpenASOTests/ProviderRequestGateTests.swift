@@ -6,6 +6,164 @@ import Testing
 @MainActor
 struct ProviderRequestGateTests {
     @Test
+    func productionPoliciesMatchReviewedProviderMatrix() {
+        let expected: [RefreshObservationProvider: ProviderRequestPolicy] = [
+            .unknown: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 0,
+                maximumAttempts: 1,
+                baseBackoffNanoseconds: 0,
+                maximumBackoffNanoseconds: 0,
+                maximumElapsedNanoseconds: 0,
+                jitterFraction: 0,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .iTunesStore: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 3_100_000_000,
+                maximumAttempts: 2,
+                baseBackoffNanoseconds: 3_750_000_000,
+                maximumBackoffNanoseconds: 20_000_000_000,
+                maximumElapsedNanoseconds: 30_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appStoreWeb: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 2_000_000_000,
+                maximumAttempts: 2,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 10_000_000_000,
+                maximumElapsedNanoseconds: 30_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appStoreConnect: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 1_250_000_000,
+                maximumAttempts: 1,
+                baseBackoffNanoseconds: 0,
+                maximumBackoffNanoseconds: 0,
+                maximumElapsedNanoseconds: 0,
+                jitterFraction: 0,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appleAdsAPI: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 1_000_000_000,
+                maximumAttempts: 5,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 20_000_000_000,
+                maximumElapsedNanoseconds: 60_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appleAdsWeb: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 2_000_000_000,
+                maximumAttempts: 3,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 10_000_000_000,
+                maximumElapsedNanoseconds: 45_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+            .appleIdentity: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 1_000_000_000,
+                maximumAttempts: 3,
+                baseBackoffNanoseconds: 2_500_000_000,
+                maximumBackoffNanoseconds: 10_000_000_000,
+                maximumElapsedNanoseconds: 45_000_000_000,
+                jitterFraction: 0.2,
+                maximumServerCooldownNanoseconds: 300_000_000_000
+            ),
+        ]
+
+        #expect(Set(expected.keys) == Set(RefreshObservationProvider.allCases))
+        for provider in RefreshObservationProvider.allCases {
+            #expect(ProviderRequestPolicies.production.policy(for: provider) == expected[provider])
+        }
+    }
+
+    @Test
+    func productionModeDefaultsEnabledAndHonorsExplicitKillSwitch() {
+        let suiteName = "com.thirdtech.openaso.provider-gate.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        assertProductionGateEnabled(ProviderRequestGateMode.production(defaults: defaults))
+
+        defaults.set(false, forKey: ProviderRequestGateMode.enabledDefaultsKey)
+        guard case .disabled = ProviderRequestGateMode.production(defaults: defaults) else {
+            Issue.record("An explicit false kill switch must disable the provider gate.")
+            return
+        }
+
+        defaults.set(true, forKey: ProviderRequestGateMode.enabledDefaultsKey)
+        assertProductionGateEnabled(ProviderRequestGateMode.production(defaults: defaults))
+    }
+
+    @Test
+    func disabledPipelineObservesOnePhysicalAttemptWithoutRetrying() async throws {
+        let observationClock = RefreshObservationClock(nowNanoseconds: { 1_000 })
+        let recorder = RefreshMetricsRecorder(clock: observationClock)
+        let transport = ScriptedProviderHTTPClient(
+            steps: [.response(statusCode: 503), .response(statusCode: 200)]
+        )
+        let client = ProviderHTTPClientPipeline.make(
+            transport: transport,
+            mode: .disabled,
+            refreshMetricsRecorder: recorder,
+            refreshObservationClock: observationClock
+        )
+        let runID = await recorder.begin(
+            trigger: .manual,
+            workspace: .keywords,
+            requestedTrackCount: 1,
+            requestedStorefrontCount: 1
+        )
+
+        let output = try await RefreshObservationScope.$runID.withValue(runID) {
+            try await client.data(
+                for: request("https://itunes.apple.com/search?term=disabled")
+            )
+        }
+        await recorder.recordStage(
+            runID: runID,
+            stage: .rankings,
+            attemptedCount: 1,
+            failureCount: 1
+        )
+        let summary = try #require(await recorder.finish(runID: runID))
+        let provider = try #require(summary.providers[.iTunesStore])
+
+        #expect((output.1 as? HTTPURLResponse)?.statusCode == 503)
+        #expect(await transport.requestCount() == 1)
+        #expect(provider.requestCount == 1)
+        #expect(provider.retryCount == 0)
+        #expect(provider.resultCounts[.serverFailure] == 1)
+        #expect(summary.result == .failure)
+    }
+
+    @Test
+    func disabledPipelineDoesNotDeduplicateIdenticalRequests() async throws {
+        let transport = ControlledProviderHTTPClient()
+        let recorder = RefreshMetricsRecorder(
+            clock: RefreshObservationClock(nowNanoseconds: { 1_000 })
+        )
+        let client = ProviderHTTPClientPipeline.make(
+            transport: transport,
+            mode: .disabled,
+            refreshMetricsRecorder: recorder
+        )
+        let target = request("https://itunes.apple.com/search?term=disabled-shared")
+
+        let first = Task { try await client.data(for: target) }
+        let second = Task { try await client.data(for: target) }
+        await transport.waitForRequestCount(2)
+
+        #expect(await transport.resumeRequest(1))
+        #expect(await transport.resumeRequest(2))
+        _ = try await (first.value, second.value)
+        #expect(await transport.requestCount() == 2)
+    }
+
+    @Test
     func pacesRequestsPerProviderWithoutSerializingDifferentProviders() async throws {
         let sameProviderClock = AdvancingProviderClock()
         let sameProviderTransport = ControlledProviderHTTPClient(now: sameProviderClock.now)
@@ -488,6 +646,47 @@ struct ProviderRequestGateTests {
     }
 
     @Test
+    func overBudgetRetryAfterUsesBoundedProviderCooldown() async throws {
+        let clock = ManualProviderClock()
+        let transport = ControlledProviderHTTPClient(now: clock.now)
+        let gate = makeGate(
+            base: transport,
+            policy: makePolicy(
+                maximumAttempts: 2,
+                maximumElapsedNanoseconds: 100,
+                maximumServerCooldownNanoseconds: 500
+            ),
+            clock: clock.clock
+        )
+        let first = Task {
+            try await gate.data(
+                for: request("https://itunes.apple.com/search?term=oversized-retry-after")
+            )
+        }
+        await transport.waitForRequestCount(1)
+        #expect(await transport.resumeRequest(
+            1,
+            statusCode: 429,
+            headers: ["Retry-After": "18446744074"]
+        ))
+        #expect((try await first.value.1 as? HTTPURLResponse)?.statusCode == 429)
+        #expect(await transport.requestCount() == 1)
+
+        let next = Task {
+            try await gate.data(
+                for: request("https://itunes.apple.com/search?term=bounded-cooldown")
+            )
+        }
+        #expect(await waitForPendingSleep(500, in: clock))
+
+        clock.advance(to: 500)
+        await transport.waitForRequestCount(2)
+        #expect(await transport.resumeRequest(2))
+        _ = try await next.value
+        #expect(await transport.startTimes() == [0, 500])
+    }
+
+    @Test
     func paceOnlyRetryAfterStillAppliesProviderCooldown() async throws {
         let clock = ManualProviderClock()
         let transport = ControlledProviderHTTPClient(now: clock.now)
@@ -924,6 +1123,17 @@ struct ProviderRequestGateTests {
     }
 }
 
+private func assertProductionGateEnabled(_ mode: ProviderRequestGateMode) {
+    guard case .enabled(let policies) = mode else {
+        Issue.record("The provider gate should be enabled by default and for an explicit true value.")
+        return
+    }
+    #expect(
+        policies.policy(for: .iTunesStore)
+            == ProviderRequestPolicies.production.policy(for: .iTunesStore)
+    )
+}
+
 @MainActor
 private func makeGate(
     base: any HTTPClient,
@@ -945,7 +1155,8 @@ private func makePolicy(
     baseBackoffNanoseconds: UInt64 = 100,
     maximumBackoffNanoseconds: UInt64 = 1_000,
     maximumElapsedNanoseconds: UInt64 = 10_000,
-    jitterFraction: Double = 0
+    jitterFraction: Double = 0,
+    maximumServerCooldownNanoseconds: UInt64 = 300_000_000_000
 ) -> ProviderRequestPolicy {
     ProviderRequestPolicy(
         minimumIntervalNanoseconds: minimumIntervalNanoseconds,
@@ -953,7 +1164,8 @@ private func makePolicy(
         baseBackoffNanoseconds: baseBackoffNanoseconds,
         maximumBackoffNanoseconds: maximumBackoffNanoseconds,
         maximumElapsedNanoseconds: maximumElapsedNanoseconds,
-        jitterFraction: jitterFraction
+        jitterFraction: jitterFraction,
+        maximumServerCooldownNanoseconds: maximumServerCooldownNanoseconds
     )
 }
 
