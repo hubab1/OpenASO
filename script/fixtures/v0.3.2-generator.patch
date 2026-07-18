@@ -1,0 +1,434 @@
+diff --git a/OpenASOTests/AppServicesDependencyTests.swift b/OpenASOTests/AppServicesDependencyTests.swift
+index f9295b0..bf1a150 100644
+--- a/OpenASOTests/AppServicesDependencyTests.swift
++++ b/OpenASOTests/AppServicesDependencyTests.swift
+@@ -1,3 +1,4 @@
++import CryptoKit
+ import Foundation
+ import SwiftData
+ import Testing
+@@ -16,6 +17,367 @@ struct AppServicesDependencyTests {
+         #expect(container.migrationPlan != nil)
+     }
+ 
++    @Test
++    func generateReleasedV032MigrationFixture() throws {
++        let environmentKey = "OPENASO_V1_FIXTURE_OUTPUT_DIR"
++        guard let outputPath = ProcessInfo.processInfo.environment[environmentKey],
++              !outputPath.isEmpty
++        else {
++            throw FixtureGenerationError.missingOutputDirectory(environmentKey)
++        }
++
++        let fileManager = FileManager.default
++        let temporaryRoot = fileManager.temporaryDirectory
++            .standardizedFileURL
++            .resolvingSymlinksInPath()
++        let outputDirectory = URL(fileURLWithPath: outputPath, isDirectory: true)
++            .standardizedFileURL
++            .resolvingSymlinksInPath()
++        guard outputDirectory.path.hasPrefix(temporaryRoot.path + "/") else {
++            throw FixtureGenerationError.unsafeOutputDirectory(outputDirectory.path)
++        }
++        if fileManager.fileExists(atPath: outputDirectory.path) {
++            guard try fileManager.contentsOfDirectory(atPath: outputDirectory.path).isEmpty else {
++                throw FixtureGenerationError.outputDirectoryNotEmpty(outputDirectory.path)
++            }
++        } else {
++            try fileManager.createDirectory(
++                at: outputDirectory,
++                withIntermediateDirectories: true
++            )
++        }
++
++        let storeURL = outputDirectory.appendingPathComponent("default.store")
++        let fixtureDate = ISO8601DateFormatter().date(from: "2026-05-01T12:34:56Z")!
++        let priorDate = ISO8601DateFormatter().date(from: "2026-04-30T10:20:30Z")!
++        let releaseDate = ISO8601DateFormatter().date(from: "2024-03-02T01:02:03Z")!
++        try autoreleasepool {
++            let schema = Schema(versionedSchema: OpenASOSchemaV1.self)
++            let configuration = ModelConfiguration(schema: schema, url: storeURL)
++            let container = try ModelContainer(
++                for: schema,
++                migrationPlan: OpenASOMigrationPlan.self,
++                configurations: [configuration]
++            )
++            let modelContext = ModelContext(container)
++
++            let folder = AppFolder(
++                id: UUID(uuidString: "03200000-0000-4000-8000-000000000001")!,
++                name: "Released v0.3.2 Fixture",
++                sortOrder: 1,
++                colorRaw: "purple",
++                createdAt: fixtureDate
++            )
++            folder.isExpanded = false
++            let storeApp = StoreApp(
++                appStoreID: 320_032_001,
++                bundleID: "com.thirdtech.openaso.fixture.v032",
++                name: "OpenASO v0.3.2 Migration Fixture",
++                subtitle: "Released-schema sentinel",
++                sellerName: "Third Tech Fixture",
++                iconURLString: "https://example.com/openaso-v032-icon.png",
++                defaultStorefront: "gb",
++                supportedLanguageCodes: ["en-GB", "fr"],
++                supportedLanguageCodesSource: .appStoreWeb,
++                supportedLanguageCodesFetchedAt: fixtureDate,
++                releaseDate: releaseDate,
++                currentVersionReleaseDate: priorDate,
++                version: "0.3.2",
++                primaryGenreID: 6002,
++                primaryGenreName: "Utilities",
++                defaultPlatform: .iphone,
++                lastMetadataRefreshAt: fixtureDate
++            )
++            let trackedApp = TrackedApp(
++                appStoreID: storeApp.appStoreID,
++                storeApp: storeApp,
++                sidebarSortOrder: 3,
++                createdAt: fixtureDate
++            )
++            trackedApp.isPinned = true
++            trackedApp.folder = folder
++
++            let metadata = AppStorefrontMetadata(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                defaultPlatform: .iphone,
++                name: storeApp.name,
++                subtitle: "Fixture metadata subtitle",
++                sellerName: "Third Tech Fixture",
++                descriptionText: "Persisted by OpenASO release 7a2c375",
++                releaseNotes: "Released fixture notes",
++                iconURLString: "https://example.com/openaso-v032-metadata-icon.png",
++                version: "0.3.2",
++                releaseDate: releaseDate,
++                currentVersionReleaseDate: priorDate,
++                primaryGenreID: 6002,
++                primaryGenreName: "Utilities",
++                storefrontLanguageCode: "en-GB",
++                servedLanguageCode: "en",
++                isLocalized: true,
++                isAvailable: true,
++                source: .appStoreWeb,
++                lastFetchedAt: fixtureDate,
++                storeApp: storeApp
++            )
++            let screenshot = AppStoreScreenshot(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                platformRaw: "iphone",
++                displayTypeRaw: "phone",
++                sortOrder: 0,
++                urlString: "https://example.com/openaso-v032-fixture.png",
++                width: 1290,
++                height: 2796,
++                source: .appStoreWeb,
++                lastFetchedAt: fixtureDate,
++                metadata: metadata
++            )
++            storeApp.storefrontMetadata.append(metadata)
++            metadata.screenshots.append(screenshot)
++
++            let query = KeywordQuery(
++                term: "migration fixture keyword",
++                storefront: "gb",
++                platform: .iphone
++            )
++            let track = TrackedAppKeyword(
++                term: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                trackedApp: trackedApp,
++                query: query,
++                createdAt: fixtureDate
++            )
++            track.rankingAppCount = 42
++            track.lastRefreshAt = fixtureDate
++            track.notes = "released-v0.3.2-sentinel"
++            track.statusMessage = "released-status-sentinel"
++            trackedApp.keywordTracks.append(track)
++            query.tracks.append(track)
++
++            let snapshot = TrackedKeywordDailyRanking(
++                rank: 7,
++                searchedAt: fixtureDate,
++                source: .iTunesFallback,
++                resultCount: 42,
++                errorMessage: "released-snapshot-warning",
++                keywordTrack: track
++            )
++            let rankedResult = TrackedKeywordRankedResult(
++                position: 3,
++                appStoreID: 320_032_999,
++                bundleID: "com.example.fixture-competitor",
++                name: "Fixture Competitor",
++                subtitle: "Fixture ranked subtitle",
++                sellerName: "Fixture Ranked Seller",
++                snapshot: snapshot
++            )
++            track.snapshots.append(snapshot)
++            snapshot.topResults.append(rankedResult)
++
++            let stats = AppKeywordStats(
++                appStoreID: storeApp.appStoreID,
++                queryKey: query.queryKey,
++                keyword: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                rank: 7,
++                observedAt: fixtureDate,
++                popularityScore: 61,
++                difficultyScore: 42
++            )
++            stats.bestRank = 5
++            stats.latestRank = 8
++            stats.averageRank = 6.5
++            stats.observationCount = 4
++            stats.firstSeenAt = priorDate
++            stats.lastSeenAt = fixtureDate
++
++            let latestRating = LatestAppRating(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                ratingCount: 1_200,
++                averageRating: 4.625,
++                oneStarRatingCount: 11,
++                twoStarRatingCount: 22,
++                threeStarRatingCount: 33,
++                fourStarRatingCount: 44,
++                fiveStarRatingCount: 1_090,
++                ratingDate: "2026-05-01",
++                observedAt: fixtureDate,
++                submissionCount: 3,
++                winningCount: 2,
++                confidence: "fixture-high",
++                source: .appStorePage,
++                storeApp: storeApp
++            )
++            let dailyRating = AppDailyRating(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                ratingCount: 1_180,
++                averageRating: 4.5,
++                oneStarRatingCount: 12,
++                twoStarRatingCount: 23,
++                threeStarRatingCount: 34,
++                fourStarRatingCount: 45,
++                fiveStarRatingCount: 1_066,
++                ratingDate: "2026-04-30",
++                observedAt: priorDate,
++                submissionCount: 4,
++                winningCount: 3,
++                confidence: "fixture-medium",
++                source: .iTunesSearch,
++                storeApp: storeApp
++            )
++            let review = AppStorefrontReview(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                reviewID: "released-review-032",
++                reviewerName: "Fixture Reviewer",
++                title: "Released fixture review",
++                content: "A persisted review from the released schema.",
++                rating: 5,
++                reviewedAt: priorDate,
++                version: "0.3.1",
++                source: .appStoreConnect,
++                observedAt: fixtureDate,
++                storeApp: storeApp
++            )
++            review.ascReviewID = "asc-review-032"
++            review.developerResponseID = "response-032"
++            review.developerResponseBody = "Thanks from the released fixture."
++            review.developerResponseState = "PUBLISHED"
++            review.developerResponseModifiedAt = priorDate
++            review.translatedTitle = "Avis de fixture"
++            review.translatedContent = "Contenu de fixture traduit."
++            review.translationLanguage = "fr"
++            review.translatedAt = fixtureDate
++            review.translationProviderRaw = "fixture-provider"
++            review.translationModelID = "fixture-model-v1"
++            review.assumedLanguageCode = "en"
++            review.assumedLanguageConfidence = 0.97
++            storeApp.storefrontLatest.append(latestRating)
++            storeApp.ratingSnapshots.append(dailyRating)
++            storeApp.reviews.append(review)
++
++            let metric = KeywordDailyMetric(
++                queryKey: query.queryKey,
++                keyword: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                popularityScore: 61,
++                difficultyScore: 42,
++                source: .appleAdsPopularity,
++                popularityDate: "2026-05-01",
++                submissionCount: 5,
++                winningCount: 4,
++                confidence: "fixture-strong",
++                updatedAt: fixtureDate,
++                notes: "released-metric-notes"
++            )
++            let crawl = KeywordRankingCrawl(
++                keyword: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                observedAt: fixtureDate,
++                source: .appStoreWeb,
++                resultCount: 50,
++                query: query,
++                observedHour: 493_836,
++                submissionCount: 6,
++                winningCount: 5,
++                confidence: "fixture-crawl-confidence"
++            )
++            let crawlItem = KeywordAppRanking(
++                position: 2,
++                appStoreID: 320_032_999,
++                bundleID: "com.example.fixture-competitor",
++                name: "Fixture Competitor",
++                subtitle: "Fixture crawl subtitle",
++                sellerName: "Fixture Crawl Seller",
++                observation: crawl
++            )
++            query.observations.append(crawl)
++            crawl.items.append(crawlItem)
++
++            let storefront = Storefront(
++                code: "gb",
++                name: "United Kingdom",
++                flagEmoji: "🇬🇧",
++                languageCode: "en-GB"
++            )
++
++            modelContext.insert(folder)
++            modelContext.insert(stats)
++            modelContext.insert(latestRating)
++            modelContext.insert(dailyRating)
++            modelContext.insert(review)
++            modelContext.insert(storeApp)
++            modelContext.insert(trackedApp)
++            modelContext.insert(metadata)
++            modelContext.insert(screenshot)
++            modelContext.insert(query)
++            modelContext.insert(metric)
++            modelContext.insert(crawl)
++            modelContext.insert(crawlItem)
++            modelContext.insert(track)
++            modelContext.insert(snapshot)
++            modelContext.insert(rankedResult)
++            modelContext.insert(storefront)
++            try modelContext.save()
++        }
++
++        let storeArtifacts = try fileManager.contentsOfDirectory(
++            at: outputDirectory,
++            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
++            options: [.skipsHiddenFiles]
++        )
++        .filter { $0.lastPathComponent.hasPrefix("default.store") }
++        .sorted { $0.lastPathComponent < $1.lastPathComponent }
++
++        var artifacts: [[String: Any]] = []
++        for artifactURL in storeArtifacts {
++            let data = try Data(contentsOf: artifactURL, options: [.mappedIfSafe])
++            if data.isEmpty, artifactURL.lastPathComponent != "default.store" {
++                try fileManager.removeItem(at: artifactURL)
++                continue
++            }
++            guard !data.isEmpty else {
++                throw FixtureGenerationError.emptyStore
++            }
++            let digest = SHA256.hash(data: data)
++                .map { String(format: "%02x", Int($0)) }
++                .joined()
++            artifacts.append([
++                "filename": artifactURL.lastPathComponent,
++                "byteCount": data.count,
++                "sha256": digest
++            ])
++        }
++        guard artifacts.contains(where: { ($0["filename"] as? String) == "default.store" }) else {
++            throw FixtureGenerationError.missingStore
++        }
++
++        let manifest: [String: Any] = [
++            "formatVersion": 1,
++            "fixtureID": "v0.3.2-v1",
++            "sourceTag": "v0.3.2",
++            "sourceCommit": "7a2c3752fa895ad820663a5b4baeaf926f0b65f9",
++            "schemaVersion": "1.0.0",
++            "storeFilename": "default.store",
++            "artifacts": artifacts
++        ]
++        let manifestData = try JSONSerialization.data(
++            withJSONObject: manifest,
++            options: [.prettyPrinted, .sortedKeys]
++        )
++        try manifestData.write(
++            to: outputDirectory.appendingPathComponent("manifest.json"),
++            options: .atomic
++        )
++    }
++
+     @Test
+     func mockedServicesUseInMemoryAppleAdsStores() throws {
+         let services = AppServices.mocked(
+@@ -203,6 +565,29 @@ struct AppServicesDependencyTests {
+     }
+ }
+ 
++private enum FixtureGenerationError: LocalizedError {
++    case missingOutputDirectory(String)
++    case unsafeOutputDirectory(String)
++    case outputDirectoryNotEmpty(String)
++    case emptyStore
++    case missingStore
++
++    var errorDescription: String? {
++        switch self {
++        case .missingOutputDirectory(let key):
++            return "Set \(key) to an isolated temporary output directory."
++        case .unsafeOutputDirectory(let path):
++            return "Fixture output must be below the system temporary directory: \(path)"
++        case .outputDirectoryNotEmpty(let path):
++            return "Fixture output directory must be empty: \(path)"
++        case .emptyStore:
++            return "The released SwiftData store is empty."
++        case .missingStore:
++            return "The released SwiftData generator did not create default.store."
++        }
++    }
++}
++
+ private final class RecordingKeychainService: KeychainService {
+     private(set) var dataRequests: [(service: String, account: String)] = []
+ 
+diff --git a/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme b/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme
+--- a/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme
++++ b/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme
+@@ -25,8 +25,8 @@
+    <TestAction
+       buildConfiguration = "Debug"
+       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+-      shouldUseLaunchSchemeArgsEnv = "YES">
++      shouldUseLaunchSchemeArgsEnv = "NO">
+       <MacroExpansion>
+          <BuildableReference
+             BuildableIdentifier = "primary"
+@@ -49,6 +49,13 @@
+             </BuildableReference>
+          </TestableReference>
+       </Testables>
++      <EnvironmentVariables>
++         <EnvironmentVariable
++            key = "OPENASO_V1_FIXTURE_OUTPUT_DIR"
++            value = "$(OPENASO_V1_FIXTURE_OUTPUT_DIR)"
++            isEnabled = "YES">
++         </EnvironmentVariable>
++      </EnvironmentVariables>
+    </TestAction>
+    <LaunchAction
+       buildConfiguration = "Debug"

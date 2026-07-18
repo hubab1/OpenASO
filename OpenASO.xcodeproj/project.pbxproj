@@ -29,6 +29,9 @@
 		04E8C4E18F1A4D519C0A1140 /* AppDetail/AppDetailRefreshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1141 /* AppDetail/AppDetailRefreshService.swift */; };
 		04E8C4E18F1A4D519C0A1142 /* AppDetail/AppRefreshProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1143 /* AppDetail/AppRefreshProgressStore.swift */; };
 		05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */; };
+		D02000000000000000000001 /* PersistenceMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D02000000000000000000003 /* PersistenceMigrationTests.swift */; };
+		D02000000000000000000002 /* v0.3.2-v1 in Resources */ = {isa = PBXBuildFile; fileRef = D02000000000000000000004 /* v0.3.2-v1 */; };
+		D02000000000000000000006 /* ReleasedV1StoreFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = D02000000000000000000007 /* ReleasedV1StoreFixture.swift */; };
 		0A1B2C3D4E5F678901234505 /* AppKeywordStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F678901234506 /* AppKeywordStats.swift */; };
 		0A1B2C3D4E5F678901234509 /* RatingsReviews/AppStorefrontRatingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F67890123450A /* RatingsReviews/AppStorefrontRatingService.swift */; };
 		0A1B2C3D4E5F67890123450D /* AppStorefrontRatingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F67890123450E /* AppStorefrontRatingServiceTests.swift */; };
@@ -264,6 +267,9 @@
 		0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreConnectReviewServiceTests.swift; sourceTree = "<group>"; };
 		0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreWebMetadataProviderTests.swift; sourceTree = "<group>"; };
 		0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServicesDependencyTests.swift; sourceTree = "<group>"; };
+		D02000000000000000000003 /* PersistenceMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceMigrationTests.swift; sourceTree = "<group>"; };
+		D02000000000000000000004 /* v0.3.2-v1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "v0.3.2-v1"; path = Fixtures/Persistence/v0.3.2-v1; sourceTree = "<group>"; };
+		D02000000000000000000007 /* ReleasedV1StoreFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleasedV1StoreFixture.swift; sourceTree = "<group>"; };
 		1C1EE58C790084CF7A83CA8A /* SearchRanking/SearchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/SearchModels.swift; sourceTree = "<group>"; };
 		26D4B2C87FDED9CFCFA50D7D /* SearchRanking/RankingRefreshCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/RankingRefreshCoordinator.swift; sourceTree = "<group>"; };
 		2BC7973645CC5F20071230DE /* RankingRefreshCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingRefreshCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -439,6 +445,9 @@
 				A60000000000000000000002 /* AIServiceTests.swift */,
 				A80000000000000000000004 /* AnalyticsServiceTests.swift */,
 				0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */,
+				D02000000000000000000003 /* PersistenceMigrationTests.swift */,
+				D02000000000000000000007 /* ReleasedV1StoreFixture.swift */,
+				D02000000000000000000004 /* v0.3.2-v1 */,
 				0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */,
 				0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */,
 				0A1B2C3D4E5F67890123450E /* AppStorefrontRatingServiceTests.swift */,
@@ -795,6 +804,7 @@
 			buildPhases = (
 				B6D35490A3C74E0F079C31C0 /* Sources */,
 				0A0B0C0D0E0F00000000000A /* Frameworks */,
+				D02000000000000000000005 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -844,6 +854,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		D02000000000000000000005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D02000000000000000000002 /* v0.3.2-v1 in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CE70920EB06BF28618AE63B7 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1032,6 +1050,8 @@
 				A60000000000000000000001 /* AIServiceTests.swift in Sources */,
 				A80000000000000000000003 /* AnalyticsServiceTests.swift in Sources */,
 				05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */,
+				D02000000000000000000001 /* PersistenceMigrationTests.swift in Sources */,
+				D02000000000000000000006 /* ReleasedV1StoreFixture.swift in Sources */,
 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
 				0A5C00000000000000000007 /* AppStoreWebMetadataProviderTests.swift in Sources */,
 				0A1B2C3D4E5F67890123450D /* AppStorefrontRatingServiceTests.swift in Sources */,
