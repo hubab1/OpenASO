@@ -1471,7 +1471,7 @@ private struct KeywordRankingScreenshotExportSummary {
     let skippedAppCount: Int
 }
 
-private final class KeywordRankingScreenshotExportService {
+private final class KeywordRankingScreenshotExportService: Sendable {
     private let downloader: ScreenshotDownloadService
 
     init(downloader: ScreenshotDownloadService) {
