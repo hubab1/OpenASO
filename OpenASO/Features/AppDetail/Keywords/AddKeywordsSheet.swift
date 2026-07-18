@@ -81,12 +81,12 @@ struct AddKeywordsSheet: View {
             AddKeywordsStorefrontSearchField(storefrontSearchText: $storefrontSearchText)
                 .disabled(isInputLocked)
 
-            List(filteredStorefronts, id: \.code) { storefront in
+            List(filteredStorefronts) { storefront in
                 Toggle(isOn: storefrontBinding(for: storefront.code)) {
                     HStack {
                         Text(storefront.title)
                         Spacer()
-                        Text(keywordCount(for: storefront.code).formatted())
+                        Text(storefront.keywordCount.formatted())
                             .font(.body.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
@@ -122,31 +122,16 @@ struct AddKeywordsSheet: View {
         .frame(minWidth: 720, minHeight: 720)
     }
 
-    private var filteredStorefronts: [Storefront] {
-        let normalizedSearch = storefrontSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matchingStorefronts = storefronts.filter { storefront in
-            guard !normalizedSearch.isEmpty else { return true }
-            return storefront.title.localizedCaseInsensitiveContains(normalizedSearch)
-                || storefront.code.localizedCaseInsensitiveContains(normalizedSearch)
-        }
-
-        return matchingStorefronts.sorted { lhs, rhs in
-            let lhsCount = keywordCount(for: lhs.code)
-            let rhsCount = keywordCount(for: rhs.code)
-            if lhsCount == rhsCount {
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
-            return lhsCount > rhsCount
-        }
-    }
-
-    private var keywordCountsByStorefront: [String: Int] {
-        Dictionary(grouping: trackedKeywords.filter { $0.platform == selectedPlatform }, by: \.storefront)
-            .mapValues(\.count)
-    }
-
-    private func keywordCount(for storefrontCode: String) -> Int {
-        keywordCountsByStorefront[storefrontCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), default: 0]
+    private var filteredStorefronts: [AddKeywordsStorefrontProjection.Candidate] {
+        AddKeywordsStorefrontProjection.candidates(
+            storefronts: storefronts.map { storefront in
+                (storefront.code, storefront.name, storefront.title)
+            },
+            trackedStorefrontCodes: trackedKeywords.compactMap { track in
+                track.platform == selectedPlatform ? track.storefront : nil
+            },
+            searchText: storefrontSearchText
+        )
     }
 
     private func storefrontBinding(for code: String) -> Binding<Bool> {
