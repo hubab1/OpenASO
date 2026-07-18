@@ -31,6 +31,79 @@ struct RankingRefreshRequest: Sendable {
     }
 }
 
+private struct NormalizedRankingQueryKey: Hashable, Sendable {
+    let term: String
+    let storefront: String
+    let platform: AppPlatform
+
+    init(request: RankingRefreshRequest) {
+        self.term = request.term
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self.storefront = request.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self.platform = request.platform
+    }
+}
+
+struct RankingRequestGroup: Sendable {
+    let providerRequest: RankingRefreshRequest
+    private(set) var targetRequests: [RankingRefreshRequest]
+
+    static func normalizedGroups(for requests: [RankingRefreshRequest]) -> [Self] {
+        var groups: [Self] = []
+        var groupIndexByKey: [NormalizedRankingQueryKey: Int] = [:]
+        groups.reserveCapacity(requests.count)
+        groupIndexByKey.reserveCapacity(requests.count)
+
+        for request in requests {
+            let key = NormalizedRankingQueryKey(request: request)
+            if let groupIndex = groupIndexByKey[key] {
+                groups[groupIndex].targetRequests.append(request)
+                continue
+            }
+
+            let normalizedTerm = request.term.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedStorefront = request.storefront
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let providerRequest = RankingRefreshRequest(
+                identityKey: request.identityKey,
+                queryKey: KeywordQuery.makeQueryKey(
+                    term: normalizedTerm,
+                    storefront: normalizedStorefront,
+                    platform: request.platform
+                ),
+                term: normalizedTerm,
+                storefront: normalizedStorefront,
+                platform: request.platform
+            )
+            groupIndexByKey[key] = groups.count
+            groups.append(Self(
+                providerRequest: providerRequest,
+                targetRequests: [request]
+            ))
+        }
+
+        return groups
+    }
+
+    func pageResults(fanningOut pageResult: RankingRefreshPageResult) -> [RankingRefreshPageResult] {
+        targetRequests.map { targetRequest in
+            RankingRefreshPageResult(
+                request: targetRequest,
+                page: pageResult.page,
+                searchedAt: pageResult.searchedAt,
+                observedHour: pageResult.observedHour,
+                submissionCount: pageResult.submissionCount,
+                winningCount: pageResult.winningCount,
+                confidence: pageResult.confidence
+            )
+        }
+    }
+}
+
 struct RankingRefreshPageResult: Sendable {
     let request: RankingRefreshRequest
     let page: SearchRankingPage
@@ -827,38 +900,81 @@ final class RankingRefreshCoordinator: Sendable {
         if !tracks.isEmpty {
             await progress?(0, tracks.count, 0)
         }
-        for track in tracks {
-            let result = await refresh(
-                track: track,
-                in: modelContext,
+        var tracksByIdentityKey: [String: TrackedAppKeyword] = [:]
+        for track in tracks where tracksByIdentityKey[track.identityKey] == nil {
+            tracksByIdentityKey[track.identityKey] = track
+        }
+        let requestGroups = RankingRequestGroup.normalizedGroups(for: tracks.map(RankingRefreshRequest.init))
+
+        for requestGroup in requestGroups {
+            let result = await refreshPage(
+                for: requestGroup.providerRequest,
                 limit: limit,
-                recordsTrigger: false,
-                rebuildDerivedStats: false
+                recordsTrigger: false
             )
             switch result {
-            case .success(let snapshot):
-                statsRebuildRequests.insert(RankingStatsRebuildRequest(track: track))
-                outcomes.append(RefreshOutcome(
-                    trackID: track.persistentModelID,
-                    snapshotID: snapshot.persistentModelID,
-                    rank: snapshot.rank,
-                    searchedAt: snapshot.searchedAt,
-                    error: nil
-                ))
+            case .success(let pageResult):
+                for targetPageResult in requestGroup.pageResults(fanningOut: pageResult) {
+                    guard let track = tracksByIdentityKey[targetPageResult.request.identityKey] else {
+                        failureCount += 1
+                        completedCount += 1
+                        await progress?(completedCount, tracks.count, failureCount)
+                        continue
+                    }
+
+                    do {
+                        let snapshot = try persistRankingPage(
+                            targetPageResult,
+                            in: modelContext,
+                            rebuildDerivedStats: false
+                        )
+                        statsRebuildRequests.insert(RankingStatsRebuildRequest(track: track))
+                        outcomes.append(RefreshOutcome(
+                            trackID: track.persistentModelID,
+                            snapshotID: snapshot.persistentModelID,
+                            rank: snapshot.rank,
+                            searchedAt: snapshot.searchedAt,
+                            error: nil
+                        ))
+                    } catch {
+                        let mappedError = OpenASOError.map(error)
+                        track.statusMessage = "Ranking failed to refresh. \(mappedError.localizedDescription)"
+                        try? modelContext.save()
+                        outcomes.append(RefreshOutcome(
+                            trackID: track.persistentModelID,
+                            snapshotID: nil,
+                            rank: nil,
+                            searchedAt: nil,
+                            error: mappedError
+                        ))
+                        failureCount += 1
+                    }
+                    completedCount += 1
+                    await progress?(completedCount, tracks.count, failureCount)
+                }
             case .failure(let error):
-                track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
-                try? modelContext.save()
-                outcomes.append(RefreshOutcome(
-                    trackID: track.persistentModelID,
-                    snapshotID: nil,
-                    rank: nil,
-                    searchedAt: nil,
-                    error: error
-                ))
-                failureCount += 1
+                for targetRequest in requestGroup.targetRequests {
+                    guard let track = tracksByIdentityKey[targetRequest.identityKey] else {
+                        failureCount += 1
+                        completedCount += 1
+                        await progress?(completedCount, tracks.count, failureCount)
+                        continue
+                    }
+
+                    track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
+                    try? modelContext.save()
+                    outcomes.append(RefreshOutcome(
+                        trackID: track.persistentModelID,
+                        snapshotID: nil,
+                        rank: nil,
+                        searchedAt: nil,
+                        error: error
+                    ))
+                    failureCount += 1
+                    completedCount += 1
+                    await progress?(completedCount, tracks.count, failureCount)
+                }
             }
-            completedCount += 1
-            await progress?(completedCount, tracks.count, failureCount)
         }
         if !statsRebuildRequests.isEmpty {
             rebuildDerivedStats(for: statsRebuildRequests, in: modelContext)

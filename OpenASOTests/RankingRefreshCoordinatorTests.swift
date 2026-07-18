@@ -6,6 +6,217 @@ import Testing
 @MainActor
 struct RankingRefreshCoordinatorTests {
     @Test
+    func rankingRequestGroupsNormalizeEquivalentQueriesAndPreserveFanOutMetadata() throws {
+        let requests = [
+            RankingRefreshRequest(
+                identityKey: "101::pages::us::iphone",
+                queryKey: "legacy-query-a",
+                term: " Pages ",
+                storefront: " US ",
+                platform: .iphone
+            ),
+            RankingRefreshRequest(
+                identityKey: "202::pages::us::iphone",
+                queryKey: "legacy-query-b",
+                term: "pages",
+                storefront: "us",
+                platform: .iphone
+            ),
+            RankingRefreshRequest(
+                identityKey: "303::pages::us::ipad",
+                queryKey: "pages::us::ipad",
+                term: "pages",
+                storefront: "US",
+                platform: .ipad
+            ),
+            RankingRefreshRequest(
+                identityKey: "404::numbers::us::iphone",
+                queryKey: "numbers::us::iphone",
+                term: "Numbers",
+                storefront: "us",
+                platform: .iphone
+            ),
+        ]
+
+        let groups = RankingRequestGroup.normalizedGroups(for: requests)
+
+        #expect(groups.count == 3)
+        let pagesGroup = try #require(groups.first)
+        #expect(pagesGroup.providerRequest.identityKey == requests[0].identityKey)
+        #expect(pagesGroup.providerRequest.queryKey == "pages::us::iphone")
+        #expect(pagesGroup.providerRequest.term == "Pages")
+        #expect(pagesGroup.providerRequest.storefront == "us")
+        #expect(pagesGroup.providerRequest.platform == .iphone)
+        #expect(pagesGroup.targetRequests.map(\.identityKey) == [
+            requests[0].identityKey,
+            requests[1].identityKey,
+        ])
+        #expect(groups[1].providerRequest.platform == .ipad)
+        #expect(groups[2].providerRequest.term == "Numbers")
+
+        let searchedAt = Date(timeIntervalSince1970: 1_234)
+        let providerResult = RankingRefreshPageResult(
+            request: pagesGroup.providerRequest,
+            page: SearchRankingPage(items: [], source: .iTunesFallback),
+            searchedAt: searchedAt,
+            observedHour: 42,
+            submissionCount: 3,
+            winningCount: 2,
+            confidence: "fixture-confidence"
+        )
+        let fannedResults = pagesGroup.pageResults(fanningOut: providerResult)
+
+        #expect(fannedResults.map(\.request.identityKey) == pagesGroup.targetRequests.map(\.identityKey))
+        #expect(fannedResults.allSatisfy { $0.searchedAt == searchedAt })
+        #expect(fannedResults.allSatisfy { $0.observedHour == 42 })
+        #expect(fannedResults.allSatisfy { $0.submissionCount == 3 })
+        #expect(fannedResults.allSatisfy { $0.winningCount == 2 })
+        #expect(fannedResults.allSatisfy { $0.confidence == "fixture-confidence" })
+        #expect(fannedResults.allSatisfy { $0.page.source == .iTunesFallback })
+    }
+
+    @Test
+    func refreshTracksDeduplicatesNormalizedQueriesAndPersistsPerAppResults() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let fixture = try makeDeduplicatedRefreshFixture(in: modelContext)
+        fixture.firstTrack.term = " Pages "
+        try modelContext.save()
+
+        let provider = QueryRankingProvider(responses: [
+            QueryRankingProvider.key(term: "pages", storefront: "us", platform: .iphone): .page(
+                SearchRankingPage(
+                    items: [
+                        rankingItem(position: 1, appStoreID: fixture.firstApp.appStoreID, platform: .iphone),
+                        rankingItem(position: 2, appStoreID: 999, platform: .iphone),
+                        rankingItem(position: 3, appStoreID: fixture.secondApp.appStoreID, platform: .iphone),
+                    ],
+                    source: .iTunesFallback
+                )
+            ),
+            QueryRankingProvider.key(term: "pages", storefront: "gb", platform: .iphone): .page(
+                SearchRankingPage(
+                    items: [
+                        rankingItem(position: 1, appStoreID: 998, platform: .iphone),
+                        rankingItem(position: 2, appStoreID: fixture.thirdApp.appStoreID, platform: .iphone),
+                    ],
+                    source: .iTunesFallback
+                )
+            ),
+        ])
+        let progressRecorder = RankingRefreshProgressRecorder()
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: provider,
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        )
+
+        let outcomes = await coordinator.refresh(
+            tracks: fixture.tracks,
+            in: modelContext,
+            progress: { completed, total, failureCount in
+                await progressRecorder.record(
+                    completed: completed,
+                    total: total,
+                    failureCount: failureCount
+                )
+            }
+        )
+
+        #expect(await provider.callCounts() == [
+            "pages::us::iphone": 1,
+            "pages::gb::iphone": 1,
+        ])
+        #expect(outcomes.count == 3)
+        #expect(outcomes.allSatisfy { $0.error == nil })
+        #expect(outcomes.first(where: { $0.trackID == fixture.firstTrack.persistentModelID })?.rank == 1)
+        #expect(outcomes.first(where: { $0.trackID == fixture.secondTrack.persistentModelID })?.rank == 3)
+        #expect(outcomes.first(where: { $0.trackID == fixture.thirdTrack.persistentModelID })?.rank == 2)
+
+        let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
+        let ranksByTrack = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.trackIdentityKey, $0.rank) })
+        #expect(snapshots.count == 3)
+        #expect(ranksByTrack[fixture.firstTrack.identityKey] == 1)
+        #expect(ranksByTrack[fixture.secondTrack.identityKey] == 3)
+        #expect(ranksByTrack[fixture.thirdTrack.identityKey] == 2)
+
+        let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+        #expect(crawls.count == 2)
+        #expect(crawls.allSatisfy { $0.confidenceRaw == "single_source" })
+        #expect(crawls.first(where: { $0.queryKey == fixture.firstTrack.queryKey })?.submissionCount == 1)
+        #expect(crawls.first(where: { $0.queryKey == fixture.firstTrack.queryKey })?.winningCount == 1)
+        #expect(await progressRecorder.values() == [
+            RankingRefreshProgressValue(completed: 0, total: 3, failureCount: 0),
+            RankingRefreshProgressValue(completed: 1, total: 3, failureCount: 0),
+            RankingRefreshProgressValue(completed: 2, total: 3, failureCount: 0),
+            RankingRefreshProgressValue(completed: 3, total: 3, failureCount: 0),
+        ])
+    }
+
+    @Test
+    func refreshTracksFansSharedQueryFailureOutAndCompletesUnrelatedQuery() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let fixture = try makeDeduplicatedRefreshFixture(in: modelContext)
+        fixture.firstTrack.term = " Pages "
+        try modelContext.save()
+
+        let provider = QueryRankingProvider(responses: [
+            QueryRankingProvider.key(term: "pages", storefront: "us", platform: .iphone): .failure(.networkUnavailable),
+            QueryRankingProvider.key(term: "pages", storefront: "gb", platform: .iphone): .page(
+                SearchRankingPage(
+                    items: [
+                        rankingItem(position: 1, appStoreID: 998, platform: .iphone),
+                        rankingItem(position: 2, appStoreID: fixture.thirdApp.appStoreID, platform: .iphone),
+                    ],
+                    source: .iTunesFallback
+                )
+            ),
+        ])
+        let progressRecorder = RankingRefreshProgressRecorder()
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: provider,
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        )
+
+        let outcomes = await coordinator.refresh(
+            tracks: fixture.tracks,
+            in: modelContext,
+            progress: { completed, total, failureCount in
+                await progressRecorder.record(
+                    completed: completed,
+                    total: total,
+                    failureCount: failureCount
+                )
+            }
+        )
+
+        #expect(await provider.callCounts() == [
+            "pages::us::iphone": 1,
+            "pages::gb::iphone": 1,
+        ])
+        #expect(outcomes.count == 3)
+        #expect(outcomes.first(where: { $0.trackID == fixture.firstTrack.persistentModelID })?.error == .networkUnavailable)
+        #expect(outcomes.first(where: { $0.trackID == fixture.secondTrack.persistentModelID })?.error == .networkUnavailable)
+        #expect(outcomes.first(where: { $0.trackID == fixture.thirdTrack.persistentModelID })?.rank == 2)
+        #expect(fixture.firstTrack.statusMessage?.contains("network") == true)
+        #expect(fixture.secondTrack.statusMessage?.contains("network") == true)
+        #expect(fixture.thirdTrack.statusMessage == nil)
+
+        let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
+        #expect(snapshots.map(\.trackIdentityKey) == [fixture.thirdTrack.identityKey])
+        let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+        #expect(crawls.count == 1)
+        #expect(crawls.first?.queryKey == fixture.thirdTrack.queryKey)
+        #expect(crawls.first?.confidenceRaw == "single_source")
+        #expect(await progressRecorder.values() == [
+            RankingRefreshProgressValue(completed: 0, total: 3, failureCount: 0),
+            RankingRefreshProgressValue(completed: 1, total: 3, failureCount: 1),
+            RankingRefreshProgressValue(completed: 2, total: 3, failureCount: 2),
+            RankingRefreshProgressValue(completed: 3, total: 3, failureCount: 2),
+        ])
+    }
+
+    @Test
     func topRankingEnrichmentRequestsDeduplicateAndLimitToTopTwenty() {
         let items = (1...25).map { position in
             SearchRankingItem(
@@ -784,6 +995,165 @@ struct AppDetailRefreshServiceQueueTests {
     }
 }
 
+private struct DeduplicatedRefreshFixture {
+    let firstApp: TrackedApp
+    let secondApp: TrackedApp
+    let thirdApp: TrackedApp
+    let firstTrack: TrackedAppKeyword
+    let secondTrack: TrackedAppKeyword
+    let thirdTrack: TrackedAppKeyword
+
+    var tracks: [TrackedAppKeyword] {
+        [firstTrack, secondTrack, thirdTrack]
+    }
+}
+
+@MainActor
+private func makeDeduplicatedRefreshFixture(in modelContext: ModelContext) throws -> DeduplicatedRefreshFixture {
+    let firstApp = TrackedApp(
+        appStoreID: 101,
+        bundleID: "example.first",
+        name: "First App",
+        sellerName: "Example",
+        defaultPlatform: .iphone
+    )
+    let firstTrack = try makeTrackedAppKeyword(
+        term: "Pages",
+        storefront: "us",
+        platform: .iphone,
+        trackedApp: firstApp,
+        in: modelContext
+    )
+    firstApp.keywordTracks.append(firstTrack)
+    modelContext.insert(firstApp)
+    modelContext.insert(firstTrack)
+
+    let secondApp = TrackedApp(
+        appStoreID: 202,
+        bundleID: "example.second",
+        name: "Second App",
+        sellerName: "Example",
+        defaultPlatform: .iphone
+    )
+    let secondTrack = try makeTrackedAppKeyword(
+        term: "pages",
+        storefront: "us",
+        platform: .iphone,
+        trackedApp: secondApp,
+        in: modelContext
+    )
+    secondApp.keywordTracks.append(secondTrack)
+    modelContext.insert(secondApp)
+    modelContext.insert(secondTrack)
+
+    let thirdApp = TrackedApp(
+        appStoreID: 303,
+        bundleID: "example.third",
+        name: "Third App",
+        sellerName: "Example",
+        defaultPlatform: .iphone
+    )
+    let thirdTrack = try makeTrackedAppKeyword(
+        term: "pages",
+        storefront: "gb",
+        platform: .iphone,
+        trackedApp: thirdApp,
+        in: modelContext
+    )
+    thirdApp.keywordTracks.append(thirdTrack)
+    modelContext.insert(thirdApp)
+    modelContext.insert(thirdTrack)
+    try modelContext.save()
+
+    return DeduplicatedRefreshFixture(
+        firstApp: firstApp,
+        secondApp: secondApp,
+        thirdApp: thirdApp,
+        firstTrack: firstTrack,
+        secondTrack: secondTrack,
+        thirdTrack: thirdTrack
+    )
+}
+
+private func rankingItem(position: Int, appStoreID: Int64, platform: AppPlatform) -> SearchRankingItem {
+    SearchRankingItem(
+        position: position,
+        appStoreID: appStoreID,
+        bundleID: "example.\(appStoreID)",
+        name: "App \(appStoreID)",
+        sellerName: "Example",
+        platform: platform
+    )
+}
+
+private struct RankingRefreshProgressValue: Equatable, Sendable {
+    let completed: Int
+    let total: Int
+    let failureCount: Int
+}
+
+private actor RankingRefreshProgressRecorder {
+    private var recordedValues: [RankingRefreshProgressValue] = []
+
+    func record(completed: Int, total: Int, failureCount: Int) {
+        recordedValues.append(RankingRefreshProgressValue(
+            completed: completed,
+            total: total,
+            failureCount: failureCount
+        ))
+    }
+
+    func values() -> [RankingRefreshProgressValue] {
+        recordedValues
+    }
+}
+
+private actor QueryRankingProvider: SearchRankingProvider {
+    enum Response: Sendable {
+        case page(SearchRankingPage)
+        case failure(OpenASOError)
+    }
+
+    private let responses: [String: Response]
+    private var queryCallCounts: [String: Int] = [:]
+
+    init(responses: [String: Response]) {
+        self.responses = responses
+    }
+
+    static func key(term: String, storefront: String, platform: AppPlatform) -> String {
+        [
+            term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            platform.rawValue,
+        ].joined(separator: "::")
+    }
+
+    func search(
+        keyword: String,
+        storefrontCode: String,
+        platform: AppPlatform,
+        limit: Int
+    ) async throws -> SearchRankingPage {
+        let queryKey = Self.key(term: keyword, storefront: storefrontCode, platform: platform)
+        queryCallCounts[queryKey, default: 0] += 1
+
+        guard let response = responses[queryKey] else {
+            throw OpenASOError.unexpectedResponse
+        }
+        switch response {
+        case .page(let page):
+            return page
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func callCounts() -> [String: Int] {
+        queryCallCounts
+    }
+}
+
 @MainActor
 private final class StubRankingProvider: SearchRankingProvider {
     var page: SearchRankingPage
@@ -901,19 +1271,21 @@ private func makeInMemoryContainer() throws -> ModelContainer {
 
 private func makeTrackedAppKeyword(
     term: String,
+    storefront: String = "us",
+    platform: AppPlatform = .iphone,
     trackedApp: TrackedApp,
     in modelContext: ModelContext
 ) throws -> TrackedAppKeyword {
     let query = try KeywordQuery.fetchOrInsert(
         term: term,
-        storefront: "us",
-        platform: .iphone,
+        storefront: storefront,
+        platform: platform,
         in: modelContext
     )
     return TrackedAppKeyword(
         term: term,
-        storefront: "us",
-        platform: .iphone,
+        storefront: storefront,
+        platform: platform,
         trackedApp: trackedApp,
         query: query
     )

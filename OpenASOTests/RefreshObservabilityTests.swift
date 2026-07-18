@@ -387,6 +387,125 @@ struct RefreshObservabilityTests {
     }
 
     @Test
+    func appDetailRefreshDeduplicatesMixedNormalizedQueriesAndPersistsEveryTrack() async throws {
+        let base = RankingHTTPClient()
+        let fixture = try makeKeywordRefreshFixture(
+            trackSpecifications: [
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 101,
+                    term: " Pages ",
+                    storefront: " US ",
+                    platform: .iphone
+                ),
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 202,
+                    term: "pages",
+                    storefront: "us",
+                    platform: .iphone
+                ),
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 303,
+                    term: "pages",
+                    storefront: "US",
+                    platform: .ipad
+                ),
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 404,
+                    term: "Numbers",
+                    storefront: "us",
+                    platform: .iphone
+                ),
+            ],
+            storefrontCodes: [" US ", "us"],
+            httpClient: base
+        )
+
+        let result = await fixture.service.refresh(fixture.request)
+        let summary = try #require(await fixture.recorder.completedSummaries().only)
+        let rankings = try #require(summary.stages[.rankings])
+        let provider = try #require(summary.providers[.iTunesStore])
+        let persisted = try await fixture.backgroundModelStore.read { modelContext in
+            let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+            let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
+            let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+            return (
+                trackCount: tracks.count,
+                refreshedTrackCount: tracks.filter { $0.lastRefreshAt != nil && $0.statusMessage == nil }.count,
+                snapshotIdentityKeys: Set(snapshots.map(\.trackIdentityKey)),
+                crawlQueryKeys: Set(crawls.map(\.queryKey))
+            )
+        }
+
+        #expect(result.keywordOutcomes.count == 4)
+        #expect(result.keywordOutcomes.allSatisfy { $0.error == nil })
+        #expect(await base.requestCount() == 3)
+        #expect(summary.resolvedRankingCount == 4)
+        #expect(summary.uniqueRankingQueryCount == 3)
+        #expect(rankings.attemptedCount == 4)
+        #expect(rankings.successCount == 4)
+        #expect(provider.requestCount == 3)
+        #expect(provider.endpointCounts[.rankingSearch] == 3)
+        #expect(persisted.trackCount == 4)
+        #expect(persisted.refreshedTrackCount == 4)
+        #expect(persisted.snapshotIdentityKeys == Set(result.keywordOutcomes.map(\.trackIdentityKey)))
+        #expect(persisted.crawlQueryKeys == Set([
+            "numbers::us::iphone",
+            "pages::us::ipad",
+            "pages::us::iphone",
+        ]))
+    }
+
+    @Test
+    func duplicateRankingCancellationFansFailureOutAfterOneProviderRequest() async throws {
+        let base = CountingCancelledRankingHTTPClient()
+        let fixture = try makeKeywordRefreshFixture(
+            trackSpecifications: [
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 101,
+                    term: " Pages ",
+                    storefront: " US ",
+                    platform: .iphone
+                ),
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 202,
+                    term: "pages",
+                    storefront: "us",
+                    platform: .iphone
+                ),
+            ],
+            storefrontCodes: ["us"],
+            httpClient: base
+        )
+
+        let result = await fixture.service.refresh(fixture.request)
+        let summary = try #require(await fixture.recorder.completedSummaries().only)
+        let rankings = try #require(summary.stages[.rankings])
+        let provider = try #require(summary.providers[.iTunesStore])
+        let persisted = try await fixture.backgroundModelStore.read { modelContext in
+            let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+            let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
+            return (
+                failedTrackCount: tracks.filter { $0.statusMessage != nil }.count,
+                snapshotCount: snapshots.count
+            )
+        }
+
+        #expect(result.keywordOutcomes.count == 2)
+        #expect(result.keywordOutcomes.allSatisfy { $0.error != nil })
+        #expect(await base.requestCount() == 1)
+        #expect(summary.resolvedRankingCount == 2)
+        #expect(summary.uniqueRankingQueryCount == 1)
+        #expect(rankings.attemptedCount == 2)
+        #expect(rankings.failureCount == 2)
+        #expect(provider.requestCount == 1)
+        #expect(provider.resultCounts[.cancelled] == 1)
+        #expect(summary.observedCancellation)
+        #expect(summary.result == .cancelled)
+        #expect(persisted.failedTrackCount == 2)
+        #expect(persisted.snapshotCount == 0)
+    }
+
+    @Test
     func realRefreshClassifiesObservedTransportCancellationAsCancelled() async throws {
         let base = CancelledRankingHTTPClient()
         let fixture = try makeKeywordRefreshFixture(
@@ -589,6 +708,19 @@ private struct CancelledRankingHTTPClient: HTTPClient {
     }
 }
 
+private actor CountingCancelledRankingHTTPClient: HTTPClient {
+    private var count = 0
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        count += 1
+        throw CancellationError()
+    }
+
+    func requestCount() -> Int {
+        count
+    }
+}
+
 private actor AsyncTestSignal {
     private var isSignalled = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -639,36 +771,82 @@ private struct KeywordRefreshFixture {
     let backgroundModelStore: BackgroundModelStore
 }
 
+private struct KeywordRefreshTrackSpecification {
+    let appStoreID: Int64
+    let term: String
+    let storefront: String
+    let platform: AppPlatform
+}
+
 @MainActor
 private func makeKeywordRefreshFixture(
     keywordCount: Int,
     includesMissingTrack: Bool,
     httpClient: any HTTPClient
 ) throws -> KeywordRefreshFixture {
+    let trackSpecifications = (0 ..< keywordCount).map { index in
+        KeywordRefreshTrackSpecification(
+            appStoreID: 123,
+            term: "baseline-private-keyword-\(index)",
+            storefront: "us",
+            platform: .iphone
+        )
+    }
+    let additionalIdentityKeys = includesMissingTrack
+        ? [TrackedAppKeyword.makeIdentityKey(
+            appStoreID: 123,
+            term: "missing-private-keyword",
+            storefront: "us",
+            platform: .iphone
+        )]
+        : []
+    return try makeKeywordRefreshFixture(
+        trackSpecifications: trackSpecifications,
+        additionalIdentityKeys: additionalIdentityKeys,
+        storefrontCodes: ["US", "us", " GB "],
+        httpClient: httpClient
+    )
+}
+
+@MainActor
+private func makeKeywordRefreshFixture(
+    trackSpecifications: [KeywordRefreshTrackSpecification],
+    additionalIdentityKeys: [String] = [],
+    storefrontCodes: [String],
+    httpClient: any HTTPClient
+) throws -> KeywordRefreshFixture {
     let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
     let modelContext = ModelContext(container)
-    let trackedApp = TrackedApp(
-        appStoreID: 123,
-        bundleID: "example.private",
-        name: "Private App Name",
-        sellerName: "Private Seller",
-        defaultPlatform: .iphone
-    )
-    modelContext.insert(trackedApp)
+    var trackedAppsByID: [Int64: TrackedApp] = [:]
     var trackIdentityKeys: [String] = []
-    trackIdentityKeys.reserveCapacity(keywordCount + (includesMissingTrack ? 1 : 0))
-    for index in 0 ..< keywordCount {
-        let term = "baseline-private-keyword-\(index)"
+    trackIdentityKeys.reserveCapacity(trackSpecifications.count + additionalIdentityKeys.count)
+
+    for specification in trackSpecifications {
+        let trackedApp: TrackedApp
+        if let existing = trackedAppsByID[specification.appStoreID] {
+            trackedApp = existing
+        } else {
+            trackedApp = TrackedApp(
+                appStoreID: specification.appStoreID,
+                bundleID: "example.private.\(specification.appStoreID)",
+                name: "Private App \(specification.appStoreID)",
+                sellerName: "Private Seller",
+                defaultPlatform: specification.platform
+            )
+            trackedAppsByID[specification.appStoreID] = trackedApp
+            modelContext.insert(trackedApp)
+        }
+
         let query = try KeywordQuery.fetchOrInsert(
-            term: term,
-            storefront: "us",
-            platform: .iphone,
+            term: specification.term,
+            storefront: specification.storefront,
+            platform: specification.platform,
             in: modelContext
         )
         let track = TrackedAppKeyword(
-            term: term,
-            storefront: "us",
-            platform: .iphone,
+            term: specification.term,
+            storefront: specification.storefront,
+            platform: specification.platform,
             trackedApp: trackedApp,
             query: query
         )
@@ -676,15 +854,10 @@ private func makeKeywordRefreshFixture(
         modelContext.insert(track)
         trackIdentityKeys.append(track.identityKey)
     }
-    if includesMissingTrack {
-        trackIdentityKeys.append(TrackedAppKeyword.makeIdentityKey(
-            appStoreID: trackedApp.appStoreID,
-            term: "missing-private-keyword",
-            storefront: "us",
-            platform: .iphone
-        ))
-    }
+    trackIdentityKeys.append(contentsOf: additionalIdentityKeys)
     try modelContext.save()
+
+    let trackedApp = try #require(trackSpecifications.first.flatMap { trackedAppsByID[$0.appStoreID] })
 
     let recorder = RefreshMetricsRecorder(clock: .constant)
     let backgroundModelStore = BackgroundModelStore(modelContainer: container)
@@ -709,7 +882,7 @@ private func makeKeywordRefreshFixture(
             defaultPlatform: trackedApp.defaultPlatform
         ),
         workspace: .keywords,
-        storefrontSelection: .all(codes: ["US", "us", " GB "]),
+        storefrontSelection: .all(codes: storefrontCodes),
         trackIdentityKeys: trackIdentityKeys,
         trigger: "manual",
         refreshKeywords: true,

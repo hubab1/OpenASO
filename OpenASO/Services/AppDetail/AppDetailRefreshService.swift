@@ -285,9 +285,10 @@ final class AppDetailRefreshService: Sendable {
             }
 
             let missingFailureCount = missingOutcomes.count
+            let rankingRequestGroups = RankingRequestGroup.normalizedGroups(for: rankingRequests)
             await recordRankingWork(
                 resolvedCount: rankingRequests.count,
-                uniqueQueryCount: Set(rankingRequests.map(\.queryKey)).count,
+                uniqueQueryCount: rankingRequestGroups.count,
                 missingCount: missingFailureCount
             )
             if rankingRequests.isEmpty {
@@ -301,7 +302,7 @@ final class AppDetailRefreshService: Sendable {
             }
 
             let keywordOutcomes = await refreshRankings(
-                rankingRequests,
+                rankingRequestGroups,
                 trigger: request.trigger,
                 missingFailureCount: missingFailureCount,
                 totalRequestedCount: request.trackIdentityKeys.count
@@ -375,18 +376,22 @@ final class AppDetailRefreshService: Sendable {
     }
 
     private func refreshRankings(
-        _ rankingRequests: [RankingRefreshRequest],
+        _ requestGroups: [RankingRequestGroup],
         trigger: String,
         missingFailureCount: Int,
         totalRequestedCount: Int
     ) async -> [KeywordBackgroundRefreshOutcome] {
-        guard !rankingRequests.isEmpty else { return [] }
+        guard !requestGroups.isEmpty else { return [] }
+
+        let resolvedTrackCount = requestGroups.reduce(into: 0) { count, group in
+            count += group.targetRequests.count
+        }
 
         if trigger == "daily_refresh" {
             await refreshCoordinator.recordRefreshTriggered()
         }
         let rankingPageFetcher = await refreshCoordinator.makeRankingPageFetcher()
-        await refreshCoordinator.captureKeywordRefreshStarted(trigger: trigger, trackCount: rankingRequests.count)
+        await refreshCoordinator.captureKeywordRefreshStarted(trigger: trigger, trackCount: resolvedTrackCount)
         await progressStore?.updateStep(
             .keywords,
             status: .running,
@@ -415,55 +420,62 @@ final class AppDetailRefreshService: Sendable {
             }
         }
 
-        await withTaskGroup(of: (RankingRefreshRequest, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
-            var nextRequestIndex = 0
+        await withTaskGroup(of: (RankingRequestGroup, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
+            var nextRequestGroupIndex = 0
             var activeFetchCount = 0
 
             func enqueueNextFetchIfPossible() {
                 guard activeFetchCount < Self.rankingFetchConcurrency,
-                      nextRequestIndex < rankingRequests.count else {
+                      nextRequestGroupIndex < requestGroups.count else {
                     return
                 }
 
-                let rankingRequest = rankingRequests[nextRequestIndex]
-                nextRequestIndex += 1
+                let requestGroup = requestGroups[nextRequestGroupIndex]
+                nextRequestGroupIndex += 1
                 activeFetchCount += 1
                 group.addTask {
-                    let result = await rankingPageFetcher(rankingRequest)
-                    return (rankingRequest, result)
+                    let result = await rankingPageFetcher(requestGroup.providerRequest)
+                    return (requestGroup, result)
                 }
             }
 
-            for _ in 0..<min(Self.rankingFetchConcurrency, rankingRequests.count) {
+            for _ in 0..<min(Self.rankingFetchConcurrency, requestGroups.count) {
                 enqueueNextFetchIfPossible()
             }
 
-            while let (rankingRequest, result) = await group.next() {
+            while let (requestGroup, result) = await group.next() {
                 activeFetchCount -= 1
 
                 switch result {
                 case .success(let pageResult):
-                    pendingPageResults.append(pageResult)
-                    if pendingPageResults.count >= Self.rankingPersistenceBatchSize {
-                        await flushPendingPageResults()
+                    for targetPageResult in requestGroup.pageResults(fanningOut: pageResult) {
+                        pendingPageResults.append(targetPageResult)
+                        if pendingPageResults.count >= Self.rankingPersistenceBatchSize {
+                            await flushPendingPageResults()
+                        }
                     }
                 case .failure(let error):
-                    try? await backgroundModelStore.write { modelContext in
-                        _ = try refreshCoordinator.recordRefreshFailure(
-                            identityKey: rankingRequest.identityKey,
-                            error: error,
-                            in: modelContext,
-                            saveChanges: false
-                        )
+                    for targetRequest in requestGroup.targetRequests {
+                        try? await backgroundModelStore.write { modelContext in
+                            _ = try refreshCoordinator.recordRefreshFailure(
+                                identityKey: targetRequest.identityKey,
+                                error: error,
+                                in: modelContext,
+                                saveChanges: false
+                            )
+                        }
+                        outcomes.append(KeywordBackgroundRefreshOutcome(
+                            trackIdentityKey: targetRequest.identityKey,
+                            error: error
+                        ))
                     }
-                    outcomes.append(KeywordBackgroundRefreshOutcome(trackIdentityKey: rankingRequest.identityKey, error: error))
-                    failureCount += 1
+                    failureCount += requestGroup.targetRequests.count
                 }
 
-                completedCount += 1
+                completedCount += requestGroup.targetRequests.count
                 await progressStore?.updateStep(
                     .keywords,
-                    status: completedCount >= rankingRequests.count
+                    status: completedCount >= resolvedTrackCount
                         ? (failureCount + missingFailureCount > 0 ? .failed : .completed)
                         : .running,
                     completed: completedCount + missingFailureCount,
@@ -493,7 +505,7 @@ final class AppDetailRefreshService: Sendable {
 
         await refreshCoordinator.captureKeywordRefreshCompleted(
             trigger: trigger,
-            trackCount: rankingRequests.count,
+            trackCount: resolvedTrackCount,
             failureCount: outcomes.filter { $0.error != nil }.count
         )
         return outcomes
