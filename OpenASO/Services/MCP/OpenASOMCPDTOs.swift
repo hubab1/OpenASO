@@ -150,6 +150,26 @@ struct OpenASOMCPRatingSummary: Codable, Sendable {
     let source: String
 }
 
+struct OpenASOMCPRatingSnapshot: Codable, Identifiable, Sendable {
+    let id: String
+    let identityKey: String
+    let appStoreID: String
+    let storefront: String
+    let ratingDate: String
+    let ratingCount: Int?
+    let averageRating: Double?
+    let oneStarRatingCount: Int?
+    let twoStarRatingCount: Int?
+    let threeStarRatingCount: Int?
+    let fourStarRatingCount: Int?
+    let fiveStarRatingCount: Int?
+    let observedAt: Date
+    let submissionCount: Int
+    let winningCount: Int
+    let confidence: String?
+    let source: String
+}
+
 struct OpenASOMCPReviewSummary: Codable, Sendable {
     let totalCount: Int
     let storefronts: [String]
@@ -199,6 +219,54 @@ struct OpenASOMCPKeywordSummary: Codable, Identifiable, Sendable {
     let statusMessage: String?
     let lastRefreshAt: Date?
     let createdAt: Date
+}
+
+struct OpenASOMCPStoredRankedApp: Codable, Identifiable, Sendable {
+    let id: String
+    let position: Int
+    let appStoreID: String
+    let bundleID: String?
+    let name: String
+    let subtitle: String?
+    let sellerName: String?
+}
+
+struct OpenASOMCPTrackedRankingSnapshot: Codable, Identifiable, Sendable {
+    let id: String
+    let snapshotKey: String
+    let trackIdentityKey: String
+    let appStoreID: String
+    let keyword: String
+    let queryKey: String
+    let storefront: String
+    let platform: String
+    let rank: Int?
+    let searchedAt: Date
+    let source: String
+    let resultCount: Int
+    let errorMessage: String?
+    let rankedAppsAvailableCount: Int
+    let rankedAppsTruncated: Bool
+    let rankedApps: [OpenASOMCPStoredRankedApp]
+}
+
+struct OpenASOMCPRankingCrawlSnapshot: Codable, Identifiable, Sendable {
+    let id: String
+    let observationKey: String
+    let queryKey: String
+    let keyword: String
+    let storefront: String
+    let platform: String
+    let observedAt: Date
+    let observedHour: Int
+    let source: String
+    let resultCount: Int
+    let submissionCount: Int
+    let winningCount: Int
+    let confidence: String?
+    let rankedAppsAvailableCount: Int
+    let rankedAppsTruncated: Bool
+    let rankedApps: [OpenASOMCPStoredRankedApp]
 }
 
 struct OpenASOMCPAddKeywordsResult: Codable, Sendable {

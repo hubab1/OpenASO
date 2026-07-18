@@ -1,16 +1,31 @@
 import Foundation
 
 enum OpenASOMCPValidation {
+    static let maximumStorefrontCount = 250
+    static let maximumStorefrontLength = 16
+    static let maximumHistoryKeywordLength = 200
+    static let maximumHistoryKeyLength = 512
+
     static func storefront(_ value: String) throws -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else {
             throw OpenASOError.providerUnavailable("Storefront must be a non-empty country code.")
+        }
+        guard normalized.utf8.count <= maximumStorefrontLength else {
+            throw OpenASOError.providerUnavailable(
+                "Storefront country codes must not exceed \(maximumStorefrontLength) bytes."
+            )
         }
         return normalized
     }
 
     static func storefronts(_ values: [String]?) throws -> [String] {
         guard let values, !values.isEmpty else { return [] }
+        guard values.count <= maximumStorefrontCount else {
+            throw OpenASOError.providerUnavailable(
+                "Select at most \(maximumStorefrontCount) storefronts."
+            )
+        }
         return Array(Set(try values.map(storefront))).sorted()
     }
 
@@ -40,6 +55,30 @@ enum OpenASOMCPValidation {
             let keyword = try keyword(value)
             guard seen.insert(keyword.lowercased()).inserted else { return nil }
             return keyword
+        }
+    }
+
+    static func nonEmpty(
+        _ value: String,
+        fieldName: String,
+        maximumLength: Int = maximumHistoryKeyLength
+    ) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw OpenASOError.providerUnavailable("\(fieldName) must be non-empty.")
+        }
+        guard trimmed.utf8.count <= maximumLength else {
+            throw OpenASOError.providerUnavailable(
+                "\(fieldName) must not exceed \(maximumLength) bytes."
+            )
+        }
+        return trimmed
+    }
+
+    static func dateRange(from: Date?, to: Date?) throws {
+        guard let from, let to else { return }
+        guard from <= to else {
+            throw OpenASOError.providerUnavailable("date_from must not be later than date_to.")
         }
     }
 

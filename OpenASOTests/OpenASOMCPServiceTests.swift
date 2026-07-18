@@ -1301,6 +1301,632 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func keywordRankingHistoryIsAppScopedFilteredAndPreservesStoredFailureEvidence() async throws {
+        let context = try MCPTestContext()
+        let target = try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer").storeApp
+        let other = try context.insertTrackedApp(appStoreID: 999, name: "Other Timer").storeApp
+        let targetUS = try context.insertKeyword(
+            "Focus Timer",
+            trackedApp: target,
+            storefront: "us"
+        )
+        let targetGB = try context.insertKeyword(
+            "Focus Timer",
+            trackedApp: target,
+            storefront: "gb"
+        )
+        let targetIPad = try context.insertKeyword(
+            "Focus Timer",
+            trackedApp: target,
+            storefront: "us",
+            platform: .ipad
+        )
+        let otherUS = try context.insertKeyword(
+            "Focus Timer",
+            trackedApp: other,
+            storefront: "us"
+        )
+
+        let successful = try context.insertDailyRanking(
+            track: targetUS,
+            rank: 4,
+            resultCount: 50,
+            searchedAt: isoDate("2026-05-05T10:00:00Z"),
+            source: .iTunesFallback,
+            rows: [
+                RankingRow(position: 3, appStoreID: 300, name: "Third"),
+                RankingRow(position: 1, appStoreID: 100, name: "First"),
+                RankingRow(position: 2, appStoreID: 200, name: "Second")
+            ]
+        )
+        let failed = try context.insertDailyRanking(
+            track: targetUS,
+            rank: nil,
+            resultCount: 0,
+            searchedAt: isoDate("2026-05-06T10:00:00Z"),
+            source: .appStoreWeb,
+            errorMessage: "Stored provider timeout"
+        )
+        try context.insertDailyRanking(
+            track: targetGB,
+            rank: 8,
+            resultCount: 25,
+            searchedAt: isoDate("2026-05-06T11:00:00Z")
+        )
+        try context.insertDailyRanking(
+            track: targetIPad,
+            rank: 2,
+            resultCount: 25,
+            searchedAt: isoDate("2026-05-06T12:00:00Z")
+        )
+        try context.insertDailyRanking(
+            track: otherUS,
+            rank: 1,
+            resultCount: 25,
+            searchedAt: isoDate("2026-05-06T13:00:00Z")
+        )
+
+        let page = try await context.service.listKeywordRankingHistory(
+            appStoreID: 123,
+            storefronts: [" US "],
+            platform: "IPHONE",
+            keyword: " focus timer ",
+            trackIdentityKey: " \(targetUS.identityKey.uppercased()) ",
+            queryKey: " \(targetUS.queryKey.uppercased()) ",
+            dateFrom: isoDate("2026-05-05T00:00:00Z"),
+            dateTo: isoDate("2026-05-06T23:59:59Z"),
+            resultLimit: 2,
+            page: OpenASOMCPPageRequest(limit: 10, cursor: nil)
+        )
+
+        #expect(page.total == 2)
+        #expect(page.nextCursor == nil)
+        #expect(page.items.map(\.snapshotKey) == [failed.snapshotKey, successful.snapshotKey])
+        #expect(page.items.allSatisfy { $0.appStoreID == "123" })
+        #expect(page.items.allSatisfy { $0.trackIdentityKey == targetUS.identityKey })
+
+        let failedDTO = try #require(page.items.first)
+        #expect(failedDTO.rank == nil)
+        #expect(failedDTO.resultCount == 0)
+        #expect(failedDTO.errorMessage == "Stored provider timeout")
+        #expect(failedDTO.source == RankingSource.appStoreWeb.rawValue)
+        #expect(failedDTO.rankedAppsAvailableCount == 0)
+        #expect(!failedDTO.rankedAppsTruncated)
+
+        let successfulDTO = try #require(page.items.last)
+        #expect(successfulDTO.rank == 4)
+        #expect(successfulDTO.source == RankingSource.iTunesFallback.rawValue)
+        #expect(successfulDTO.rankedApps.map(\.position) == [1, 2])
+        #expect(successfulDTO.rankedApps.map(\.appStoreID) == ["100", "200"])
+        #expect(successfulDTO.rankedAppsAvailableCount == 3)
+        #expect(successfulDTO.rankedAppsTruncated)
+    }
+
+    @Test
+    func keywordRankingHistoryKeysetPaginationRemainsStableWhenNewerDataIsInserted() async throws {
+        let context = try MCPTestContext()
+        let target = try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer").storeApp
+        let track = try context.insertKeyword("focus timer", trackedApp: target, storefront: "us")
+        let tiedAppStoreWeb = try context.insertDailyRanking(
+            track: track,
+            rank: 1,
+            resultCount: 10,
+            searchedAt: isoDate("2026-05-05T10:00:00Z"),
+            source: .appStoreWeb
+        )
+        let tiedITunes = try context.insertDailyRanking(
+            track: track,
+            rank: 2,
+            resultCount: 10,
+            searchedAt: isoDate("2026-05-05T10:00:00Z"),
+            source: .iTunesFallback
+        )
+        let old = try context.insertDailyRanking(
+            track: track,
+            rank: 3,
+            resultCount: 10,
+            searchedAt: isoDate("2026-05-04T10:00:00Z"),
+            source: .iTunesFallback
+        )
+        let tiedKeys = [tiedAppStoreWeb.snapshotKey, tiedITunes.snapshotKey].sorted()
+
+        let first = try await context.service.listKeywordRankingHistory(
+            appStoreID: 123,
+            resultLimit: 1,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: nil)
+        )
+        #expect(first.items.map(\.snapshotKey) == [tiedKeys[0]])
+        #expect(first.total == 3)
+        let firstCursor = try #require(first.nextCursor)
+
+        let insertedAfterFirstPage = try context.insertDailyRanking(
+            track: track,
+            rank: 4,
+            resultCount: 10,
+            searchedAt: isoDate("2026-05-06T10:00:00Z"),
+            source: .iTunesFallback
+        )
+
+        let second = try await context.service.listKeywordRankingHistory(
+            appStoreID: 123,
+            resultLimit: 1,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: firstCursor)
+        )
+        #expect(second.items.map(\.snapshotKey) == [tiedKeys[1]])
+        #expect(second.total == 4)
+        let secondCursor = try #require(second.nextCursor)
+
+        let third = try await context.service.listKeywordRankingHistory(
+            appStoreID: 123,
+            resultLimit: 1,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: secondCursor)
+        )
+        #expect(third.items.map(\.snapshotKey) == [old.snapshotKey])
+        #expect(third.nextCursor == nil)
+
+        let traversedKeys = first.items.map(\.snapshotKey)
+            + second.items.map(\.snapshotKey)
+            + third.items.map(\.snapshotKey)
+        #expect(Set(traversedKeys).count == 3)
+        #expect(!traversedKeys.contains(insertedAfterFirstPage.snapshotKey))
+    }
+
+    @Test
+    func keywordRankingHistoryBoundsParentAndNestedRowsAcrossReducedPages() async throws {
+        let context = try MCPTestContext()
+        let target = try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer").storeApp
+        try context.insertRankingHistoryBudgetFixtures(
+            trackedApp: target,
+            parentCount: 51,
+            rankedAppCount: 10
+        )
+
+        let first = try await context.service.listKeywordRankingHistory(
+            appStoreID: 123,
+            resultLimit: 10,
+            page: OpenASOMCPPageRequest(limit: 200, cursor: nil)
+        )
+
+        #expect(first.total == 51)
+        #expect(first.items.count == 50)
+        #expect(first.items.allSatisfy { $0.rankedApps.count == 10 })
+        #expect(first.items.reduce(0) { $0 + $1.rankedApps.count } == 500)
+        let cursor = try #require(first.nextCursor)
+
+        let second = try await context.service.listKeywordRankingHistory(
+            appStoreID: 123,
+            resultLimit: 10,
+            page: OpenASOMCPPageRequest(limit: 200, cursor: cursor)
+        )
+        #expect(second.total == 51)
+        #expect(second.items.count == 1)
+        #expect(second.items.first?.rankedApps.count == 10)
+        #expect(second.nextCursor == nil)
+    }
+
+    @Test
+    func keywordRankingResultsOnlyExposeQueriesTrackedByRequestedApp() async throws {
+        let context = try MCPTestContext()
+        let target = try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer").storeApp
+        let other = try context.insertTrackedApp(appStoreID: 999, name: "Private App").storeApp
+        let targetTrack = try context.insertKeyword(
+            "focus timer",
+            trackedApp: target,
+            storefront: "us"
+        )
+        let privateTrack = try context.insertKeyword(
+            "private keyword",
+            trackedApp: other,
+            storefront: "us"
+        )
+        let targetRows = (1...102).reversed().map { position in
+            RankingRow(
+                position: position,
+                appStoreID: Int64(position),
+                name: "Ranked App \(position)"
+            )
+        }
+        let targetCrawl = try context.insertRankingCrawl(
+            keyword: targetTrack.term,
+            query: targetTrack.query,
+            storefront: "us",
+            observedAt: isoDate("2026-05-05T10:15:00Z"),
+            source: .appStoreWeb,
+            resultCount: 88,
+            submissionCount: 3,
+            winningCount: 2,
+            confidence: "high",
+            rows: targetRows
+        )
+        try context.insertRankingCrawl(
+            keyword: privateTrack.term,
+            query: privateTrack.query,
+            storefront: "us",
+            observedAt: isoDate("2026-05-06T10:15:00Z"),
+            rows: [RankingRow(position: 1, appStoreID: 999, name: "Private App")]
+        )
+
+        let page = try await context.service.listKeywordRankingResults(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            keyword: "FOCUS TIMER",
+            trackIdentityKey: targetTrack.identityKey,
+            queryKey: targetTrack.queryKey,
+            dateFrom: isoDate("2026-05-05T00:00:00Z"),
+            dateTo: isoDate("2026-05-05T23:59:59Z"),
+            resultLimit: 2,
+            page: OpenASOMCPPageRequest(limit: 10, cursor: nil)
+        )
+
+        #expect(page.total == 1)
+        let result = try #require(page.items.first)
+        #expect(result.observationKey == targetCrawl.observationKey)
+        #expect(result.queryKey == targetTrack.queryKey)
+        #expect(result.keyword == "focus timer")
+        #expect(result.source == RankingSource.appStoreWeb.rawValue)
+        #expect(result.resultCount == 88)
+        #expect(result.submissionCount == 3)
+        #expect(result.winningCount == 2)
+        #expect(result.confidence == "high")
+        #expect(result.observedHour == KeywordRankingCrawl.utcHourBucket(for: result.observedAt))
+        #expect(result.rankedApps.map(\.position) == [1, 2])
+        #expect(result.rankedApps.map(\.appStoreID) == ["1", "2"])
+        #expect(result.rankedAppsAvailableCount == 102)
+        #expect(result.rankedAppsTruncated)
+        #expect(!page.items.contains { $0.queryKey == privateTrack.queryKey })
+
+        let maximumCappedPage = try await context.service.listKeywordRankingResults(
+            appStoreID: 123,
+            trackIdentityKey: targetTrack.identityKey,
+            resultLimit: 10_000,
+            page: OpenASOMCPPageRequest(limit: 10, cursor: nil)
+        )
+        #expect(maximumCappedPage.items.first?.rankedApps.count == 100)
+        #expect(maximumCappedPage.items.first?.rankedAppsAvailableCount == 102)
+        #expect(maximumCappedPage.items.first?.rankedAppsTruncated == true)
+
+        let otherPage = try await context.service.listKeywordRankingResults(
+            appStoreID: 999,
+            page: OpenASOMCPPageRequest(limit: 10, cursor: nil)
+        )
+        #expect(otherPage.items.map(\.queryKey) == [privateTrack.queryKey])
+    }
+
+    @Test
+    func rankingResultKeysetPaginationRemainsStableWhenNewerDataIsInserted() async throws {
+        let context = try MCPTestContext()
+        let target = try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer").storeApp
+        let track = try context.insertKeyword("focus timer", trackedApp: target, storefront: "us")
+        let tiedAppStoreWeb = try context.insertRankingCrawl(
+            keyword: track.term,
+            query: track.query,
+            storefront: "us",
+            observedAt: isoDate("2026-05-05T10:00:00Z"),
+            source: .appStoreWeb,
+            rows: [RankingRow(position: 1, appStoreID: 100, name: "First")]
+        )
+        let tiedITunes = try context.insertRankingCrawl(
+            keyword: track.term,
+            query: track.query,
+            storefront: "us",
+            observedAt: isoDate("2026-05-05T10:00:00Z"),
+            source: .iTunesFallback,
+            rows: [RankingRow(position: 1, appStoreID: 200, name: "Second")]
+        )
+        let old = try context.insertRankingCrawl(
+            keyword: track.term,
+            query: track.query,
+            storefront: "us",
+            observedAt: isoDate("2026-05-04T10:00:00Z"),
+            source: .iTunesFallback,
+            rows: [RankingRow(position: 1, appStoreID: 300, name: "Old")]
+        )
+        let tiedKeys = [tiedAppStoreWeb.observationKey, tiedITunes.observationKey].sorted()
+
+        let first = try await context.service.listKeywordRankingResults(
+            appStoreID: 123,
+            resultLimit: 1,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: nil)
+        )
+        #expect(first.items.map(\.observationKey) == [tiedKeys[0]])
+        #expect(first.total == 3)
+        let firstCursor = try #require(first.nextCursor)
+
+        let insertedAfterFirstPage = try context.insertRankingCrawl(
+            keyword: track.term,
+            query: track.query,
+            storefront: "us",
+            observedAt: isoDate("2026-05-06T10:00:00Z"),
+            source: .iTunesFallback,
+            rows: [RankingRow(position: 1, appStoreID: 400, name: "New")]
+        )
+
+        let second = try await context.service.listKeywordRankingResults(
+            appStoreID: 123,
+            resultLimit: 1,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: firstCursor)
+        )
+        #expect(second.items.map(\.observationKey) == [tiedKeys[1]])
+        #expect(second.total == 4)
+        let secondCursor = try #require(second.nextCursor)
+
+        let third = try await context.service.listKeywordRankingResults(
+            appStoreID: 123,
+            resultLimit: 1,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: secondCursor)
+        )
+        #expect(third.items.map(\.observationKey) == [old.observationKey])
+        #expect(third.nextCursor == nil)
+
+        let traversedKeys = first.items.map(\.observationKey)
+            + second.items.map(\.observationKey)
+            + third.items.map(\.observationKey)
+        #expect(Set(traversedKeys).count == 3)
+        #expect(!traversedKeys.contains(insertedAfterFirstPage.observationKey))
+    }
+
+    @Test
+    func ratingHistoryIsAppScopedFilteredAndKeysetPaginated() async throws {
+        let context = try MCPTestContext()
+        let target = try context.insertStoreApp(appStoreID: 123, name: "Focus Timer")
+        let other = try context.insertStoreApp(appStoreID: 999, name: "Other Timer")
+        let tiedGB = try context.insertRatingSnapshot(
+            for: target,
+            storefront: "gb",
+            ratingDate: "2026-05-05",
+            observedAt: isoDate("2026-05-05T10:00:00Z"),
+            ratingCount: 80,
+            averageRating: 4.1
+        )
+        let tiedUS = try context.insertRatingSnapshot(
+            for: target,
+            storefront: "us",
+            ratingDate: "2026-05-05",
+            observedAt: isoDate("2026-05-05T10:00:00Z"),
+            ratingCount: 100,
+            averageRating: 4.6,
+            oneStarRatingCount: 1,
+            twoStarRatingCount: 2,
+            threeStarRatingCount: 3,
+            fourStarRatingCount: 14,
+            fiveStarRatingCount: 80,
+            submissionCount: 4,
+            winningCount: 3,
+            confidence: "medium",
+            source: .iTunesSearch
+        )
+        let oldUS = try context.insertRatingSnapshot(
+            for: target,
+            storefront: "us",
+            ratingDate: "2026-05-04",
+            observedAt: isoDate("2026-05-04T10:00:00Z"),
+            ratingCount: 90,
+            averageRating: 4.5
+        )
+        try context.insertRatingSnapshot(
+            for: other,
+            storefront: "us",
+            ratingDate: "2026-05-06",
+            observedAt: isoDate("2026-05-06T10:00:00Z"),
+            ratingCount: 500,
+            averageRating: 5
+        )
+        let tiedKeys = [tiedGB.identityKey, tiedUS.identityKey].sorted()
+
+        let first = try await context.service.listRatingHistory(
+            appStoreID: 123,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: nil)
+        )
+        #expect(first.items.map(\.identityKey) == [tiedKeys[0]])
+        #expect(first.total == 3)
+        let firstCursor = try #require(first.nextCursor)
+
+        let insertedAfterFirstPage = try context.insertRatingSnapshot(
+            for: target,
+            storefront: "us",
+            ratingDate: "2026-05-06",
+            observedAt: isoDate("2026-05-06T10:00:00Z"),
+            ratingCount: 110,
+            averageRating: 4.7
+        )
+        let second = try await context.service.listRatingHistory(
+            appStoreID: 123,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: firstCursor)
+        )
+        #expect(second.items.map(\.identityKey) == [tiedKeys[1]])
+        let secondCursor = try #require(second.nextCursor)
+        let third = try await context.service.listRatingHistory(
+            appStoreID: 123,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: secondCursor)
+        )
+        #expect(third.items.map(\.identityKey) == [oldUS.identityKey])
+        #expect(third.nextCursor == nil)
+        #expect(![first, second, third].flatMap(\.items).contains {
+            $0.identityKey == insertedAfterFirstPage.identityKey
+        })
+
+        let filtered = try await context.service.listRatingHistory(
+            appStoreID: 123,
+            storefronts: [" US "],
+            dateFrom: isoDate("2026-05-05T00:00:00Z"),
+            dateTo: isoDate("2026-05-05T23:59:59Z"),
+            page: OpenASOMCPPageRequest(limit: 10, cursor: nil)
+        )
+        #expect(filtered.total == 1)
+        let rating = try #require(filtered.items.first)
+        #expect(rating.identityKey == tiedUS.identityKey)
+        #expect(rating.appStoreID == "123")
+        #expect(rating.storefront == "us")
+        #expect(rating.ratingDate == "2026-05-05")
+        #expect(rating.ratingCount == 100)
+        #expect(rating.averageRating == 4.6)
+        #expect(rating.oneStarRatingCount == 1)
+        #expect(rating.twoStarRatingCount == 2)
+        #expect(rating.threeStarRatingCount == 3)
+        #expect(rating.fourStarRatingCount == 14)
+        #expect(rating.fiveStarRatingCount == 80)
+        #expect(rating.submissionCount == 4)
+        #expect(rating.winningCount == 3)
+        #expect(rating.confidence == "medium")
+        #expect(rating.source == AppStorefrontSource.iTunesSearch.rawValue)
+    }
+
+    @Test
+    func historyToolsRejectMalformedCrossToolAndScopeMismatchedCursors() async throws {
+        let context = try MCPTestContext()
+        let target = try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer").storeApp
+        let track = try context.insertKeyword("focus timer", trackedApp: target, storefront: "us")
+        try context.insertDailyRanking(
+            track: track,
+            rank: 1,
+            resultCount: 10,
+            searchedAt: isoDate("2026-05-06T10:00:00Z")
+        )
+        try context.insertDailyRanking(
+            track: track,
+            rank: 2,
+            resultCount: 10,
+            searchedAt: isoDate("2026-05-05T10:00:00Z")
+        )
+        try context.insertRankingCrawl(
+            keyword: track.term,
+            query: track.query,
+            storefront: "us",
+            observedAt: isoDate("2026-05-06T10:00:00Z"),
+            rows: [RankingRow(position: 1, appStoreID: 123, name: "Focus Timer")]
+        )
+
+        let first = try await context.service.listKeywordRankingHistory(
+            appStoreID: 123,
+            resultLimit: 2,
+            page: OpenASOMCPPageRequest(limit: 1, cursor: nil)
+        )
+        let historyCursor = try #require(first.nextCursor)
+
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingHistory(
+                appStoreID: 123,
+                page: OpenASOMCPPageRequest(limit: 1, cursor: "not-a-history-cursor")
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingResults(
+                appStoreID: 123,
+                resultLimit: 2,
+                page: OpenASOMCPPageRequest(limit: 1, cursor: historyCursor)
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingHistory(
+                appStoreID: 123,
+                storefronts: ["gb"],
+                resultLimit: 2,
+                page: OpenASOMCPPageRequest(limit: 1, cursor: historyCursor)
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingHistory(
+                appStoreID: 123,
+                resultLimit: 3,
+                page: OpenASOMCPPageRequest(limit: 1, cursor: historyCursor)
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingHistory(
+                appStoreID: 123,
+                trackIdentityKey: "   "
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingResults(
+                appStoreID: 123,
+                queryKey: "\n\t"
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingHistory(
+                appStoreID: 123,
+                dateFrom: isoDate("2026-05-07T00:00:00Z"),
+                dateTo: isoDate("2026-05-06T00:00:00Z")
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingResults(
+                appStoreID: 123,
+                dateFrom: isoDate("2026-05-07T00:00:00Z"),
+                dateTo: isoDate("2026-05-06T00:00:00Z")
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listRatingHistory(
+                appStoreID: 123,
+                dateFrom: isoDate("2026-05-07T00:00:00Z"),
+                dateTo: isoDate("2026-05-06T00:00:00Z")
+            )
+        }
+    }
+
+    @Test
+    func historyToolsRejectOversizedCursorAndFilterInputs() async throws {
+        let context = try MCPTestContext()
+        let oversizedCursor = String(repeating: "a", count: 4_097)
+        let tooManyStorefronts = Array(
+            repeating: "us",
+            count: OpenASOMCPValidation.maximumStorefrontCount + 1
+        )
+        let oversizedStorefront = String(
+            repeating: "s",
+            count: OpenASOMCPValidation.maximumStorefrontLength + 1
+        )
+        let oversizedKeyword = String(
+            repeating: "k",
+            count: OpenASOMCPValidation.maximumHistoryKeywordLength + 1
+        )
+        let oversizedKey = String(
+            repeating: "q",
+            count: OpenASOMCPValidation.maximumHistoryKeyLength + 1
+        )
+
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listRatingHistory(
+                appStoreID: 123,
+                page: OpenASOMCPPageRequest(limit: 1, cursor: oversizedCursor)
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listRatingHistory(
+                appStoreID: 123,
+                storefronts: tooManyStorefronts
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listRatingHistory(
+                appStoreID: 123,
+                storefronts: [oversizedStorefront]
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingHistory(
+                appStoreID: 123,
+                keyword: oversizedKeyword
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingHistory(
+                appStoreID: 123,
+                trackIdentityKey: oversizedKey
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.listKeywordRankingResults(
+                appStoreID: 123,
+                queryKey: oversizedKey
+            )
+        }
+    }
+
+    @Test
     func validationRejectsUnsafeWebsiteURLsAndCapsPagination() throws {
         #expect(throws: OpenASOError.self) {
             _ = try OpenASOMCPValidation.webURL("file:///tmp/secret")
@@ -1562,11 +2188,16 @@ private struct MCPTestContext {
     }
 
     @discardableResult
-    func insertKeyword(_ term: String, trackedApp: StoreApp, storefront: String) throws -> TrackedAppKeyword {
+    func insertKeyword(
+        _ term: String,
+        trackedApp: StoreApp,
+        storefront: String,
+        platform: AppPlatform = .iphone
+    ) throws -> TrackedAppKeyword {
         let query = try KeywordQuery.fetchOrInsert(
             term: term,
             storefront: storefront,
-            platform: .iphone,
+            platform: platform,
             in: modelContext
         )
         let appStoreID = trackedApp.appStoreID
@@ -1578,7 +2209,7 @@ private struct MCPTestContext {
         let track = TrackedAppKeyword(
             term: term,
             storefront: storefront,
-            platform: .iphone,
+            platform: platform,
             trackedApp: trackedAppModel,
             query: query
         )
@@ -1588,54 +2219,182 @@ private struct MCPTestContext {
         return track
     }
 
+    func insertRankingHistoryBudgetFixtures(
+        trackedApp: StoreApp,
+        parentCount: Int,
+        rankedAppCount: Int
+    ) throws {
+        let appStoreID = trackedApp.appStoreID
+        let trackedAppModel = try modelContext.fetch(FetchDescriptor<TrackedApp>(
+            predicate: #Predicate { app in
+                app.appStoreID == appStoreID
+            }
+        )).first!
+        let searchedAt = isoDate("2026-05-05T10:00:00Z")
+
+        for parentIndex in 0..<parentCount {
+            let term = "budget keyword \(parentIndex)"
+            let query = KeywordQuery(term: term, storefront: "us", platform: .iphone)
+            let track = TrackedAppKeyword(
+                term: term,
+                storefront: "us",
+                platform: .iphone,
+                trackedApp: trackedAppModel,
+                query: query
+            )
+            let snapshot = TrackedKeywordDailyRanking(
+                rank: parentIndex + 1,
+                searchedAt: searchedAt,
+                source: .iTunesFallback,
+                resultCount: rankedAppCount,
+                keywordTrack: track
+            )
+
+            trackedAppModel.keywordTracks.append(track)
+            track.snapshots.append(snapshot)
+            modelContext.insert(query)
+            modelContext.insert(track)
+            modelContext.insert(snapshot)
+
+            for rankedAppIndex in 0..<rankedAppCount {
+                let position = rankedAppIndex + 1
+                let rankedAppStoreID = Int64((parentIndex + 1) * 1_000 + position)
+                let result = TrackedKeywordRankedResult(
+                    position: position,
+                    appStoreID: rankedAppStoreID,
+                    bundleID: "com.example.\(rankedAppStoreID)",
+                    name: "Ranked App \(rankedAppStoreID)",
+                    sellerName: "Example Seller",
+                    snapshot: snapshot
+                )
+                snapshot.topResults.append(result)
+                modelContext.insert(result)
+            }
+        }
+
+        try modelContext.save()
+    }
+
+    @discardableResult
     func insertRankingCrawl(
         keyword: String,
         query: KeywordQuery,
         storefront: String,
         observedAt: Date,
+        platform: AppPlatform = .iphone,
+        source: RankingSource = .iTunesFallback,
+        resultCount: Int? = nil,
+        submissionCount: Int = 1,
+        winningCount: Int = 1,
+        confidence: String? = nil,
         rows: [RankingRow]
-    ) throws {
+    ) throws -> KeywordRankingCrawl {
         let crawl = KeywordRankingCrawl(
             keyword: keyword,
             storefront: storefront,
-            platform: .iphone,
+            platform: platform,
             observedAt: observedAt,
-            source: .iTunesFallback,
-            resultCount: rows.count,
-            query: query
+            source: source,
+            resultCount: resultCount ?? rows.count,
+            query: query,
+            submissionCount: submissionCount,
+            winningCount: winningCount,
+            confidence: confidence
         )
         modelContext.insert(crawl)
         for row in rows {
             let ranking = KeywordAppRanking(
                 position: row.position,
                 appStoreID: row.appStoreID,
-                bundleID: "com.example.\(row.appStoreID)",
+                bundleID: row.bundleID ?? "com.example.\(row.appStoreID)",
                 name: row.name,
-                sellerName: nil,
+                subtitle: row.subtitle,
+                sellerName: row.sellerName,
                 observation: crawl
             )
             crawl.items.append(ranking)
             modelContext.insert(ranking)
         }
         try modelContext.save()
+        return crawl
     }
 
+    @discardableResult
     func insertDailyRanking(
         track: TrackedAppKeyword,
         rank: Int?,
         resultCount: Int,
-        searchedAt: Date = isoDate("2026-05-01T10:00:00Z")
-    ) throws {
+        searchedAt: Date = isoDate("2026-05-01T10:00:00Z"),
+        source: RankingSource = .iTunesFallback,
+        errorMessage: String? = nil,
+        rows: [RankingRow] = []
+    ) throws -> TrackedKeywordDailyRanking {
         let snapshot = TrackedKeywordDailyRanking(
             rank: rank,
             searchedAt: searchedAt,
-            source: .iTunesFallback,
+            source: source,
             resultCount: resultCount,
+            errorMessage: errorMessage,
             keywordTrack: track
         )
         track.snapshots.append(snapshot)
         modelContext.insert(snapshot)
+        for row in rows {
+            let result = TrackedKeywordRankedResult(
+                position: row.position,
+                appStoreID: row.appStoreID,
+                bundleID: row.bundleID ?? "com.example.\(row.appStoreID)",
+                name: row.name,
+                subtitle: row.subtitle,
+                sellerName: row.sellerName,
+                snapshot: snapshot
+            )
+            snapshot.topResults.append(result)
+            modelContext.insert(result)
+        }
         try modelContext.save()
+        return snapshot
+    }
+
+    @discardableResult
+    func insertRatingSnapshot(
+        for storeApp: StoreApp,
+        storefront: String,
+        ratingDate: String,
+        observedAt: Date,
+        ratingCount: Int?,
+        averageRating: Double?,
+        oneStarRatingCount: Int? = nil,
+        twoStarRatingCount: Int? = nil,
+        threeStarRatingCount: Int? = nil,
+        fourStarRatingCount: Int? = nil,
+        fiveStarRatingCount: Int? = nil,
+        submissionCount: Int = 1,
+        winningCount: Int = 1,
+        confidence: String? = nil,
+        source: AppStorefrontSource = .appStorePage
+    ) throws -> AppDailyRating {
+        let rating = AppDailyRating(
+            appStoreID: storeApp.appStoreID,
+            storefront: storefront,
+            ratingCount: ratingCount,
+            averageRating: averageRating,
+            oneStarRatingCount: oneStarRatingCount,
+            twoStarRatingCount: twoStarRatingCount,
+            threeStarRatingCount: threeStarRatingCount,
+            fourStarRatingCount: fourStarRatingCount,
+            fiveStarRatingCount: fiveStarRatingCount,
+            ratingDate: ratingDate,
+            observedAt: observedAt,
+            submissionCount: submissionCount,
+            winningCount: winningCount,
+            confidence: confidence,
+            source: source,
+            storeApp: storeApp
+        )
+        modelContext.insert(rating)
+        try modelContext.save()
+        return rating
     }
 }
 
@@ -1720,6 +2479,25 @@ private struct RankingRow {
     let position: Int
     let appStoreID: Int64
     let name: String
+    let bundleID: String?
+    let subtitle: String?
+    let sellerName: String?
+
+    init(
+        position: Int,
+        appStoreID: Int64,
+        name: String,
+        bundleID: String? = nil,
+        subtitle: String? = nil,
+        sellerName: String? = nil
+    ) {
+        self.position = position
+        self.appStoreID = appStoreID
+        self.name = name
+        self.bundleID = bundleID
+        self.subtitle = subtitle
+        self.sellerName = sellerName
+    }
 }
 
 @MainActor

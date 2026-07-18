@@ -95,6 +95,228 @@ struct OpenASOMCPServerTests {
     }
 
     @Test
+    func historyToolsAreReadOnlyAndReturnFilteredAndSeededPages() async throws {
+        let context = try ServerTestContext()
+        try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer")
+        let fixtures = try context.insertHistoryFixtures(appStoreID: 123)
+        let server = await OpenASOMCPServerFactory(service: context.service).makeServer()
+        let client = Client(name: "OpenASO MCP History Test Client", version: "1.0")
+        let transports = await InMemoryTransport.createConnectedPair()
+
+        try await server.start(transport: transports.server)
+        defer {
+            Task {
+                await client.disconnect()
+                await server.stop()
+            }
+        }
+
+        _ = try await client.connect(transport: transports.client)
+        let tools = try await client.listTools().tools
+        let historyToolNames = [
+            "list_keyword_ranking_history",
+            "list_keyword_ranking_results",
+            "list_rating_history",
+        ]
+        for name in historyToolNames {
+            let tool = try #require(tools.first { $0.name == name })
+            #expect(tool.annotations.readOnlyHint == true)
+        }
+
+        let rankingHistoryResult = try await client.callTool(
+            name: "list_keyword_ranking_history",
+            arguments: [
+                "appStoreID": 123,
+                "storefronts": ["us"],
+                "platform": "iphone",
+                "keyword": "focus timer",
+                "track_identity_key": "123|us|iphone|focus timer",
+                "query_key": "us|iphone|focus timer",
+                "date_from": "2026-05-01T00:00:00Z",
+                "date_to": "2026-05-07T12:00:00Z",
+                "result_limit": 5,
+                "limit": 2,
+            ]
+        )
+        #expect(rankingHistoryResult.isError == nil)
+        let rankingHistoryJSON = try #require(rankingHistoryResult.content.first?.textValue)
+        let rankingHistoryPage = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPPage<OpenASOMCPTrackedRankingSnapshot>.self,
+            from: Data(rankingHistoryJSON.utf8)
+        )
+        #expect(rankingHistoryPage.items.isEmpty)
+        #expect(rankingHistoryPage.nextCursor == nil)
+        #expect(rankingHistoryPage.total == 0)
+
+        let rankingResultsResult = try await client.callTool(
+            name: "list_keyword_ranking_results",
+            arguments: [
+                "appStoreID": 123,
+                "storefronts": ["gb"],
+                "platform": "ipad",
+                "keyword": "productivity timer",
+                "track_identity_key": "123|gb|ipad|productivity timer",
+                "query_key": "gb|ipad|productivity timer",
+                "date_from": "2026-04-01T00:00:00.000Z",
+                "date_to": "2026-05-07T12:00:00.000Z",
+                "result_limit": 10,
+                "limit": 3,
+            ]
+        )
+        #expect(rankingResultsResult.isError == nil)
+        let rankingResultsJSON = try #require(rankingResultsResult.content.first?.textValue)
+        let rankingResultsPage = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPPage<OpenASOMCPRankingCrawlSnapshot>.self,
+            from: Data(rankingResultsJSON.utf8)
+        )
+        #expect(rankingResultsPage.items.isEmpty)
+        #expect(rankingResultsPage.nextCursor == nil)
+        #expect(rankingResultsPage.total == 0)
+
+        let ratingHistoryResult = try await client.callTool(
+            name: "list_rating_history",
+            arguments: [
+                "appStoreID": 123,
+                "storefronts": ["ca"],
+                "date_from": "2026-01-01T00:00:00Z",
+                "date_to": "2026-05-07T12:00:00Z",
+                "limit": 4,
+            ]
+        )
+        #expect(ratingHistoryResult.isError == nil)
+        let ratingHistoryJSON = try #require(ratingHistoryResult.content.first?.textValue)
+        let ratingHistoryPage = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPPage<OpenASOMCPRatingSnapshot>.self,
+            from: Data(ratingHistoryJSON.utf8)
+        )
+        #expect(ratingHistoryPage.items.isEmpty)
+        #expect(ratingHistoryPage.nextCursor == nil)
+        #expect(ratingHistoryPage.total == 0)
+
+        let firstRankingHistoryResult = try await client.callTool(
+            name: "list_keyword_ranking_history",
+            arguments: [
+                "appStoreID": .int(123),
+                "track_identity_key": .string(fixtures.trackIdentityKey),
+                "query_key": .string(fixtures.queryKey),
+                "result_limit": .int(1),
+                "limit": .int(1),
+            ]
+        )
+        #expect(firstRankingHistoryResult.isError == nil)
+        let firstRankingHistoryJSON = try #require(firstRankingHistoryResult.content.first?.textValue)
+        let firstRankingHistoryPage = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPPage<OpenASOMCPTrackedRankingSnapshot>.self,
+            from: Data(firstRankingHistoryJSON.utf8)
+        )
+        #expect(firstRankingHistoryPage.items.map { $0.snapshotKey } == [fixtures.rankingSnapshotKeys[0]])
+        #expect(firstRankingHistoryPage.items.first?.rankedApps.map { $0.appStoreID } == ["321"])
+        #expect(firstRankingHistoryPage.total == 2)
+        let rankingHistoryCursor = try #require(firstRankingHistoryPage.nextCursor)
+
+        let secondRankingHistoryResult = try await client.callTool(
+            name: "list_keyword_ranking_history",
+            arguments: [
+                "appStoreID": .int(123),
+                "track_identity_key": .string(fixtures.trackIdentityKey),
+                "query_key": .string(fixtures.queryKey),
+                "result_limit": .int(1),
+                "limit": .int(1),
+                "cursor": .string(rankingHistoryCursor),
+            ]
+        )
+        #expect(secondRankingHistoryResult.isError == nil)
+        let secondRankingHistoryJSON = try #require(secondRankingHistoryResult.content.first?.textValue)
+        let secondRankingHistoryPage = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPPage<OpenASOMCPTrackedRankingSnapshot>.self,
+            from: Data(secondRankingHistoryJSON.utf8)
+        )
+        #expect(secondRankingHistoryPage.items.map { $0.snapshotKey } == [fixtures.rankingSnapshotKeys[1]])
+        #expect(secondRankingHistoryPage.nextCursor == nil)
+
+        let positiveRankingResultsResult = try await client.callTool(
+            name: "list_keyword_ranking_results",
+            arguments: [
+                "appStoreID": .int(123),
+                "query_key": .string(fixtures.queryKey),
+                "result_limit": .int(1),
+                "limit": .int(10),
+            ]
+        )
+        #expect(positiveRankingResultsResult.isError == nil)
+        let positiveRankingResultsJSON = try #require(positiveRankingResultsResult.content.first?.textValue)
+        let positiveRankingResultsPage = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPPage<OpenASOMCPRankingCrawlSnapshot>.self,
+            from: Data(positiveRankingResultsJSON.utf8)
+        )
+        #expect(positiveRankingResultsPage.items.map { $0.observationKey } == [fixtures.rankingCrawlKey])
+        #expect(positiveRankingResultsPage.items.first?.rankedApps.map { $0.appStoreID } == ["456"])
+
+        let positiveRatingHistoryResult = try await client.callTool(
+            name: "list_rating_history",
+            arguments: [
+                "appStoreID": .int(123),
+                "storefronts": .array([.string("us")]),
+                "limit": .int(10),
+            ]
+        )
+        #expect(positiveRatingHistoryResult.isError == nil)
+        let positiveRatingHistoryJSON = try #require(positiveRatingHistoryResult.content.first?.textValue)
+        let positiveRatingHistoryPage = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPPage<OpenASOMCPRatingSnapshot>.self,
+            from: Data(positiveRatingHistoryJSON.utf8)
+        )
+        #expect(positiveRatingHistoryPage.items.map { $0.identityKey } == [fixtures.ratingIdentityKey])
+        #expect(positiveRatingHistoryPage.items.first?.ratingCount == 42)
+    }
+
+    @Test
+    func historyDispatchRejectsPresentWrongTypedOptionalArguments() async throws {
+        let context = try ServerTestContext()
+        try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer")
+        let server = await OpenASOMCPServerFactory(service: context.service).makeServer()
+        let client = Client(name: "OpenASO MCP History Validation Client", version: "1.0")
+        let transports = await InMemoryTransport.createConnectedPair()
+
+        try await server.start(transport: transports.server)
+        defer {
+            Task {
+                await client.disconnect()
+                await server.stop()
+            }
+        }
+
+        _ = try await client.connect(transport: transports.client)
+        let invalidCalls: [(tool: String, arguments: [String: MCP.Value])] = [
+            (
+                "list_keyword_ranking_history",
+                ["appStoreID": 123, "platform": .int(7)]
+            ),
+            (
+                "list_keyword_ranking_results",
+                ["appStoreID": 123, "result_limit": .string("10")]
+            ),
+            (
+                "list_rating_history",
+                ["appStoreID": 123, "storefronts": .array([.string("us"), .int(7)])]
+            ),
+            (
+                "list_rating_history",
+                ["appStoreID": 123, "date_from": .int(0)]
+            ),
+        ]
+
+        for invalidCall in invalidCalls {
+            await #expect(throws: MCPError.self) {
+                _ = try await client.callTool(
+                    name: invalidCall.tool,
+                    arguments: invalidCall.arguments
+                )
+            }
+        }
+    }
+
+    @Test
     func controllerStartsLocalHTTPServerAndReturnsInitializeResponse() async throws {
         let context = try ServerTestContext()
         try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer")
@@ -308,6 +530,109 @@ private struct ServerTestContext {
         modelContext.insert(trackedApp)
         try modelContext.save()
     }
+
+    func insertHistoryFixtures(appStoreID: Int64) throws -> ServerHistoryFixtures {
+        let trackedApp = try #require(modelContext.fetch(FetchDescriptor<TrackedApp>(
+            predicate: #Predicate { app in
+                app.appStoreID == appStoreID
+            }
+        )).first)
+        let query = try KeywordQuery.fetchOrInsert(
+            term: "focus timer",
+            storefront: "us",
+            platform: .iphone,
+            in: modelContext
+        )
+        let track = TrackedAppKeyword(
+            term: "focus timer",
+            storefront: "us",
+            platform: .iphone,
+            trackedApp: trackedApp,
+            query: query
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(track)
+
+        let newerSnapshot = TrackedKeywordDailyRanking(
+            rank: 3,
+            searchedAt: ISO8601DateFormatter().date(from: "2026-05-06T10:00:00Z")!,
+            source: .appStoreWeb,
+            resultCount: 20,
+            keywordTrack: track
+        )
+        let newerResult = TrackedKeywordRankedResult(
+            position: 1,
+            appStoreID: 321,
+            bundleID: "com.example.321",
+            name: "Ranked App",
+            sellerName: "Example Seller",
+            snapshot: newerSnapshot
+        )
+        newerSnapshot.topResults.append(newerResult)
+        track.snapshots.append(newerSnapshot)
+        modelContext.insert(newerSnapshot)
+        modelContext.insert(newerResult)
+
+        let olderSnapshot = TrackedKeywordDailyRanking(
+            rank: 5,
+            searchedAt: ISO8601DateFormatter().date(from: "2026-05-05T10:00:00Z")!,
+            source: .iTunesFallback,
+            resultCount: 20,
+            keywordTrack: track
+        )
+        track.snapshots.append(olderSnapshot)
+        modelContext.insert(olderSnapshot)
+
+        let crawl = KeywordRankingCrawl(
+            keyword: track.term,
+            storefront: track.storefront,
+            platform: track.platform,
+            observedAt: ISO8601DateFormatter().date(from: "2026-05-06T11:00:00Z")!,
+            source: .appStoreWeb,
+            resultCount: 1,
+            query: query
+        )
+        let crawlItem = KeywordAppRanking(
+            position: 1,
+            appStoreID: 456,
+            bundleID: "com.example.456",
+            name: "Crawl App",
+            sellerName: "Example Seller",
+            observation: crawl
+        )
+        crawl.items.append(crawlItem)
+        modelContext.insert(crawl)
+        modelContext.insert(crawlItem)
+
+        let rating = AppDailyRating(
+            appStoreID: appStoreID,
+            storefront: "us",
+            ratingCount: 42,
+            averageRating: 4.5,
+            ratingDate: "2026-05-06",
+            observedAt: ISO8601DateFormatter().date(from: "2026-05-06T12:00:00Z")!,
+            source: .appStorePage,
+            storeApp: trackedApp.storeApp
+        )
+        modelContext.insert(rating)
+        try modelContext.save()
+
+        return ServerHistoryFixtures(
+            trackIdentityKey: track.identityKey,
+            queryKey: track.queryKey,
+            rankingSnapshotKeys: [newerSnapshot.snapshotKey, olderSnapshot.snapshotKey],
+            rankingCrawlKey: crawl.observationKey,
+            ratingIdentityKey: rating.identityKey
+        )
+    }
+}
+
+private struct ServerHistoryFixtures {
+    let trackIdentityKey: String
+    let queryKey: String
+    let rankingSnapshotKeys: [String]
+    let rankingCrawlKey: String
+    let ratingIdentityKey: String
 }
 
 private struct ServerStubAppResolver: AppResolver {
