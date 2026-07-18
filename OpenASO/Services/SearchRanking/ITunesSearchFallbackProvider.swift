@@ -8,18 +8,19 @@ final class ITunesSearchFallbackProvider: SearchRankingProvider {
     }
 
     func search(keyword: String, storefrontCode: String, platform: AppPlatform, limit: Int) async throws -> SearchRankingPage {
-        let trimmedKeyword = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKeyword.isEmpty else {
-            throw OpenASOError.emptyQuery
-        }
-        let cappedLimit = min(max(1, limit), SearchRankingCrawl.fullKeywordRankingLimit)
+        let validatedRequest = try SearchRankingRequestValidator.validate(
+            keyword: keyword,
+            storefrontCode: storefrontCode,
+            platform: platform,
+            limit: limit
+        )
 
         var components = URLComponents(string: "https://itunes.apple.com/search")!
         components.queryItems = [
-            URLQueryItem(name: "term", value: trimmedKeyword),
-            URLQueryItem(name: "entity", value: "software"),
-            URLQueryItem(name: "country", value: storefrontCode.lowercased()),
-            URLQueryItem(name: "limit", value: String(cappedLimit))
+            URLQueryItem(name: "term", value: validatedRequest.keyword),
+            URLQueryItem(name: "entity", value: Self.entity(for: validatedRequest.platform)),
+            URLQueryItem(name: "country", value: validatedRequest.storefrontCode),
+            URLQueryItem(name: "limit", value: String(validatedRequest.limit))
         ]
 
         var request = URLRequest(url: components.url!)
@@ -52,11 +53,22 @@ final class ITunesSearchFallbackProvider: SearchRankingProvider {
                 appletvScreenshotURLs: payload.appletvScreenshotUrls ?? [],
                 ratingCount: payload.userRatingCount,
                 averageRating: payload.averageUserRating,
-                platform: platform
+                platform: validatedRequest.platform
             )
         }
 
         return SearchRankingPage(items: items, source: .iTunesFallback)
+    }
+
+    private static func entity(for platform: AppPlatform) -> String {
+        switch platform {
+        case .iphone:
+            "software"
+        case .ipad:
+            "iPadSoftware"
+        case .mac:
+            "macSoftware"
+        }
     }
 
     private static let decoder: JSONDecoder = {

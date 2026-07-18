@@ -86,6 +86,9 @@
 		A0D71B4C0000000000000017 /* KeywordRankingChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000018 /* KeywordRankingChartView.swift */; };
 		A0D71B4C0000000000000019 /* AppDetailPreviewFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C000000000000001A /* AppDetailPreviewFixtures.swift */; };
 		A0D71B4C000000000000001B /* AppDetailCSVTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C000000000000001C /* AppDetailCSVTransfer.swift */; };
+		A19000000000000000000001 /* SearchRanking/AppStoreWebRankingProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19000000000000000000011 /* SearchRanking/AppStoreWebRankingProvider.swift */; };
+		A19000000000000000000002 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19000000000000000000012 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift */; };
+		A19000000000000000000003 /* AppStoreWebRankingProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19000000000000000000013 /* AppStoreWebRankingProviderTests.swift */; };
 		A10000000000000000000002 /* OpenASOSchemaV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* OpenASOSchemaV1.swift */; };
 		A20000000000000000000001 /* KeywordTableCells.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* KeywordTableCells.swift */; };
 		A20000000000000000000002 /* KeywordNotesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* KeywordNotesSheet.swift */; };
@@ -293,6 +296,9 @@
 		A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/ScreenshotDownloadService.swift; sourceTree = "<group>"; };
 		A0BEEF000000000000000013 /* Storefront/ScreenshotDownloadProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/ScreenshotDownloadProgressStore.swift; sourceTree = "<group>"; };
 		A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotDownloadServiceTests.swift; sourceTree = "<group>"; };
+		A19000000000000000000011 /* SearchRanking/AppStoreWebRankingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/AppStoreWebRankingProvider.swift; sourceTree = "<group>"; };
+		A19000000000000000000012 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/PrimaryFallbackSearchRankingProvider.swift; sourceTree = "<group>"; };
+		A19000000000000000000013 /* AppStoreWebRankingProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreWebRankingProviderTests.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000001 /* AppDetailToolbarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailToolbarViews.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000003 /* AppRatingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRatingsView.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000007 /* AppDetailSupportTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailSupportTypes.swift; sourceTree = "<group>"; };
@@ -445,6 +451,7 @@
 				0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */,
 				0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */,
 				0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */,
+				A19000000000000000000013 /* AppStoreWebRankingProviderTests.swift */,
 				0A1B2C3D4E5F67890123450E /* AppStorefrontRatingServiceTests.swift */,
 				C5A400000000000000000004 /* CSVFormatsTests.swift */,
 				B16D1F1F736DDAB911B87E77 /* DefaultAppResolverTests.swift */,
@@ -525,6 +532,8 @@
 				F008A0000000000000000011 /* Networking/ProviderRequestGate.swift */,
 				F008B0000000000000000011 /* Networking/ProviderHTTPClientPipeline.swift */,
 				DEB53B31A2B107CEE141F744 /* SearchRanking/ITunesSearchFallbackProvider.swift */,
+				A19000000000000000000011 /* SearchRanking/AppStoreWebRankingProvider.swift */,
+				A19000000000000000000012 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift */,
 				5C5530D41B3742698F02134C /* Credentials/KeychainService.swift */,
 				C0DEFACE0000000000000101 /* MCP/OpenASOMCPDTOs.swift */,
 				C0DEFACE0000000000000103 /* MCP/OpenASOMCPService.swift */,
@@ -945,6 +954,8 @@
 				F008A0000000000000000001 /* Networking/ProviderRequestGate.swift in Sources */,
 				F008B0000000000000000001 /* Networking/ProviderHTTPClientPipeline.swift in Sources */,
 				AB171C45C65C542EFCD3CEBD /* SearchRanking/ITunesSearchFallbackProvider.swift in Sources */,
+				A19000000000000000000001 /* SearchRanking/AppStoreWebRankingProvider.swift in Sources */,
+				A19000000000000000000002 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift in Sources */,
 				6C612150F69149F0A3F988EE /* Credentials/KeychainService.swift in Sources */,
 				A0D71B4C0000000000000011 /* SearchRanking/KeywordInsightsService.swift in Sources */,
 				A0D71B4C000000000000000F /* KeywordInsightsTypes.swift in Sources */,
@@ -1041,6 +1052,7 @@
 				05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */,
 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
 				0A5C00000000000000000007 /* AppStoreWebMetadataProviderTests.swift in Sources */,
+				A19000000000000000000003 /* AppStoreWebRankingProviderTests.swift in Sources */,
 				0A1B2C3D4E5F67890123450D /* AppStorefrontRatingServiceTests.swift in Sources */,
 				C5A400000000000000000003 /* CSVFormatsTests.swift in Sources */,
 				3A3B766B1E13C1E131179C31 /* DefaultAppResolverTests.swift in Sources */,

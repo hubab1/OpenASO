@@ -8,6 +8,10 @@ struct ITunesSearchFallbackProviderTests {
     func returnsOrderedResultsFromITunesSearchAPI() async throws {
         let client = MockHTTPClient { request in
             #expect(request.url?.absoluteString.contains("itunes.apple.com/search") == true)
+            #expect(URLComponents(
+                url: try #require(request.url),
+                resolvingAgainstBaseURL: false
+            )?.queryItems?.first(where: { $0.name == "entity" })?.value == "software")
 
             let payload = """
             {
@@ -59,6 +63,49 @@ struct ITunesSearchFallbackProviderTests {
         #expect(page.items[0].supportedLanguageCodes == ["EN", "FR"])
         #expect(page.items[0].screenshotURLs == ["https://example.com/pages-iphone-1.png"])
         #expect(page.items[0].ipadScreenshotURLs == ["https://example.com/pages-ipad-1.png"])
+    }
+
+    @Test
+    func usesTheDocumentedEntityForEachRequestedPlatform() async throws {
+        let scenarios: [(platform: AppPlatform, entity: String)] = [
+            (.iphone, "software"),
+            (.ipad, "iPadSoftware"),
+            (.mac, "macSoftware"),
+        ]
+
+        for scenario in scenarios {
+            let client = MockHTTPClient { request in
+                let url = try #require(request.url)
+                #expect(url.absoluteString == "https://itunes.apple.com/search?term=notes&entity=\(scenario.entity)&country=gb&limit=7")
+                let payload = """
+                {
+                  "results": [
+                    {
+                      "trackId": 123,
+                      "bundleId": "com.example.notes",
+                      "trackName": "Notes",
+                      "sellerName": "Example"
+                    }
+                  ]
+                }
+                """
+                return (
+                    Data(payload.utf8),
+                    makeHTTPURLResponse(url: url, statusCode: 200)
+                )
+            }
+            let provider = ITunesSearchFallbackProvider(httpClient: client)
+
+            let page = try await provider.search(
+                keyword: " notes ",
+                storefrontCode: " GB ",
+                platform: scenario.platform,
+                limit: 7
+            )
+
+            #expect(page.source == .iTunesFallback)
+            #expect(page.items.map(\.platform) == [scenario.platform])
+        }
     }
 
     @Test
