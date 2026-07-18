@@ -289,6 +289,9 @@ struct KeywordWorkspaceRow: Identifiable {
     let metrics: KeywordMetricsSnapshot?
     let latestSnapshot: KeywordRankingCrawlSummary?
     let trendSnapshots: [KeywordRankingCrawlSummary]
+    let trendPoints: [Int]
+    let trendDelta: Int?
+    let currentRank: Int?
     let rankingApps: [KeywordRankingAppSummary]
     let allRankingApps: [KeywordRankingAppSummary]
 
@@ -305,7 +308,21 @@ struct KeywordWorkspaceRow: Identifiable {
         self.storefront = storefront
         self.metrics = metrics
         self.latestSnapshot = latestSnapshot
-        self.trendSnapshots = trendSnapshots
+        self.currentRank = latestSnapshot?.rank
+        let orderedTrendSnapshots = trendSnapshots.sorted { lhs, rhs in
+            if lhs.searchedAt == rhs.searchedAt {
+                return lhs.id < rhs.id
+            }
+            return lhs.searchedAt < rhs.searchedAt
+        }
+        self.trendSnapshots = orderedTrendSnapshots
+        let trendPoints = orderedTrendSnapshots.compactMap(\.rank)
+        self.trendPoints = trendPoints
+        if let earliest = trendPoints.first, let latest = trendPoints.last, trendPoints.count > 1 {
+            self.trendDelta = earliest - latest
+        } else {
+            self.trendDelta = nil
+        }
         self.rankingApps = rankingApps
         self.allRankingApps = allRankingApps ?? rankingApps
     }
@@ -365,10 +382,6 @@ struct KeywordWorkspaceRow: Identifiable {
 
     var trendSortValue: Int { trendDelta ?? Int.min }
 
-    var currentRank: Int? {
-        latestSnapshot?.rank
-    }
-
     var positionLabelText: String {
         if let currentRank {
             return "\(currentRank)"
@@ -396,23 +409,6 @@ struct KeywordWorkspaceRow: Identifiable {
     var remainingRankingAppCount: Int? {
         guard let rankingAppCount else { return nil }
         return max(0, rankingAppCount - rankingApps.count)
-    }
-
-    var trendPoints: [Int] {
-        trendSnapshots.compactMap(\.rank)
-    }
-
-    var trendDelta: Int? {
-        let points = trendPoints
-        guard
-            let earliest = points.first,
-            let latest = points.last,
-            points.count > 1
-        else {
-            return nil
-        }
-
-        return earliest - latest
     }
 
     var trendDeltaText: String {
