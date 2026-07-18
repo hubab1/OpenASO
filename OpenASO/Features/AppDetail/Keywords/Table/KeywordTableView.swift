@@ -26,6 +26,7 @@ struct KeywordTableView: View {
     ]
     @State private var selection = Set<PersistentIdentifier>()
     @State private var presentedRankingRow: KeywordWorkspaceRow?
+    @State private var presentedRankingHistoryRow: KeywordWorkspaceRow?
     @State private var presentedNotesRow: KeywordWorkspaceRow?
     @State private var actionErrorMessage: String?
     @State private var rowsPendingDeletion: [KeywordWorkspaceRow] = []
@@ -171,7 +172,22 @@ struct KeywordTableView: View {
                     .width(min: 76, ideal: 88, max: 100)
 
                     TableColumn("Trend", value: \.trendSortValue) { tableRow in
-                        KeywordTrendCell(row: tableRow.row)
+                        Button {
+                            presentedRankingHistoryRow = tableRow.row
+                        } label: {
+                            KeywordTrendCell(row: tableRow.row)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show ranking history")
+                        .accessibilityLabel("Ranking trend for \(tableRow.row.track.term)")
+                        .accessibilityValue(
+                            "\(tableRow.row.trendAccessibilityText) "
+                                + "\(tableRow.row.storefront?.name ?? tableRow.row.track.storefront.uppercased()), "
+                                + "\(tableRow.row.track.platform.displayName)."
+                        )
+                        .accessibilityHint("Opens ranking history.")
                     }
                     .width(min: 104, ideal: 120, max: 132)
 
@@ -245,6 +261,12 @@ struct KeywordTableView: View {
                 modelContext: modelContext,
                 appCatalogService: appCatalogService,
                 appIconStore: appIconStore
+            )
+        }
+        .sheet(item: $presentedRankingHistoryRow) { row in
+            KeywordRankingHistorySheet(
+                row: row,
+                modelContext: modelContext
             )
         }
         .sheet(item: $presentedNotesRow) { row in
