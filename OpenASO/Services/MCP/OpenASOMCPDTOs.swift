@@ -435,9 +435,25 @@ struct OpenASOMCPKeywordRefreshOutcome: Codable, Sendable {
     let error: OpenASOMCPErrorDTO?
 }
 
+struct OpenASOMCPKeywordRefreshBatchSummary: Codable, Sendable, Equatable {
+    let skipped: Int
+    let errors: [OpenASOMCPErrorDTO]
+}
+
 struct OpenASOMCPKeywordRefreshResult: Codable, Sendable {
     let summary: OpenASOMCPMutationSummary
     let outcomes: [OpenASOMCPKeywordRefreshOutcome]
+    let batchSummary: OpenASOMCPKeywordRefreshBatchSummary?
+
+    init(
+        summary: OpenASOMCPMutationSummary,
+        outcomes: [OpenASOMCPKeywordRefreshOutcome],
+        batchSummary: OpenASOMCPKeywordRefreshBatchSummary? = nil
+    ) {
+        self.summary = summary
+        self.outcomes = outcomes
+        self.batchSummary = batchSummary
+    }
 }
 
 struct OpenASOMCPCompetitorReviewRefreshResult: Codable, Sendable {

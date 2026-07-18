@@ -459,6 +459,47 @@ struct RefreshObservabilityTests {
     }
 
     @Test
+    func appDetailMetricsExpiryRecordsOneFailureWithoutRewritingRankingOutcomes() async throws {
+        let httpClient = RankingAndExpiredAppleAdsHTTPClient()
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+            xsrfToken: "token",
+            updatedAt: .now
+        )
+        let fixture = try makeKeywordRefreshFixture(
+            trackSpecifications: (0 ..< 3).map { index in
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 123,
+                    term: "expired-session-keyword-\(index)",
+                    storefront: "us",
+                    platform: .iphone
+                )
+            },
+            storefrontCodes: ["us"],
+            httpClient: httpClient,
+            refreshMetrics: true,
+            popularityContextAppStoreID: 123_456_789,
+            appleAdsWebSession: session
+        )
+
+        let result = await fixture.service.refresh(fixture.request)
+        let summary = try #require(await fixture.recorder.completedSummaries().only)
+        let rankings = try #require(summary.stages[.rankings])
+        let metrics = try #require(summary.stages[.keywordMetrics])
+
+        #expect(result.keywordOutcomes.count == 3)
+        #expect(result.keywordOutcomes.allSatisfy { $0.error == nil })
+        #expect(result.firstError?.localizedDescription.contains(AppleAdsWebSessionExpiredError.message) == true)
+        #expect(rankings.attemptedCount == 3)
+        #expect(rankings.failureCount == 0)
+        #expect(metrics.attemptedCount == 3)
+        #expect(metrics.failureCount == 1)
+        #expect(summary.result == .partialFailure)
+        #expect(await httpClient.rankingRequestCount() == 3)
+        #expect(await httpClient.popularityRequestCount() == 1)
+    }
+
+    @Test
     func appDetailRefreshDeduplicatesMixedNormalizedQueriesAndPersistsEveryTrack() async throws {
         let base = RankingHTTPClient()
         let fixture = try makeKeywordRefreshFixture(
@@ -785,6 +826,36 @@ private actor RankingHTTPClient: HTTPClient {
     }
 }
 
+private actor RankingAndExpiredAppleAdsHTTPClient: HTTPClient {
+    private var rankingCount = 0
+    private var popularityCount = 0
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = request.url ?? URL(string: "https://itunes.apple.com/search")!
+        if url.host == "app-ads.apple.com" {
+            popularityCount += 1
+            return (
+                Data(#"{"message":"unauthorized"}"#.utf8),
+                makeHTTPURLResponse(url: url, statusCode: 401)
+            )
+        }
+
+        rankingCount += 1
+        return (
+            Data("{\"results\":[]}".utf8),
+            makeHTTPURLResponse(url: url, statusCode: 200)
+        )
+    }
+
+    func rankingRequestCount() -> Int {
+        rankingCount
+    }
+
+    func popularityRequestCount() -> Int {
+        popularityCount
+    }
+}
+
 private struct CancelledRankingHTTPClient: HTTPClient {
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         throw CancellationError()
@@ -896,7 +967,10 @@ private func makeKeywordRefreshFixture(
     trackSpecifications: [KeywordRefreshTrackSpecification],
     additionalIdentityKeys: [String] = [],
     storefrontCodes: [String],
-    httpClient: any HTTPClient
+    httpClient: any HTTPClient,
+    refreshMetrics: Bool = false,
+    popularityContextAppStoreID: Int64? = nil,
+    appleAdsWebSession: AppleAdsWebSession? = nil
 ) throws -> KeywordRefreshFixture {
     let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
     let modelContext = ModelContext(container)
@@ -970,12 +1044,12 @@ private func makeKeywordRefreshFixture(
         trackIdentityKeys: trackIdentityKeys,
         trigger: "manual",
         refreshKeywords: true,
-        refreshMetrics: false,
+        refreshMetrics: refreshMetrics,
         refreshRatings: false,
         refreshReviews: false,
         recordsRatingsReviewsRefresh: false,
-        popularityContextAppStoreID: nil,
-        appleAdsWebSession: nil,
+        popularityContextAppStoreID: popularityContextAppStoreID,
+        appleAdsWebSession: appleAdsWebSession,
         appStoreConnectCredentials: AppStoreConnectCredentials(
             issuerID: "",
             keyID: "",

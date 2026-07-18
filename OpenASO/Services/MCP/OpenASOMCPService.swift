@@ -930,24 +930,42 @@ final class OpenASOMCPService: Sendable {
     }
 
     var refreshErrorsByIdentityKey: [String: String] = [:]
+    var skippedIdentityKeys: Set<String> = []
+    var batchSummary: OpenASOMCPKeywordRefreshBatchSummary?
     if let keywordMetricsService {
       let popularityContextAppStoreID = await popularityContextAppStoreIDProvider()
       let webSession = await appleAdsWebSessionProvider()
-      let refreshOutcomes = try await keywordMetricsService.refreshMetrics(
+      let refreshResult = try await keywordMetricsService.refreshMetricsBatch(
         for: trackIdentityKeys,
         popularityContextAppStoreID: popularityContextAppStoreID,
         webSession: webSession,
         using: backgroundModelStore
       )
-      refreshErrorsByIdentityKey = try await backgroundModelStore.read { modelContext in
+      let refreshState = try await backgroundModelStore.read { modelContext in
         var errors: [String: String] = [:]
-        for outcome in refreshOutcomes where outcome.errorMessage != nil {
+        var skipped: Set<String> = []
+        for outcome in refreshResult.outcomes {
           guard let track = modelContext.model(for: outcome.trackID) as? TrackedAppKeyword else {
             continue
           }
-          errors[track.identityKey] = outcome.errorMessage
+          if let errorMessage = outcome.errorMessage {
+            errors[track.identityKey] = errorMessage
+          }
+          if outcome.isSkipped {
+            skipped.insert(track.identityKey)
+          }
         }
-        return errors
+        return (errors: errors, skipped: skipped)
+      }
+      refreshErrorsByIdentityKey = refreshState.errors
+      skippedIdentityKeys = refreshState.skipped
+      if refreshResult.skippedCount > 0 || !refreshResult.batchErrors.isEmpty {
+        batchSummary = OpenASOMCPKeywordRefreshBatchSummary(
+          skipped: refreshResult.skippedCount,
+          errors: refreshResult.batchErrors.map {
+            OpenASOMCPErrorDTO(code: $0.code.rawValue, message: $0.message)
+          }
+        )
       }
     } else {
       let message = "Popularity failed to fetch. Connect an Apple Ads web session in Settings."
@@ -963,6 +981,8 @@ final class OpenASOMCPService: Sendable {
     }
 
     let refreshErrors = refreshErrorsByIdentityKey
+    let skippedTracks = skippedIdentityKeys
+    let refreshBatchSummary = batchSummary
     return try await backgroundModelStore.read { modelContext in
       let tracks = try trackIdentityKeys.compactMap {
         try Self.fetchTrackedKeyword(identityKey: $0, in: modelContext)
@@ -970,9 +990,10 @@ final class OpenASOMCPService: Sendable {
       let metrics = try Self.metricsByQueryKey(queryKeys: tracks.map(\.queryKey), in: modelContext)
       let outcomes = tracks.map { track in
         let metric = metrics[track.queryKey]
-        let error =
-          refreshErrors[track.identityKey]
-          ?? Self.popularityStatusMessage(from: track.statusMessage)
+        let error = skippedTracks.contains(track.identityKey)
+          ? nil
+          : refreshErrors[track.identityKey]
+            ?? Self.popularityStatusMessage(from: track.statusMessage)
         return OpenASOMCPKeywordRefreshOutcome(
           track: Self.keywordSummary(track: track, metrics: metric),
           error: error.map {
@@ -985,16 +1006,20 @@ final class OpenASOMCPService: Sendable {
           }
         )
       }
-      let failures = outcomes.filter { $0.error != nil }.count
+      let perTrackFailures = outcomes.filter { $0.error != nil }.count
+      let batchFailures = refreshBatchSummary?.errors.count ?? 0
+      let skipped = refreshBatchSummary?.skipped ?? 0
+      let updated = max(0, outcomes.count - skipped)
       return OpenASOMCPKeywordRefreshResult(
         summary: OpenASOMCPMutationSummary(
           inserted: 0,
-          updated: outcomes.count,
-          skipped: 0,
-          refreshed: outcomes.count - failures,
-          failed: failures
+          updated: updated,
+          skipped: skipped,
+          refreshed: max(0, updated - perTrackFailures),
+          failed: perTrackFailures + batchFailures
         ),
-        outcomes: outcomes
+        outcomes: outcomes,
+        batchSummary: refreshBatchSummary
       )
     }
   }
