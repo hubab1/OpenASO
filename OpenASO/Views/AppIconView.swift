@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
@@ -8,6 +9,7 @@ struct AppIconView: View {
     let appStoreID: Int64
     let storefrontCode: String?
     let preferredIconURLString: String?
+    let reloadToken: UInt64
     let size: CGFloat
     let cornerRadius: CGFloat
 
@@ -15,12 +17,14 @@ struct AppIconView: View {
         appStoreID: Int64,
         storefrontCode: String? = nil,
         preferredIconURLString: String? = nil,
+        reloadToken: UInt64 = 0,
         size: CGFloat = 40,
         cornerRadius: CGFloat = 9
     ) {
         self.appStoreID = appStoreID
         self.storefrontCode = storefrontCode
         self.preferredIconURLString = preferredIconURLString
+        self.reloadToken = reloadToken
         self.size = size
         self.cornerRadius = cornerRadius
     }
@@ -30,6 +34,7 @@ struct AppIconView: View {
             appStoreID: appStoreID,
             storefrontCode: storefrontCode,
             preferredIconURLString: preferredIconURLString,
+            reloadToken: reloadToken,
             size: size,
             cornerRadius: cornerRadius,
             modelContext: modelContext,
@@ -45,6 +50,7 @@ struct AppIconImageView: View {
     let appStoreID: Int64
     let storefrontCode: String?
     let preferredIconURLString: String?
+    let reloadToken: UInt64
     let size: CGFloat
     let cornerRadius: CGFloat
     let modelContext: ModelContext
@@ -52,11 +58,13 @@ struct AppIconImageView: View {
     let appIconStore: AppIconStore
 
     @State private var image: CGImage?
+    @State private var loadGeneration: UUID?
 
     init(
         appStoreID: Int64,
         storefrontCode: String? = nil,
         preferredIconURLString: String? = nil,
+        reloadToken: UInt64 = 0,
         size: CGFloat,
         cornerRadius: CGFloat,
         modelContext: ModelContext,
@@ -66,6 +74,7 @@ struct AppIconImageView: View {
         self.appStoreID = appStoreID
         self.storefrontCode = storefrontCode
         self.preferredIconURLString = preferredIconURLString
+        self.reloadToken = reloadToken
         self.size = size
         self.cornerRadius = cornerRadius
         self.modelContext = modelContext
@@ -90,12 +99,22 @@ struct AppIconImageView: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: taskID) {
-            await loadImage()
+            guard !Task.isCancelled else { return }
+
+            let generation = UUID()
+            loadGeneration = generation
+            image = nil
+            await loadImage(generation: generation)
         }
     }
 
     private var taskID: String {
-        [String(appStoreID), storefrontCode ?? "", preferredIconURLString ?? ""].joined(separator: "::")
+        [
+            String(appStoreID),
+            storefrontCode ?? "",
+            preferredIconURLString ?? "",
+            String(reloadToken),
+        ].joined(separator: "::")
     }
 
     private var progressControlSize: ControlSize {
@@ -112,21 +131,26 @@ struct AppIconImageView: View {
     }
 
     @MainActor
-    private func loadImage() async {
+    private func loadImage(generation: UUID) async {
         do {
             let iconURLString = try await resolveIconURLString()
-            guard let iconURLString else {
-                image = nil
-                return
+
+            let loadedImage: CGImage?
+            if let iconURLString {
+                loadedImage = try await appIconStore.image(
+                    for: appStoreID,
+                    iconURLString: iconURLString,
+                    pointSize: size,
+                    displayScale: displayScale
+                )
+            } else {
+                loadedImage = nil
             }
 
-            image = try await appIconStore.image(
-                for: appStoreID,
-                iconURLString: iconURLString,
-                pointSize: size,
-                displayScale: displayScale
-            )
+            guard !Task.isCancelled, loadGeneration == generation else { return }
+            image = loadedImage
         } catch {
+            guard !Task.isCancelled, loadGeneration == generation else { return }
             image = nil
         }
     }

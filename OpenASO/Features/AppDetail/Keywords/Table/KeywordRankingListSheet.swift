@@ -63,7 +63,13 @@ struct KeywordRankingListSheet: View {
     private var requestID: KeywordRankingListModel.RequestID {
         KeywordRankingListModel.RequestID(
             loadID: loadID,
-            retryToken: retryToken
+            retryToken: retryToken,
+            metadataRevisionSignature: services.appMetadataRefreshProgressStore
+                .revisionSignature(
+                    for: rankingModel.metadataRevisionAppStoreIDs(
+                        fallbackItems: fallbackItems
+                    )
+                )
         )
     }
 
@@ -101,7 +107,8 @@ struct KeywordRankingListSheet: View {
                             trackedAppStoreID: trackedAppStoreID,
                             modelContext: modelContext,
                             appCatalogService: appCatalogService,
-                            appIconStore: appIconStore
+                            appIconStore: appIconStore,
+                            metadataProgressStore: services.appMetadataRefreshProgressStore
                         )
                     } else {
                         Table(sortedRows, sortOrder: $sortOrder) {
@@ -118,8 +125,13 @@ struct KeywordRankingListSheet: View {
                                     trackedAppStoreID: trackedAppStoreID,
                                     modelContext: modelContext,
                                     appCatalogService: appCatalogService,
-                                    appIconStore: appIconStore
+                                    appIconStore: appIconStore,
+                                    reloadToken: services.appMetadataRefreshProgressStore
+                                        .revision(for: row.appStoreID)
                                 )
+                                .contextMenu {
+                                    metadataRefreshButton(for: row)
+                                }
                             }
                             .width(min: 300, ideal: 340)
 
@@ -180,6 +192,19 @@ struct KeywordRankingListSheet: View {
                 }
             }
 
+            if let metadataBatch = services.appMetadataRefreshProgressStore.batch,
+               let affectedRow = sortedRows.first(where: {
+                   $0.appStoreID == metadataBatch.request.appStoreID
+               }) {
+                Divider()
+                KeywordRankingMetadataRefreshStatusView(
+                    store: services.appMetadataRefreshProgressStore,
+                    appName: affectedRow.appName
+                )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+
             Divider()
 
             KeywordRankingListFooter(
@@ -210,6 +235,19 @@ struct KeywordRankingListSheet: View {
 
     private func retryLoading() {
         retryToken &+= 1
+    }
+
+    @ViewBuilder
+    private func metadataRefreshButton(for row: KeywordRankingCatalogRow) -> some View {
+        Button("Refresh App Store Info") {
+            _ = services.appMetadataRefreshProgressStore.start(
+                AppMetadataRefreshRequest(
+                    appStoreID: row.appStoreID,
+                    requestedStorefronts: [storefrontCode]
+                )
+            )
+        }
+        .disabled(services.appMetadataRefreshProgressStore.isRunning)
     }
 
     @MainActor
@@ -656,6 +694,201 @@ struct KeywordRankingNewRatingPoint: Identifiable, Sendable {
     let isComplete: Bool
 }
 
+private struct KeywordRankingMetadataRefreshStatusView: View {
+    let store: AppMetadataRefreshProgressStore
+    let appName: String
+
+    @State private var showsDetails = false
+
+    var body: some View {
+        if let batch = store.batch {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: statusSymbol)
+                        .foregroundStyle(statusTint)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(appName)
+                            .font(.callout.weight(.semibold))
+                        Text(statusText(for: batch))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let message = batch.message {
+                            Text(message)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    controls
+                }
+
+                if !batch.storefronts.isEmpty {
+                    DisclosureGroup("Details", isExpanded: $showsDetails) {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(batch.storefronts) { storefront in
+                                    storefrontDetail(storefront)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 160)
+                        .padding(.top, 4)
+                    }
+                    .font(.caption)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    private func storefrontDetail(
+        _ storefront: AppMetadataRefreshProgressStore.StorefrontRow
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(storefront.storefront.uppercased()): \(storefrontStatus(storefront.state))")
+                .fontWeight(.semibold)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(storefront.providers) { provider in
+                Text("\(providerName(provider.provider)): \(providerStatus(provider.state))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        switch store.status {
+        case .preparing, .refreshing:
+            Button("Cancel") {
+                _ = store.cancel()
+            }
+        case .cancelling:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Stopping App Store information refresh")
+        case .succeeded, .partial, .failed, .cancelled:
+            HStack(spacing: 12) {
+                Button("Try Again") {
+                    _ = store.retry()
+                }
+                Button("Dismiss") {
+                    _ = store.dismiss()
+                }
+            }
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    private func storefrontStatus(
+        _ state: AppMetadataRefreshProgressStore.StorefrontRow.State
+    ) -> String {
+        switch state {
+        case .queued:
+            return "Pending"
+        case .refreshing:
+            return "Refreshing"
+        case .completed(.succeeded):
+            return "Updated"
+        case .completed(.partial):
+            return "Updated with warnings"
+        case .completed(.failed):
+            return "Not updated"
+        case .notStarted:
+            return "Not started"
+        case .interruptedOutcomeUnknown:
+            return AppMetadataRefreshProgressStore.interruptedStorefrontMessage
+        }
+    }
+
+    private func providerName(_ provider: AppMetadataRefreshProvider) -> String {
+        switch provider {
+        case .iTunesLookup:
+            return "iTunes"
+        case .appStoreWeb:
+            return "App Store web"
+        }
+    }
+
+    private func providerStatus(
+        _ state: AppMetadataRefreshProgressStore.ProviderRow.State
+    ) -> String {
+        switch state {
+        case .queued:
+            return "Pending"
+        case .succeeded:
+            return "Updated"
+        case .failed(let failure):
+            return failure.localizedDescription
+        case .notStarted:
+            return "Not started"
+        case .outcomeUnknownMayHaveCommitted:
+            return "Stopped; changes may have been kept"
+        }
+    }
+
+    private func statusText(
+        for batch: AppMetadataRefreshProgressStore.Batch
+    ) -> String {
+        switch store.status {
+        case .idle:
+            return "Ready"
+        case .preparing:
+            return "Preparing App Store refresh"
+        case .refreshing:
+            return "Refreshing \(batch.completedStorefrontCount) of \(batch.storefronts.count) storefronts"
+        case .cancelling:
+            return "Stopping refresh"
+        case .succeeded:
+            return "App Store information updated"
+        case .partial:
+            return "Updated with warnings"
+        case .failed:
+            return "App Store information was not updated"
+        case .cancelled:
+            return "Refresh stopped"
+        }
+    }
+
+    private var statusSymbol: String {
+        switch store.status {
+        case .idle, .preparing, .refreshing:
+            return "arrow.triangle.2.circlepath"
+        case .cancelling, .cancelled:
+            return "stop.circle"
+        case .succeeded:
+            return "checkmark.circle.fill"
+        case .partial:
+            return "exclamationmark.circle.fill"
+        case .failed:
+            return "xmark.circle.fill"
+        }
+    }
+
+    private var statusTint: Color {
+        switch store.status {
+        case .succeeded:
+            return .green
+        case .partial, .cancelling, .cancelled:
+            return .orange
+        case .failed:
+            return .red
+        case .idle, .preparing, .refreshing:
+            return .accentColor
+        }
+    }
+}
+
 private struct KeywordRankingAppCell: View {
     let row: KeywordRankingCatalogRow
     let keyword: String
@@ -664,6 +897,7 @@ private struct KeywordRankingAppCell: View {
     let modelContext: ModelContext
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
+    let reloadToken: UInt64
     var isProminent = false
 
     var body: some View {
@@ -672,6 +906,7 @@ private struct KeywordRankingAppCell: View {
                 appStoreID: row.appStoreID,
                 storefrontCode: storefrontCode,
                 preferredIconURLString: row.iconURLString,
+                reloadToken: reloadToken,
                 size: isProminent ? 52 : 38,
                 cornerRadius: isProminent ? 10 : 8,
                 modelContext: modelContext,
@@ -857,6 +1092,7 @@ private struct KeywordRankingScreenshotList: View {
     let modelContext: ModelContext
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
+    let metadataProgressStore: AppMetadataRefreshProgressStore
 
     var body: some View {
         ScrollView {
@@ -872,7 +1108,8 @@ private struct KeywordRankingScreenshotList: View {
                             trackedAppStoreID: trackedAppStoreID,
                             modelContext: modelContext,
                             appCatalogService: appCatalogService,
-                            appIconStore: appIconStore
+                            appIconStore: appIconStore,
+                            metadataProgressStore: metadataProgressStore
                         )
                     }
                 } header: {
@@ -925,6 +1162,7 @@ private struct KeywordRankingScreenshotRow: View {
     let modelContext: ModelContext
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
+    let metadataProgressStore: AppMetadataRefreshProgressStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -940,6 +1178,7 @@ private struct KeywordRankingScreenshotRow: View {
                     modelContext: modelContext,
                     appCatalogService: appCatalogService,
                     appIconStore: appIconStore,
+                    reloadToken: metadataProgressStore.revision(for: row.appStoreID),
                     isProminent: true
                 )
                 .frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
@@ -966,7 +1205,11 @@ private struct KeywordRankingScreenshotRow: View {
             .padding(.vertical, 9)
             .background(row.position.isMultiple(of: 2) ? Color.secondary.opacity(0.035) : Color.clear)
 
-            KeywordRankingScreenshotStrip(row: row, desiredPlatform: platform)
+            KeywordRankingScreenshotStrip(
+                row: row,
+                desiredPlatform: platform,
+                reloadToken: metadataProgressStore.revision(for: row.appStoreID)
+            )
                 .padding(.leading, 82)
                 .padding(.trailing, 16)
                 .padding(.bottom, 12)
@@ -975,12 +1218,24 @@ private struct KeywordRankingScreenshotRow: View {
         .overlay(alignment: .bottom) {
             Divider()
         }
+        .contextMenu {
+            Button("Refresh App Store Info") {
+                _ = metadataProgressStore.start(
+                    AppMetadataRefreshRequest(
+                        appStoreID: row.appStoreID,
+                        requestedStorefronts: [storefrontCode]
+                    )
+                )
+            }
+            .disabled(metadataProgressStore.isRunning)
+        }
     }
 }
 
 private struct KeywordRankingScreenshotStrip: View {
     let row: KeywordRankingCatalogRow
     let desiredPlatform: AppPlatform
+    let reloadToken: UInt64
 
     private var orderedGroups: [ScreenshotPlatformGroup] {
         row.screenshotGroups
@@ -1013,7 +1268,11 @@ private struct KeywordRankingScreenshotStrip: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     ForEach(group.screenshots) { screenshot in
-                        AppStoreScreenshotThumbnail(screenshot: screenshot)
+                        AppStoreScreenshotThumbnail(
+                            appStoreID: row.appStoreID,
+                            screenshot: screenshot,
+                            reloadToken: reloadToken
+                        )
                     }
                 }
                 .padding(.bottom, 2)
@@ -1025,9 +1284,12 @@ private struct KeywordRankingScreenshotStrip: View {
 private struct AppStoreScreenshotThumbnail: View {
     @Environment(\.displayScale) private var displayScale
 
+    let appStoreID: Int64
     let screenshot: AppStoreScreenshotDisplayValue
+    let reloadToken: UInt64
 
     @State private var image: CGImage?
+    @State private var loadGeneration: UUID?
 
     private var thumbnailSize: CGSize {
         let aspectRatio = screenshot.aspectRatio
@@ -1061,28 +1323,95 @@ private struct AppStoreScreenshotThumbnail: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(0.16))
         }
-        .task(id: "\(screenshot.urlString)::\(displayScale)::\(thumbnailSize.width)::\(thumbnailSize.height)") {
-            image = await AppStoreScreenshotThumbnailStore.shared.image(
+        .task(id: taskID) {
+            guard !Task.isCancelled else { return }
+
+            let generation = UUID()
+            loadGeneration = generation
+            image = nil
+            let loadedImage = await AppStoreScreenshotThumbnailStore.shared.image(
+                appStoreID: appStoreID,
                 urlString: screenshot.urlString,
-                pixelSize: Int((max(thumbnailSize.width, thumbnailSize.height) * displayScale).rounded(.up))
+                pixelSize: Int((max(thumbnailSize.width, thumbnailSize.height) * displayScale).rounded(.up)),
+                reloadToken: reloadToken
             )
+            guard !Task.isCancelled, loadGeneration == generation else { return }
+            image = loadedImage
         }
+    }
+
+    private var taskID: String {
+        [
+            String(appStoreID),
+            screenshot.urlString,
+            String(describing: displayScale),
+            String(describing: thumbnailSize.width),
+            String(describing: thumbnailSize.height),
+            String(reloadToken),
+        ].joined(separator: "::")
     }
 }
 
 private actor AppStoreScreenshotThumbnailStore {
     static let shared = AppStoreScreenshotThumbnailStore()
 
-    private let cache = NSCache<NSString, CGImage>()
-    private var inFlightRequests: [String: Task<CGImage?, Never>] = [:]
+    private struct AssetKey: Hashable {
+        let appStoreID: Int64
+        let urlString: String
+        let pixelSize: Int
+    }
 
-    func image(urlString: String, pixelSize: Int) async -> CGImage? {
-        let cacheKey = "\(urlString)::\(pixelSize)" as NSString
+    private struct RequestKey: Hashable {
+        let asset: AssetKey
+        let reloadToken: UInt64
+
+        var cacheKey: NSString {
+            "\(asset.appStoreID)::\(asset.pixelSize)::\(reloadToken)::\(asset.urlString)" as NSString
+        }
+    }
+
+    private struct LatestCacheEntry {
+        let reloadToken: UInt64
+        let cacheKey: NSString
+    }
+
+    private static let cacheCountLimit = 128
+    private static let cacheCostLimit = 64 * 1024 * 1024
+
+    private let cache = NSCache<NSString, CGImage>()
+    private var inFlightRequests: [RequestKey: Task<CGImage?, Never>] = [:]
+    private var latestCacheEntryByAsset: [AssetKey: LatestCacheEntry] = [:]
+    private var assetRecency: [AssetKey] = []
+
+    init() {
+        cache.countLimit = Self.cacheCountLimit
+        cache.totalCostLimit = Self.cacheCostLimit
+    }
+
+    func image(
+        appStoreID: Int64,
+        urlString: String,
+        pixelSize: Int,
+        reloadToken: UInt64
+    ) async -> CGImage? {
+        let assetKey = AssetKey(
+            appStoreID: appStoreID,
+            urlString: urlString,
+            pixelSize: pixelSize
+        )
+        let requestKey = RequestKey(asset: assetKey, reloadToken: reloadToken)
+        let cacheKey = requestKey.cacheKey
+        let isLatestRevision = prepareCacheEntry(
+            assetKey: assetKey,
+            cacheKey: cacheKey,
+            reloadToken: reloadToken
+        )
+        guard isLatestRevision else { return nil }
+
         if let cached = cache.object(forKey: cacheKey) {
             return cached
         }
 
-        let requestKey = cacheKey as String
         if let request = inFlightRequests[requestKey] {
             return await request.value
         }
@@ -1105,10 +1434,44 @@ private actor AppStoreScreenshotThumbnailStore {
         let image = await request.value
         inFlightRequests[requestKey] = nil
 
-        if let image {
+        if let image, latestCacheEntryByAsset[assetKey]?.cacheKey == cacheKey {
             cache.setObject(image, forKey: cacheKey, cost: image.bytesPerRow * image.height)
         }
         return image
+    }
+
+    private func prepareCacheEntry(
+        assetKey: AssetKey,
+        cacheKey: NSString,
+        reloadToken: UInt64
+    ) -> Bool {
+        if let latestEntry = latestCacheEntryByAsset[assetKey],
+           latestEntry.reloadToken > reloadToken {
+            return false
+        }
+
+        if let previousCacheKey = latestCacheEntryByAsset[assetKey]?.cacheKey,
+           previousCacheKey != cacheKey {
+            cache.removeObject(forKey: previousCacheKey)
+        }
+        latestCacheEntryByAsset[assetKey] = LatestCacheEntry(
+            reloadToken: reloadToken,
+            cacheKey: cacheKey
+        )
+
+        if let existingIndex = assetRecency.firstIndex(of: assetKey) {
+            assetRecency.remove(at: existingIndex)
+        }
+        assetRecency.append(assetKey)
+
+        while assetRecency.count > Self.cacheCountLimit {
+            let evictedAssetKey = assetRecency.removeFirst()
+            if let evictedEntry = latestCacheEntryByAsset.removeValue(forKey: evictedAssetKey) {
+                cache.removeObject(forKey: evictedEntry.cacheKey)
+            }
+        }
+
+        return true
     }
 
     private static func downsampleImage(data: Data, pixelSize: Int) -> CGImage? {

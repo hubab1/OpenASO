@@ -31,7 +31,6 @@ struct RootSidebarView: View {
     @State private var selectedFolderColorRaw = SidebarFolderColor.defaultColor.rawValue
     @State private var folderPendingRename: AppFolder?
     @State private var folderPendingDeletion: AppFolder?
-    @State private var updatingAppInfoIDs: Set<Int64> = []
     @State private var appPendingDeletion: TrackedApp?
     @State private var currentAlert: SidebarAlertContext?
     @State private var hoveredAppID: Int64?
@@ -212,6 +211,15 @@ struct RootSidebarView: View {
 
     private var footer: some View {
         VStack(spacing: 8) {
+            if let metadataBatch = services.appMetadataRefreshProgressStore.batch {
+                SidebarMetadataRefreshProgressView(
+                    store: services.appMetadataRefreshProgressStore,
+                    appName: trackedApps.first {
+                        $0.appStoreID == metadataBatch.request.appStoreID
+                    }?.name ?? "App \(metadataBatch.request.appStoreID)"
+                )
+            }
+
             if let activeRefresh = services.refreshProgressStore.activeRefresh {
                 SidebarRefreshProgressView(
                     refresh: activeRefresh,
@@ -307,6 +315,7 @@ struct RootSidebarView: View {
         return HStack(spacing: 12) {
             AppIconView(
                 appStoreID: trackedApp.appStoreID,
+                reloadToken: services.appMetadataRefreshProgressStore.revision(for: appStoreID),
                 size: 44,
                 cornerRadius: 10
             )
@@ -340,10 +349,10 @@ struct RootSidebarView: View {
             moveDraggedApps(items, to: trackedApp.folder, before: trackedApp)
         }
         .contextMenu {
-            Button("Update App Info") {
-                updateAppInfo(for: trackedApp, storefrontCode: nil)
+            Button("Refresh App Store Info") {
+                refreshAppStoreInfo(for: trackedApp)
             }
-            .disabled(updatingAppInfoIDs.contains(appStoreID))
+            .disabled(services.appMetadataRefreshProgressStore.isRunning)
 
             Button("Open in App Store") {
                 openInAppStore(trackedApp)
@@ -533,46 +542,10 @@ struct RootSidebarView: View {
         }
     }
 
-    private func updateAppInfo(for trackedApp: TrackedApp, storefrontCode: String?) {
-        let appStoreID = trackedApp.appStoreID
-        guard !updatingAppInfoIDs.contains(appStoreID) else {
-            return
-        }
-
-        updatingAppInfoIDs.insert(appStoreID)
-
-        Task { @MainActor in
-            defer {
-                updatingAppInfoIDs.remove(appStoreID)
-            }
-
-            do {
-                let resolvedApp = try await services.appResolver.resolve(
-                    appStoreID: appStoreID,
-                    storefrontCode: storefrontCode ?? "us"
-                )
-                let storeApp = try services.appCatalogService.upsertStoreApp(
-                    from: resolvedApp,
-                    storefrontCode: storefrontCode ?? "us",
-                    in: modelContext
-                )
-
-                trackedApp.storeApp = storeApp
-                trackedApp.bundleID = resolvedApp.bundleID
-                trackedApp.name = resolvedApp.name
-                trackedApp.subtitle = resolvedApp.subtitle
-                trackedApp.sellerName = resolvedApp.sellerName
-                trackedApp.defaultPlatform = resolvedApp.defaultPlatform
-
-                await services.appIconStore.invalidate(appStoreID: appStoreID)
-                try modelContext.save()
-            } catch {
-                currentAlert = SidebarAlertContext(
-                    title: "Update App Info Failed",
-                    message: OpenASOError.map(error).localizedDescription
-                )
-            }
-        }
+    private func refreshAppStoreInfo(for trackedApp: TrackedApp) {
+        _ = services.appMetadataRefreshProgressStore.start(
+            AppMetadataRefreshRequest(appStoreID: trackedApp.appStoreID)
+        )
     }
 
     private func openInAppStore(_ trackedApp: TrackedApp) {
@@ -752,6 +725,267 @@ private struct SidebarAlertContext: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+}
+
+private struct SidebarMetadataRefreshProgressView: View {
+    let store: AppMetadataRefreshProgressStore
+    let appName: String
+
+    @State private var showsDetails = false
+
+    var body: some View {
+        if let batch = store.batch {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: statusSymbol)
+                        .foregroundStyle(statusTint)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(appName)
+                            .font(.callout.weight(.semibold))
+                        Text(statusTitle(for: batch))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 4)
+                }
+
+                if store.status.isRunning, !batch.storefronts.isEmpty {
+                    ProgressView(
+                        value: Double(batch.completedStorefrontCount),
+                        total: Double(max(batch.storefronts.count, 1))
+                    )
+                    .controlSize(.small)
+                    .accessibilityLabel("Refreshing App Store information for \(appName)")
+                    .accessibilityValue(
+                        "\(batch.completedStorefrontCount) of \(batch.storefronts.count) storefronts complete"
+                    )
+                }
+
+                if let message = batch.message {
+                    Label(message, systemImage: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !batch.storefronts.isEmpty {
+                    DisclosureGroup("Details", isExpanded: $showsDetails) {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(batch.storefronts) { storefront in
+                                    storefrontDetail(storefront)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 180)
+                        .padding(.top, 6)
+                    }
+                    .font(.caption)
+                }
+
+                controls
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(statusTint.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(statusTint.opacity(0.18))
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        switch store.status {
+        case .preparing, .refreshing:
+            Button("Cancel") {
+                _ = store.cancel()
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Cancel App Store information refresh")
+
+        case .cancelling:
+            Label("Stopping…", systemImage: "stop.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .succeeded, .partial, .failed, .cancelled:
+            HStack(spacing: 12) {
+                Button("Try Again") {
+                    _ = store.retry()
+                }
+                .buttonStyle(.borderless)
+
+                Button("Dismiss") {
+                    _ = store.dismiss()
+                }
+                .buttonStyle(.borderless)
+            }
+
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    private func storefrontDetail(
+        _ storefront: AppMetadataRefreshProgressStore.StorefrontRow
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: storefrontSymbol(for: storefront.state))
+                    .accessibilityHidden(true)
+                Text(storefront.storefront.uppercased())
+                    .fontWeight(.semibold)
+                Text(storefrontStatus(for: storefront.state))
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(storefront.providers) { provider in
+                Text("\(providerName(provider.provider)): \(providerStatus(provider.state))")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func statusTitle(
+        for batch: AppMetadataRefreshProgressStore.Batch
+    ) -> String {
+        switch store.status {
+        case .idle:
+            return "Ready"
+        case .preparing:
+            return "Preparing App Store refresh"
+        case .refreshing:
+            return "Refreshing \(batch.completedStorefrontCount) of \(batch.storefronts.count) storefronts"
+        case .cancelling:
+            return "Stopping refresh"
+        case .succeeded:
+            return "Updated: \(completedStorefronts(in: batch))"
+        case .partial:
+            return "Updated with warnings: \(completedStorefronts(in: batch))"
+        case .failed:
+            return "App Store information was not updated"
+        case .cancelled:
+            return "Refresh stopped"
+        }
+    }
+
+    private func completedStorefronts(
+        in batch: AppMetadataRefreshProgressStore.Batch
+    ) -> String {
+        let codes = batch.storefronts.compactMap { storefront -> String? in
+            guard case .completed(let status) = storefront.state,
+                  status != .failed else {
+                return nil
+            }
+            return storefront.storefront.uppercased()
+        }
+        return codes.isEmpty ? "No storefronts" : codes.joined(separator: ", ")
+    }
+
+    private var statusSymbol: String {
+        switch store.status {
+        case .idle, .preparing, .refreshing:
+            return "arrow.triangle.2.circlepath"
+        case .cancelling, .cancelled:
+            return "stop.circle"
+        case .succeeded:
+            return "checkmark.circle.fill"
+        case .partial:
+            return "exclamationmark.circle.fill"
+        case .failed:
+            return "xmark.circle.fill"
+        }
+    }
+
+    private var statusTint: Color {
+        switch store.status {
+        case .succeeded:
+            return .green
+        case .partial, .cancelling, .cancelled:
+            return .orange
+        case .failed:
+            return .red
+        case .idle, .preparing, .refreshing:
+            return .accentColor
+        }
+    }
+
+    private func storefrontSymbol(
+        for state: AppMetadataRefreshProgressStore.StorefrontRow.State
+    ) -> String {
+        switch state {
+        case .queued, .notStarted:
+            return "circle"
+        case .refreshing:
+            return "arrow.triangle.2.circlepath"
+        case .completed(.succeeded):
+            return "checkmark.circle"
+        case .completed(.partial):
+            return "exclamationmark.circle"
+        case .completed(.failed):
+            return "xmark.circle"
+        case .interruptedOutcomeUnknown:
+            return "questionmark.circle"
+        }
+    }
+
+    private func storefrontStatus(
+        for state: AppMetadataRefreshProgressStore.StorefrontRow.State
+    ) -> String {
+        switch state {
+        case .queued:
+            return "Pending"
+        case .refreshing:
+            return "Refreshing"
+        case .completed(.succeeded):
+            return "Updated"
+        case .completed(.partial):
+            return "Updated with warnings"
+        case .completed(.failed):
+            return "Not updated"
+        case .notStarted:
+            return "Not started"
+        case .interruptedOutcomeUnknown:
+            return AppMetadataRefreshProgressStore.interruptedStorefrontMessage
+        }
+    }
+
+    private func providerName(_ provider: AppMetadataRefreshProvider) -> String {
+        switch provider {
+        case .iTunesLookup:
+            return "iTunes"
+        case .appStoreWeb:
+            return "App Store web"
+        }
+    }
+
+    private func providerStatus(
+        _ state: AppMetadataRefreshProgressStore.ProviderRow.State
+    ) -> String {
+        switch state {
+        case .queued:
+            return "Pending"
+        case .succeeded:
+            return "Updated"
+        case .failed(let failure):
+            return failure.localizedDescription
+        case .notStarted:
+            return "Not started"
+        case .outcomeUnknownMayHaveCommitted:
+            return "Stopped; changes may have been kept"
+        }
+    }
 }
 
 private struct SidebarRefreshProgressView: View {
