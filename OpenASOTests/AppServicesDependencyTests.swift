@@ -184,6 +184,164 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func reconnectRequirementPersistsByNamespaceWithoutClearingSession() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.reconnect-a")
+        let otherNamespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.reconnect-b")
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value",
+            xsrfToken: "token",
+            updatedAt: .now,
+            accountName: "Example Account"
+        )
+        let store = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        try store.save(session)
+
+        store.markReconnectRequired(for: session)
+
+        #expect(store.requiresReconnect)
+        #expect(store.session == session)
+        #expect(store.hasSession)
+
+        let reloadedStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let otherStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: otherNamespace
+        )
+        #expect(reloadedStore.requiresReconnect)
+        #expect(reloadedStore.session == session)
+        #expect(!otherStore.requiresReconnect)
+
+        reloadedStore.clearReconnectRequirement(for: session)
+        #expect(!reloadedStore.requiresReconnect)
+        #expect(reloadedStore.session == session)
+
+        reloadedStore.markReconnectRequired(for: session)
+        reloadedStore.clear()
+        #expect(!reloadedStore.requiresReconnect)
+        #expect(!reloadedStore.hasSession)
+    }
+
+    @Test
+    func reconnectRequirementOnlyMutatesTheSessionRevisionThatWasObserved() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.reconnect-race")
+        let store = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let oldSession = AppleAdsWebSession(
+            cookieHeader: "cookie=old",
+            xsrfToken: "old-token",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let currentSession = AppleAdsWebSession(
+            cookieHeader: "cookie=current",
+            xsrfToken: "current-token",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        try store.save(oldSession)
+        try store.save(currentSession)
+        store.markReconnectRequired(for: oldSession)
+        #expect(!store.requiresReconnect)
+
+        store.markReconnectRequired(for: currentSession)
+        #expect(store.requiresReconnect)
+
+        store.clearReconnectRequirement(for: oldSession)
+        #expect(store.requiresReconnect)
+
+        store.clearReconnectRequirement(for: currentSession)
+        #expect(!store.requiresReconnect)
+    }
+
+    @Test
+    func sessionValidationMarksExpiryAndSuccessClearsItWithoutDiscardingConnectionData() async throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.validation")
+        let sessionStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let credentialStore = AppleAdsCredentialStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace,
+            loadsEnvironmentCredentials: false
+        )
+        let settingsStore = AppSettingsStore(defaults: defaults)
+        let loginCredentials = AppleAdsWebLoginCredentials(
+            username: "person@example.com",
+            password: "password"
+        )
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value",
+            xsrfToken: "token",
+            updatedAt: .now,
+            accountName: "Example Account"
+        )
+        try credentialStore.saveWebLoginCredentials(loginCredentials)
+        try sessionStore.save(session)
+        settingsStore.savePopularityContext(appStoreID: 123_456_789, storefrontCode: "GB")
+
+        let expiredManager = AppleAdsWebSessionManager(
+            sessionStore: sessionStore,
+            settingsStore: settingsStore,
+            credentialStore: credentialStore,
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                return (Data(), makeHTTPURLResponse(url: url, statusCode: 401))
+            },
+            namespace: namespace
+        )
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await expiredManager.validateSession(adamId: 987_654_321)
+        }
+        #expect(sessionStore.requiresReconnect)
+        #expect(sessionStore.session == session)
+        #expect(credentialStore.webLoginCredentials == loginCredentials)
+        #expect(settingsStore.popularityContextAppStoreID == 123_456_789)
+        #expect(settingsStore.popularityContextStorefrontCode == "GB")
+
+        let successfulManager = AppleAdsWebSessionManager(
+            sessionStore: sessionStore,
+            settingsStore: settingsStore,
+            credentialStore: credentialStore,
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                let payload = #"{"status":"success","data":[{"name":"workout","popularity":57}]}"#
+                return (Data(payload.utf8), makeHTTPURLResponse(url: url, statusCode: 200))
+            },
+            namespace: namespace
+        )
+
+        let popularity = try await successfulManager.validateSession(adamId: 987_654_321)
+
+        #expect(popularity == 57)
+        #expect(!sessionStore.requiresReconnect)
+        #expect(sessionStore.session == session)
+        #expect(credentialStore.webLoginCredentials == loginCredentials)
+        #expect(settingsStore.popularityContextAppStoreID == 123_456_789)
+        #expect(settingsStore.popularityContextStorefrontCode == "GB")
+    }
+
+    @Test
     func cmPopularityClientBatchesTermsAtOneHundred() async throws {
         struct RequestBody: Decodable {
             let storefronts: [String]

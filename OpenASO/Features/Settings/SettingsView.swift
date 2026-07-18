@@ -121,6 +121,10 @@ struct SettingsView: View {
                 proxy.scrollTo(requestedSection, anchor: .top)
                 services.settingsStore.clearSettingsFocusRequest()
             }
+            .onChange(of: services.appleAdsWebSessionStore.requiresReconnect) { _, _ in
+                guard !connectionState.isBusy else { return }
+                connectionState = inferredConnectionState()
+            }
         }
     }
 
@@ -710,7 +714,9 @@ struct SettingsView: View {
                 services.refreshStaleKeywordPopularityAfterAppleAdsConnection()
                 manualAppleAdsStatus = .success("Apple Ads is connected for App ID \(appStoreID).")
             } catch {
-                services.settingsStore.clearPopularityContextAppStoreID()
+                if AppleAdsConnectionState.shouldClearManualPopularityContext(after: error) {
+                    services.settingsStore.clearPopularityContextAppStoreID()
+                }
                 let message = OpenASOError.map(error).localizedDescription
                 manualAppleAdsStatus = .failure(message)
                 connectionState = AppleAdsConnectionState.classified(
@@ -803,11 +809,11 @@ struct SettingsView: View {
             return .dependencyIssue(dependencyStatus.message)
         }
 
-        guard services.appleAdsWebSessionStore.hasSession else {
-            return .notConnected
-        }
-
-        return .connected(updatedAt: services.appleAdsWebSessionStore.session?.updatedAt)
+        return AppleAdsConnectionState.inferred(
+            hasSession: services.appleAdsWebSessionStore.hasSession,
+            requiresReconnect: services.appleAdsWebSessionStore.requiresReconnect,
+            updatedAt: services.appleAdsWebSessionStore.session?.updatedAt
+        )
     }
 }
 

@@ -158,7 +158,10 @@ struct KeywordTableView: View {
                     }
 
                     TableColumn("Popularity", value: \.popularitySortValue) { tableRow in
-                        KeywordPopularityCell(row: tableRow.row) {
+                        KeywordPopularityCell(
+                            row: tableRow.row,
+                            requiresAppleAdsReconnect: services.appleAdsWebSessionStore.requiresReconnect
+                        ) {
                             openAppleAdsSettings()
                         }
                     }
