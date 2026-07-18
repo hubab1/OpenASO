@@ -978,6 +978,250 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func durableRankingAttemptsPreserveFairnessAcrossServiceRelaunch() async throws {
+        let terms = ["alpha", "beta", "gamma"]
+        let failures = Dictionary(
+            uniqueKeysWithValues: terms.map {
+                (rankingQueryKey($0), OpenASOError.networkUnavailable)
+            }
+        )
+        let rankingProvider = StubMCPRankingProvider(pages: [:], failures: failures)
+        let storeDirectoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OpenASO-RankingAttemptRelaunch-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: storeDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: storeDirectoryURL)
+        }
+        let storeURL = storeDirectoryURL.appendingPathComponent("default.store")
+
+        do {
+            let firstContainer = try ModelContainerFactory.makePersistentModelContainer(
+                at: storeURL
+            )
+            let firstContext = try MCPTestContext(
+                modelContainer: firstContainer,
+                rankingProvider: rankingProvider,
+                now: { isoDate("2026-05-07T12:00:00Z") }
+            )
+            try firstContext.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+            _ = try await firstContext.service.addKeywords(
+                appStoreID: 123,
+                keywords: terms,
+                storefronts: ["us"],
+                platform: "iphone"
+            )
+
+            let first = try await firstContext.service.refreshKeywordRankings(
+                appStoreID: 123,
+                storefronts: ["us"],
+                platform: "iphone",
+                limit: 1
+            )
+            #expect(first.summary.failed == 1)
+        }
+
+        // Reopen the file-backed store with a new service and scheduler. Only
+        // the durable attempt record can move the failed alpha request behind beta.
+        let relaunchedContainer = try ModelContainerFactory.makePersistentModelContainer(
+            at: storeURL
+        )
+        let relaunchedContext = try MCPTestContext(
+            modelContainer: relaunchedContainer,
+            rankingProvider: rankingProvider,
+            now: { isoDate("2026-05-07T12:01:00Z") }
+        )
+        let second = try await relaunchedContext.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 1
+        )
+        #expect(second.summary.failed == 1)
+        #expect(await rankingProvider.searchedKeysSnapshot() == [
+            rankingQueryKey("alpha"),
+            rankingQueryKey("beta"),
+        ])
+
+        let attemptContext = ModelContext(relaunchedContainer)
+        let attempts = try attemptContext.fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(Set(attempts.map(\.trackIdentityKey)) == Set([
+            "123::alpha::us::iphone",
+            "123::beta::us::iphone",
+        ]))
+        let attemptDates = Dictionary(uniqueKeysWithValues: attempts.map {
+            ($0.trackIdentityKey, $0.lastRankingRefreshAttemptAt)
+        })
+        #expect(
+            attemptDates["123::alpha::us::iphone"]
+                == isoDate("2026-05-07T12:00:00Z")
+        )
+        #expect(
+            attemptDates["123::beta::us::iphone"]
+                == isoDate("2026-05-07T12:01:00Z")
+        )
+
+        let tracks = try attemptContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        #expect(tracks.allSatisfy { $0.lastRefreshAt == nil })
+    }
+
+    @Test
+    func rankingAttemptBatchPersistenceFailureMakesNoProviderCall() async throws {
+        let rankingProvider = StubMCPRankingProvider(pages: [:])
+        let persistenceProbe = FailingRankingAttemptPersistenceProbe()
+        let context = try MCPTestContext(
+            rankingProvider: rankingProvider,
+            persistRankingRefreshAttempts: { requests, appStoreID, attemptedAt in
+                try await persistenceProbe.persist(
+                    requests,
+                    appStoreID: appStoreID,
+                    attemptedAt: attemptedAt
+                )
+            }
+        )
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha", "beta"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        await #expect(throws: InjectedRankingAttemptPersistenceError.self) {
+            _ = try await context.service.refreshKeywordRankings(
+                appStoreID: 123,
+                storefronts: ["us"],
+                platform: "iphone",
+                limit: 2
+            )
+        }
+
+        #expect(await rankingProvider.searchedKeysSnapshot().isEmpty)
+        #expect(await persistenceProbe.identityKeyBatches() == [[
+            "123::alpha::us::iphone",
+            "123::beta::us::iphone",
+        ]])
+        let attempts = try ModelContext(context.container).fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(attempts.isEmpty)
+    }
+
+    @Test
+    func backgroundStoreRollsBackFailedAttemptMutation() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let backgroundStore = BackgroundModelStore(modelContainer: container)
+
+        await #expect(throws: InjectedRankingAttemptPersistenceError.self) {
+            try await backgroundStore.write { modelContext -> Void in
+                modelContext.insert(TrackedAppKeywordRefreshAttempt(
+                    trackIdentityKey: "123::alpha::us::iphone",
+                    appStoreID: 123,
+                    lastRankingRefreshAttemptAt: isoDate("2026-05-07T12:00:00Z")
+                ))
+                throw InjectedRankingAttemptPersistenceError.expected
+            }
+        }
+
+        let attemptCount = try await backgroundStore.fetchCount(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(attemptCount == 0)
+    }
+
+    @Test
+    func rankingRefreshRemovesDurableAttemptsForDeletedTracks() async throws {
+        let rankingProvider = StubMCPRankingProvider(pages: [:])
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha", "beta"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        _ = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 1
+        )
+        let alphaIdentityKey = "123::alpha::us::iphone"
+        try await context.backgroundModelStore.write { modelContext in
+            let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+            guard let alpha = tracks.first(where: { $0.identityKey == alphaIdentityKey }) else {
+                throw OpenASOError.appNotFound
+            }
+            modelContext.delete(alpha)
+        }
+
+        _ = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 1
+        )
+
+        let attempts = try ModelContext(context.container).fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(attempts.map(\.trackIdentityKey) == ["123::beta::us::iphone"])
+    }
+
+    @Test
+    func firstRankingRefreshGloballyRemovesDurableAttemptsForOtherApps() async throws {
+        let rankingProvider = StubMCPRankingProvider(pages: [:])
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        try context.insertTrackedApp(appStoreID: 456, name: "Focus AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+        _ = try await context.service.addKeywords(
+            appStoreID: 456,
+            keywords: ["beta"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        try await context.backgroundModelStore.write { modelContext in
+            let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+            guard let alpha = tracks.first(where: { $0.identityKey == "123::alpha::us::iphone" })
+            else {
+                throw OpenASOError.appNotFound
+            }
+            modelContext.insert(TrackedAppKeywordRefreshAttempt(
+                trackIdentityKey: alpha.identityKey,
+                appStoreID: 123,
+                lastRankingRefreshAttemptAt: isoDate("2026-05-07T11:00:00Z")
+            ))
+            modelContext.delete(alpha)
+        }
+
+        _ = try await context.service.refreshKeywordRankings(
+            appStoreID: 456,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 1
+        )
+
+        let attempts = try ModelContext(context.container).fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(attempts.map(\.trackIdentityKey) == ["456::beta::us::iphone"])
+    }
+
+    @Test
     func failedRankingRefreshPreservesPriorSuccessfulRefreshDate() async throws {
         let rankingProvider = StubMCPRankingProvider(
             pages: [:],
@@ -1080,19 +1324,18 @@ struct OpenASOMCPServiceTests {
             rankingProvider: rankingProvider,
             rankingRefreshScheduler: scheduler
         )
+        try firstContext.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await firstContext.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha", "beta"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
         let secondContext = try MCPTestContext(
+            modelContainer: firstContext.container,
             rankingProvider: rankingProvider,
             rankingRefreshScheduler: scheduler
         )
-        for context in [firstContext, secondContext] {
-            try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
-            _ = try await context.service.addKeywords(
-                appStoreID: 123,
-                keywords: ["alpha", "beta"],
-                storefronts: ["us"],
-                platform: "iphone"
-            )
-        }
 
         let firstRefresh = Task {
             try await firstContext.service.refreshKeywordRankings(
@@ -1119,6 +1362,12 @@ struct OpenASOMCPServiceTests {
         await rankingProvider.releaseAll()
         _ = try await firstRefresh.value
         _ = try await secondRefresh.value
+
+        let attempts = try ModelContext(firstContext.container).fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(attempts.count == 2)
+        #expect(Set(attempts.map(\.trackIdentityKey)).count == 2)
     }
 
     @Test
@@ -1151,6 +1400,62 @@ struct OpenASOMCPServiceTests {
         )
         #expect(afterRelease.requests.map(\.identityKey) == [request.identityKey])
         await scheduler.release(afterRelease)
+    }
+
+    @Test
+    func rankingRefreshSchedulerUsesLatestSuccessDurableAndProcessRecency() async throws {
+        let scheduler = OpenASOMCPRankingRefreshScheduler()
+        let requests = ["alpha", "beta", "gamma"].map { term in
+            RankingRefreshRequest(
+                identityKey: "123::\(term)::us::iphone",
+                queryKey: rankingQueryKey(term),
+                term: term,
+                storefront: "us",
+                platform: .iphone
+            )
+        }
+        let candidates = [
+            OpenASOMCPRankingRefreshScheduler.Candidate(
+                request: requests[0],
+                lastSuccessfulRefreshAt: isoDate("2026-01-01T00:00:00Z"),
+                lastDurableAttemptAt: isoDate("2026-03-01T00:00:00Z")
+            ),
+            OpenASOMCPRankingRefreshScheduler.Candidate(
+                request: requests[1],
+                lastSuccessfulRefreshAt: isoDate("2026-02-20T00:00:00Z")
+            ),
+            OpenASOMCPRankingRefreshScheduler.Candidate(
+                request: requests[2],
+                lastSuccessfulRefreshAt: nil,
+                lastDurableAttemptAt: isoDate("2026-01-15T00:00:00Z")
+            ),
+        ]
+
+        let first = await scheduler.reserve(
+            appStoreID: 123,
+            candidates: candidates,
+            limit: 3
+        )
+        #expect(first.requests.map(\.term) == ["gamma", "beta", "alpha"])
+        try await scheduler.markAttemptStarted(
+            requests[0],
+            in: first,
+            attemptedAt: isoDate("2026-02-10T00:00:00Z")
+        )
+        try await scheduler.markAttemptStarted(
+            requests[2],
+            in: first,
+            attemptedAt: isoDate("2026-04-01T00:00:00Z")
+        )
+        await scheduler.release(first)
+
+        let second = await scheduler.reserve(
+            appStoreID: 123,
+            candidates: candidates,
+            limit: 3
+        )
+        #expect(second.requests.map(\.term) == ["beta", "alpha", "gamma"])
+        await scheduler.release(second)
     }
 
     @Test
@@ -1295,8 +1600,6 @@ struct OpenASOMCPServiceTests {
     func rankingRefreshGlobalSweepRemainsDueUntilReconciliationCompletes() async {
         let scheduler = OpenASOMCPRankingRefreshScheduler(globalSweepInterval: 2)
 
-        let firstPlan = await scheduler.makeReconciliationPlan()
-        #expect(!firstPlan.includesGlobalSweep)
         let abandonedDuePlan = await scheduler.makeReconciliationPlan()
         #expect(abandonedDuePlan.includesGlobalSweep)
         let concurrentPlan = await scheduler.makeReconciliationPlan()
@@ -1333,7 +1636,7 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
-    func cancelledRankingRefreshKeepsAttemptRotationAndDoesNotPersistFailure() async throws {
+    func cancelledRankingRefreshKeepsReservedAttemptRotationAndDoesNotPersistFailure() async throws {
         let rankingProvider = CancellationAwareMCPRankingProvider()
         let context = try MCPTestContext(rankingProvider: rankingProvider)
         try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
@@ -1361,6 +1664,15 @@ struct OpenASOMCPServiceTests {
         let tracksAfterCancellation = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
         #expect(tracksAfterCancellation.allSatisfy { $0.lastRefreshAt == nil })
         #expect(tracksAfterCancellation.allSatisfy { $0.statusMessage == nil })
+        let attemptsAfterCancellation = try ModelContext(context.container).fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        // The reservation is persisted atomically before provider I/O, so beta
+        // rotates even though cancellation prevents its individual search.
+        #expect(Set(attemptsAfterCancellation.map(\.trackIdentityKey)) == Set([
+            "123::alpha::us::iphone",
+            "123::beta::us::iphone",
+        ]))
 
         let retry = try await context.service.refreshKeywordRankings(
             appStoreID: 123,
@@ -1371,7 +1683,7 @@ struct OpenASOMCPServiceTests {
         #expect(retry.summary.refreshed == 1)
         #expect(await rankingProvider.searchedKeysSnapshot() == [
             rankingQueryKey("alpha"),
-            rankingQueryKey("beta"),
+            rankingQueryKey("gamma"),
         ])
     }
 
@@ -2606,20 +2918,24 @@ private struct MCPTestContext {
 
     @MainActor
     init(
+        modelContainer: ModelContainer? = nil,
         resolver: StubMCPAppResolver = StubMCPAppResolver(),
         rankingProvider: (any SearchRankingProvider)? = nil,
         useRankingRefreshCoordinator: Bool = false,
         rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler(),
+        persistRankingRefreshAttempts: OpenASOMCPService.RankingRefreshAttemptsPersistence? = nil,
         includeReviewService: Bool = false,
         includeKeywordMetricsService: Bool = false,
         popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
         appleAdsWebSessionProvider: @escaping @MainActor @Sendable () -> AppleAdsWebSession? = { nil },
         screenshotDataProvider: ScreenshotDownloadService.DataProvider? = nil,
+        now: @escaping @Sendable () -> Date = { isoDate("2026-05-07T12:00:00Z") },
         httpHandler: @escaping (URLRequest) throws -> (Data, URLResponse) = { request in
             (Data(), makeHTTPURLResponse(url: request.url!, statusCode: 200))
         }
     ) throws {
-        self.container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        self.container = try modelContainer
+            ?? ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         self.modelContext = ModelContext(container)
         self.backgroundModelStore = BackgroundModelStore(modelContainer: container)
         self.resolver = resolver
@@ -2646,6 +2962,7 @@ private struct MCPTestContext {
             rankingProvider: rankingProvider,
             rankingRefreshCoordinator: rankingRefreshCoordinator,
             rankingRefreshScheduler: rankingRefreshScheduler,
+            persistRankingRefreshAttempts: persistRankingRefreshAttempts,
             reviewService: includeReviewService ? AppStorefrontReviewService(httpClient: httpClient) : nil,
             keywordMetricsService: includeKeywordMetricsService
                 ? KeywordMetricsService(
@@ -2657,7 +2974,7 @@ private struct MCPTestContext {
                 : nil,
             popularityContextAppStoreIDProvider: popularityContextAppStoreIDProvider,
             appleAdsWebSessionProvider: appleAdsWebSessionProvider,
-            now: { isoDate("2026-05-07T12:00:00Z") }
+            now: now
         )
     }
 
@@ -3205,6 +3522,27 @@ private actor CancellationAwareMCPRankingProvider: SearchRankingProvider {
             try await Task.sleep(nanoseconds: 30_000_000_000)
         }
         return SearchRankingPage(items: [], source: .iTunesFallback)
+    }
+}
+
+private enum InjectedRankingAttemptPersistenceError: Error {
+    case expected
+}
+
+private actor FailingRankingAttemptPersistenceProbe {
+    private var batches: [[String]] = []
+
+    func persist(
+        _ requests: [RankingRefreshRequest],
+        appStoreID _: Int64,
+        attemptedAt _: Date
+    ) throws {
+        batches.append(requests.map(\.identityKey))
+        throw InjectedRankingAttemptPersistenceError.expected
+    }
+
+    func identityKeyBatches() -> [[String]] {
+        batches
     }
 }
 
