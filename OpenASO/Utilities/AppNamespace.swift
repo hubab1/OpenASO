@@ -32,20 +32,31 @@ struct AppNamespace: Sendable {
     }
 
     private func directoryURL(named directoryName: String, fileManager: FileManager) throws -> URL {
-        let url = containerBaseURL(fileManager: fileManager)
+        let url = try containerBaseURL(fileManager: fileManager)
             .appendingPathComponent(directoryName, isDirectory: true)
         try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
 
-    private func containerBaseURL(fileManager: FileManager) -> URL {
-        let supportURL = try? fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
+    private func containerBaseURL(fileManager: FileManager) throws -> URL {
+        try Self.containerBaseURL(
+            bundleIdentifier: bundleIdentifier,
+            applicationSupportDirectoryURL: {
+                try fileManager.url(
+                    for: .applicationSupportDirectory,
+                    in: .userDomainMask,
+                    appropriateFor: nil,
+                    create: true
+                )
+            }
         )
-        return (supportURL ?? fileManager.temporaryDirectory)
+    }
+
+    static func containerBaseURL(
+        bundleIdentifier: String,
+        applicationSupportDirectoryURL: () throws -> URL
+    ) throws -> URL {
+        try applicationSupportDirectoryURL()
             .appendingPathComponent("OpenASO", isDirectory: true)
             .appendingPathComponent(bundleIdentifier, isDirectory: true)
     }

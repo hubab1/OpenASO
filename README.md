@@ -48,6 +48,17 @@ Analytics is off by default for checked-in OSS builds. Non-OSS builds that omit 
 
 OpenASO stores app, keyword, rating, review, and metric data locally with SwiftData. CSV export is the primary path for using that data outside the app, especially for AI-assisted review analysis, keyword research, reporting, or spreadsheets.
 
+### Recovering A Local Database
+
+If OpenASO cannot open its local database, it does not delete or replace the existing files and shows the database location when available. Before attempting recovery:
+
+1. Quit every running OpenASO app and MCP process.
+2. Copy the entire `SwiftData` directory to a safe location. Keep `default.store`, `default.store-wal`, and `default.store-shm` together; do not delete or restore an individual file.
+3. Restore the complete directory from a compatible backup, or open it with the compatible OpenASO version that created it.
+4. Reopen OpenASO only after the complete directory is back in place.
+
+Keep the backup until the restored database has opened and its contents have been verified. OpenASO does not automatically reset or replace a database that fails to open.
+
 ## Build And Test
 
 Build and run:

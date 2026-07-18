@@ -17,6 +17,82 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func failedPersistentStoreOpenPreservesStoreAndSidecars() throws {
+        for simulatedFailure in SimulatedPersistentStoreFailure.allCases {
+            let rootURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "OpenASO-PersistentStoreTests-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+            defer {
+                try? FileManager.default.removeItem(at: rootURL)
+            }
+
+            let storeURL = rootURL.appendingPathComponent("default.store", isDirectory: false)
+            let artifacts = [
+                (storeURL, Data("database-\(simulatedFailure.rawValue)".utf8)),
+                (
+                    storeURL.deletingPathExtension().appendingPathExtension("store-wal"),
+                    Data("wal-\(simulatedFailure.rawValue)".utf8)
+                ),
+                (
+                    storeURL.deletingPathExtension().appendingPathExtension("store-shm"),
+                    Data("shm-\(simulatedFailure.rawValue)".utf8)
+                )
+            ]
+            for (url, data) in artifacts {
+                try data.write(to: url)
+            }
+
+            var openAttemptCount = 0
+            var persistentStoreError: PersistentStoreError?
+            do {
+                _ = try ModelContainerFactory.makePersistentModelContainer(at: storeURL) { _, _ in
+                    openAttemptCount += 1
+                    throw simulatedFailure
+                }
+            } catch let error as PersistentStoreError {
+                persistentStoreError = error
+            } catch {
+                #expect(Bool(false), "Unexpected error type: \(String(reflecting: error))")
+            }
+
+            #expect(openAttemptCount == 1)
+            #expect(persistentStoreError?.storeURL == storeURL)
+            #expect(persistentStoreError?.diagnosticReport.contains(storeURL.path(percentEncoded: false)) == true)
+            for (url, expectedData) in artifacts {
+                #expect(FileManager.default.fileExists(atPath: url.path))
+                #expect(try Data(contentsOf: url) == expectedData)
+            }
+        }
+    }
+
+    @Test
+    func inMemoryOpenFailureIsNotReportedAsPersistentStoreFailure() {
+        #expect(throws: SimulatedPersistentStoreFailure.self) {
+            _ = try ModelContainerFactory.makeModelContainer(
+                isStoredInMemoryOnly: true,
+                opener: { _, _ in
+                    throw SimulatedPersistentStoreFailure.transient
+                }
+            )
+        }
+    }
+
+    @Test
+    func applicationSupportLookupFailureDoesNotFallBackToTemporaryStorage() {
+        #expect(throws: SimulatedDirectoryLookupFailure.self) {
+            _ = try AppNamespace.containerBaseURL(
+                bundleIdentifier: "com.thirdtech.openaso.tests.persistence",
+                applicationSupportDirectoryURL: {
+                    throw SimulatedDirectoryLookupFailure.unavailable
+                }
+            )
+        }
+    }
+
+    @Test
     func mockedServicesUseInMemoryAppleAdsStores() throws {
         let services = AppServices.mocked(
             httpClient: MockHTTPClient { request in
@@ -201,6 +277,16 @@ struct AppServicesDependencyTests {
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
     }
+}
+
+private enum SimulatedPersistentStoreFailure: String, Error, CaseIterable, Sendable {
+    case corrupt
+    case incompatible
+    case transient
+}
+
+private enum SimulatedDirectoryLookupFailure: Error {
+    case unavailable
 }
 
 private final class RecordingKeychainService: KeychainService {

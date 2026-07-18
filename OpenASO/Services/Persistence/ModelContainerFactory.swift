@@ -1,43 +1,103 @@
 import Foundation
 import SwiftData
 
+enum PersistentStoreError: LocalizedError, Sendable {
+    case locationUnavailable(diagnosticDescription: String)
+    case openFailed(storeURL: URL, diagnosticDescription: String)
+    case unexpected(diagnosticDescription: String)
+
+    var storeURL: URL? {
+        guard case .openFailed(let storeURL, _) = self else {
+            return nil
+        }
+        return storeURL
+    }
+
+    var diagnosticDescription: String {
+        switch self {
+        case .locationUnavailable(let diagnosticDescription),
+             .openFailed(_, let diagnosticDescription),
+             .unexpected(let diagnosticDescription):
+            diagnosticDescription
+        }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .locationUnavailable:
+            "OpenASO couldn’t access its local data folder."
+        case .openFailed:
+            "OpenASO couldn’t open its local database."
+        case .unexpected:
+            "OpenASO couldn’t prepare its local database."
+        }
+    }
+
+    var recoverySuggestion: String? {
+        "OpenASO did not delete or replace your database files. Quit OpenASO before changing them, and copy the entire data folder before attempting recovery."
+    }
+
+    var diagnosticReport: String {
+        var lines = [
+            errorDescription ?? "OpenASO couldn’t prepare its local database.",
+            recoverySuggestion ?? "No database files were removed."
+        ]
+        if let storeURL {
+            lines.append("Database: \(storeURL.path(percentEncoded: false))")
+        }
+        lines.append("Details: \(diagnosticDescription)")
+        return lines.joined(separator: "\n")
+    }
+}
+
 enum ModelContainerFactory {
+    typealias ContainerOpener = (Schema, ModelConfiguration) throws -> ModelContainer
+
     static var schema: Schema {
         Schema(OpenASOSchemaV1.models)
     }
 
     static func makeModelContainer(
         isStoredInMemoryOnly: Bool,
-        namespace: AppNamespace = .current
+        namespace: AppNamespace = .current,
+        opener: ContainerOpener = openModelContainer
     ) throws -> ModelContainer {
         let schema = Self.schema
-        let configuration: ModelConfiguration
         if isStoredInMemoryOnly {
-            configuration = ModelConfiguration(
+            let configuration = ModelConfiguration(
                 schema: schema,
                 isStoredInMemoryOnly: true
             )
-        } else {
-            configuration = ModelConfiguration(
-                schema: schema,
-                url: try storeURL(namespace: namespace)
+            return try opener(schema, configuration)
+        }
+
+        let persistentStoreURL: URL
+        do {
+            persistentStoreURL = try storeURL(namespace: namespace)
+        } catch {
+            throw PersistentStoreError.locationUnavailable(
+                diagnosticDescription: String(reflecting: error)
             )
         }
+
+        return try makePersistentModelContainer(
+            at: persistentStoreURL,
+            opener: opener
+        )
+    }
+
+    static func makePersistentModelContainer(
+        at storeURL: URL,
+        opener: ContainerOpener = openModelContainer
+    ) throws -> ModelContainer {
+        let schema = Self.schema
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
         do {
-            return try ModelContainer(
-                for: schema,
-                migrationPlan: OpenASOMigrationPlan.self,
-                configurations: [configuration]
-            )
+            return try opener(schema, configuration)
         } catch {
-            guard !isStoredInMemoryOnly else {
-                throw error
-            }
-            try deletePersistentStore(namespace: namespace)
-            return try ModelContainer(
-                for: schema,
-                migrationPlan: OpenASOMigrationPlan.self,
-                configurations: [configuration]
+            throw PersistentStoreError.openFailed(
+                storeURL: storeURL,
+                diagnosticDescription: String(reflecting: error)
             )
         }
     }
@@ -49,15 +109,14 @@ enum ModelContainerFactory {
         return storeDirectoryURL.appendingPathComponent("default.store", isDirectory: false)
     }
 
-    private static func deletePersistentStore(namespace: AppNamespace) throws {
-        let storeURL = try storeURL(namespace: namespace)
-        let fileManager = FileManager.default
-        for url in [
-            storeURL,
-            storeURL.deletingPathExtension().appendingPathExtension("store-shm"),
-            storeURL.deletingPathExtension().appendingPathExtension("store-wal")
-        ] where fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
-        }
+    private static func openModelContainer(
+        schema: Schema,
+        configuration: ModelConfiguration
+    ) throws -> ModelContainer {
+        try ModelContainer(
+            for: schema,
+            migrationPlan: OpenASOMigrationPlan.self,
+            configurations: [configuration]
+        )
     }
 }
