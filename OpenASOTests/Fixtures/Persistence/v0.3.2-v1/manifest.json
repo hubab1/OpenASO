@@ -1,0 +1,20 @@
+{
+  "artifacts" : [
+    {
+      "byteCount" : 434176,
+      "filename" : "default.store",
+      "sha256" : "b73b0f527bc9a29e7068578e4d0536e6225b1da3070f7e9fb1d3ce8a42546a69"
+    },
+    {
+      "byteCount" : 32768,
+      "filename" : "default.store-shm",
+      "sha256" : "84cc36b4d01ab556899cb1739e9f68ee1cff19dd7985a84dfd4afcff90a5f4ca"
+    }
+  ],
+  "fixtureID" : "v0.3.2-v1",
+  "formatVersion" : 1,
+  "schemaVersion" : "1.0.0",
+  "sourceCommit" : "7a2c3752fa895ad820663a5b4baeaf926f0b65f9",
+  "sourceTag" : "v0.3.2",
+  "storeFilename" : "default.store"
+}

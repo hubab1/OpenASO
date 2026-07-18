@@ -1,5 +1,7 @@
 import SwiftData
 
+// Frozen after the v0.3.2 release. Do not edit these model definitions in place;
+// add distinct model types in a new versioned schema and append that schema below.
 enum OpenASOSchemaV1: VersionedSchema {
     static var versionIdentifier: Schema.Version {
         Schema.Version(1, 0, 0)
@@ -29,6 +31,10 @@ enum OpenASOSchemaV1: VersionedSchema {
 }
 
 enum OpenASOMigrationPlan: SchemaMigrationPlan {
+    static var currentSchema: any VersionedSchema.Type {
+        schemas.last!
+    }
+
     static var schemas: [any VersionedSchema.Type] {
         [
             OpenASOSchemaV1.self
