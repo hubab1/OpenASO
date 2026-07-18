@@ -364,7 +364,6 @@ struct AppStorefrontRatingServiceTests {
         modelContext.insert(storeApp)
 
         var attempts = 0
-        let sleepRecorder = SleepRecorder()
         let client = MockHTTPClient { request in
             attempts += 1
             #expect(request.url?.absoluteString == "https://itunes.apple.com/lookup?id=6497229487&country=id")
@@ -375,7 +374,7 @@ struct AppStorefrontRatingServiceTests {
                     makeHTTPURLResponse(
                         url: try #require(request.url),
                         statusCode: 429,
-                        headerFields: ["Retry-After": "2"]
+                        headerFields: ["Retry-After": "0"]
                     )
                 )
             }
@@ -397,17 +396,11 @@ struct AppStorefrontRatingServiceTests {
                 makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
             )
         }
-        let service = AppStorefrontRatingService(
-            httpClient: client,
-            retrySleeper: {
-                await sleepRecorder.record($0)
-            }
-        )
+        let service = AppStorefrontRatingService(httpClient: makeRatingRetryGate(base: client))
 
         let outcomes = await service.refreshRatings(for: storeApp, storefronts: ["id"], in: modelContext)
 
         #expect(attempts == 2)
-        #expect(await sleepRecorder.values == [2_000_000_000])
         #expect(outcomes.count == 1)
         #expect(outcomes.first?.error == nil)
         #expect(outcomes.first?.result?.ratingCount == 42)
@@ -444,15 +437,47 @@ struct AppStorefrontRatingServiceTests {
                 makeHTTPURLResponse(url: try #require(request.url), statusCode: 429)
             )
         }
-        let service = AppStorefrontRatingService(
-            httpClient: client,
-            retryPolicy: AppStorefrontRatingRetryPolicy(maxAttempts: 2, baseDelaySeconds: 0.5, maxDelaySeconds: 1),
-            retrySleeper: { _ in }
-        )
+        let service = AppStorefrontRatingService(httpClient: makeRatingRetryGate(base: client))
 
         let outcomes = await service.refreshRatings(for: storeApp, storefronts: ["id"], in: modelContext)
 
         #expect(attempts == 4)
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.result == nil)
+        #expect(outcomes.first?.error == .rateLimited)
+        #expect(try modelContext.fetch(FetchDescriptor<LatestAppRating>()).isEmpty)
+    }
+
+    @Test
+    func refreshRatingsWithoutGateRequestsEachSourceOnceForRateLimits() async throws {
+        let container = try makeRatingContainer()
+        let modelContext = ModelContext(container)
+        let storeApp = StoreApp(
+            appStoreID: 6_497_229_487,
+            bundleID: "com.wisprflow.keyboard",
+            name: "Wispr Flow",
+            sellerName: "Wispr AI",
+            iconURLString: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(storeApp)
+
+        var requestedURLs: [String] = []
+        let client = MockHTTPClient { request in
+            requestedURLs.append(try #require(request.url?.absoluteString))
+            return (
+                Data("rate limited".utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 429)
+            )
+        }
+        let service = AppStorefrontRatingService(httpClient: client)
+
+        let outcomes = await service.refreshRatings(for: storeApp, storefronts: ["id"], in: modelContext)
+
+        #expect(requestedURLs == [
+            "https://itunes.apple.com/lookup?id=6497229487&country=id",
+            "https://apps.apple.com/id/app/id6497229487?l=en-US"
+        ])
         #expect(outcomes.count == 1)
         #expect(outcomes.first?.result == nil)
         #expect(outcomes.first?.error == .rateLimited)
@@ -620,18 +645,6 @@ private func makeUTCDate(year: Int, month: Int, day: Int, hour: Int, minute: Int
     )) ?? Date(timeIntervalSince1970: 0)
 }
 
-private actor SleepRecorder {
-    private var recordedValues: [UInt64] = []
-
-    func record(_ value: UInt64) {
-        recordedValues.append(value)
-    }
-
-    var values: [UInt64] {
-        recordedValues
-    }
-}
-
 private actor RatingProgressRecorder {
     private var recordedValues: [(completed: Int, total: Int, failureCount: Int)] = []
 
@@ -642,4 +655,19 @@ private actor RatingProgressRecorder {
     var failureCounts: [Int] {
         recordedValues.map(\.failureCount)
     }
+}
+
+private func makeRatingRetryGate(base: any HTTPClient) -> ProviderRequestGate {
+    let policy = ProviderRequestPolicy(
+        minimumIntervalNanoseconds: 0,
+        maximumAttempts: 2,
+        baseBackoffNanoseconds: 0,
+        maximumBackoffNanoseconds: 0,
+        maximumElapsedNanoseconds: 1_000_000_000,
+        jitterFraction: 0
+    )
+    return ProviderRequestGate(
+        base: base,
+        policies: ProviderRequestPolicies(default: policy)
+    )
 }

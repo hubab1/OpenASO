@@ -47,15 +47,21 @@ final class AppServices {
         allowsIconNetworkFetches: Bool = true,
         backgroundModelStore: BackgroundModelStore? = nil,
         refreshObservationClock: RefreshObservationClock = .live,
-        refreshMetricsRecorder: RefreshMetricsRecorder? = nil
+        refreshMetricsRecorder: RefreshMetricsRecorder? = nil,
+        providerRequestGateMode: ProviderRequestGateMode? = nil,
+        providerRequestClock: ProviderRequestClock = .live,
+        providerRequestRandomness: ProviderRequestRandomness = .live
     ) {
         let refreshMetricsRecorder = refreshMetricsRecorder ?? RefreshMetricsRecorder(
             clock: refreshObservationClock
         )
-        let httpClient = ObservedHTTPClient(
-            base: httpClient,
-            recorder: refreshMetricsRecorder,
-            clock: refreshObservationClock
+        let httpClient = ProviderHTTPClientPipeline.make(
+            transport: httpClient,
+            mode: providerRequestGateMode ?? .production(defaults: defaults),
+            refreshMetricsRecorder: refreshMetricsRecorder,
+            refreshObservationClock: refreshObservationClock,
+            providerRequestClock: providerRequestClock,
+            providerRequestRandomness: providerRequestRandomness
         )
         let appleAdsCredentialStore = AppleAdsCredentialStore(
             defaults: defaults,
@@ -87,10 +93,7 @@ final class AppServices {
         let catalogService = AppCatalogService(appResolver: resolver)
         let screenshotDownloadService = ScreenshotDownloadService()
         let screenshotDownloadProgressStore = ScreenshotDownloadProgressStore()
-        let appStorefrontRatingService = AppStorefrontRatingService(
-            httpClient: httpClient,
-            refreshMetricsRecorder: refreshMetricsRecorder
-        )
+        let appStorefrontRatingService = AppStorefrontRatingService(httpClient: httpClient)
         let appStorefrontReviewService = AppStorefrontReviewService(
             httpClient: httpClient
         )
@@ -388,7 +391,8 @@ extension AppServices {
             },
             loadsEnvironmentCredentials: false,
             allowsIconNetworkFetches: allowsIconNetworkFetches,
-            backgroundModelStore: backgroundModelStore
+            backgroundModelStore: backgroundModelStore,
+            providerRequestGateMode: .disabled
         )
     }
 }
