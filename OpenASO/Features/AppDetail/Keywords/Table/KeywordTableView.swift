@@ -41,12 +41,8 @@ struct KeywordTableView: View {
         }
     }
 
-    private var sortedTableRows: [KeywordTablePresentationRow] {
-        tableRows.sorted(using: sortOrder)
-    }
-
     private var sortedRows: [KeywordWorkspaceRow] {
-        sortedTableRows.map(\.row)
+        tableRows.sorted(using: sortOrder).map(\.row)
     }
 
     private var showsPlatformColumn: Bool {
@@ -83,12 +79,11 @@ struct KeywordTableView: View {
                 continue
             }
 
-            let snapshots = row.trendSnapshots.sorted { $0.searchedAt < $1.searchedAt }
             var points: [KeywordRankingChartSeries.Point] = []
-            points.reserveCapacity(snapshots.count)
+            points.reserveCapacity(row.trendSnapshots.count)
             var lastRank: Int?
 
-            for snapshot in snapshots {
+            for snapshot in row.trendSnapshots {
                 if let rank = snapshot.rank {
                     lastRank = rank
                 }
@@ -120,6 +115,9 @@ struct KeywordTableView: View {
     }
 
     var body: some View {
+        let sortedTableRows = tableRows.sorted(using: sortOrder)
+        let sortedRowIDs = sortedTableRows.map(\.id)
+
         VStack(spacing: 0) {
             KeywordTableSummaryHeader(
                 rankingSeries: rankingChartSeries,
@@ -244,7 +242,7 @@ struct KeywordTableView: View {
                 }
             }
         }
-        .onChange(of: sortedRows.map(\.id)) { _, rowIDs in
+        .onChange(of: sortedRowIDs) { _, rowIDs in
             selection.formIntersection(Set(rowIDs))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -475,7 +473,7 @@ struct KeywordTableView: View {
     }
 
     private func hasRankingHistory(_ row: KeywordWorkspaceRow) -> Bool {
-        row.trendSnapshots.contains { $0.rank != nil }
+        !row.trendPoints.isEmpty
     }
 
     private func chartDefaultSort(_ lhs: KeywordWorkspaceRow, _ rhs: KeywordWorkspaceRow) -> Bool {
@@ -687,9 +685,8 @@ private struct KeywordTableInsightsSidebar: View {
 
     private var changedCount: Int {
         rankingSeries.reduce(0) { count, series in
-            let points = series.points.sorted { $0.date < $1.date }
-            guard let previous = points.dropLast().last,
-                  let latest = points.last
+            guard let previous = series.points.dropLast().last,
+                  let latest = series.points.last
             else {
                 return count
             }

@@ -20,10 +20,8 @@ struct AppKeywordsView: View {
     let refreshToken: Int
     let reportError: (String) -> Void
 
-    @State private var metricsByQueryKey: [String: KeywordMetricsSnapshot] = [:]
     @State private var insightsDataset = KeywordInsightsDataset(appStoreID: 0, series: [], source: .local)
-    @State private var keywordRows: [KeywordWorkspaceRow] = []
-    @State private var derivedRowsSignature: String?
+    @State private var workspaceModel = KeywordWorkspaceModel()
 
     init(
         trackedApp: TrackedApp,
@@ -78,37 +76,45 @@ struct AppKeywordsView: View {
         }
     }
 
-    private var rowReloadSignature: String {
-        [
-            String(refreshToken),
-            String(services.backgroundModelStoreRevision),
-            String(trackedApp.appStoreID),
-            selectedPlatformFilter.id,
-            tracksSignature,
-            selectedDateRange.id,
-            searchText.trimmingCharacters(in: .whitespacesAndNewlines),
-            popularityFilterRange.description,
-            difficultyFilterRange.description,
-            positionFilterRange.description,
-            changeFilterRange.description,
-            String(showsOnlyChangedKeywords)
-        ].joined(separator: "::")
+    private var materializationID: KeywordWorkspaceProjection.MaterializationID {
+        KeywordWorkspaceProjection.MaterializationID(
+            refreshToken: refreshToken,
+            backgroundStoreRevision: services.backgroundModelStoreRevision,
+            appStoreID: trackedApp.appStoreID,
+            storefrontFilterID: selectedStorefrontFilter.id,
+            platformFilterID: selectedPlatformFilter.id,
+            dateRangeID: selectedDateRange.id,
+            tracks: tracks.map { track in
+                KeywordWorkspaceProjection.MaterializationID.TrackRevision(
+                    identityKey: track.identityKey,
+                    lastRefreshAt: track.lastRefreshAt,
+                    rankingAppCount: track.rankingAppCount,
+                    statusMessage: track.statusMessage
+                )
+            }
+        )
     }
 
-    private var tracksSignature: String {
-        tracks.map { track in
-            [
-                track.identityKey,
-                String(track.lastRefreshAt?.timeIntervalSinceReferenceDate ?? 0),
-                String(track.rankingAppCount ?? -1),
-                track.statusMessage ?? ""
-            ].joined(separator: "|")
-        }
-        .joined(separator: "::")
+    private var filters: KeywordWorkspaceProjection.Filters {
+        KeywordWorkspaceProjection.Filters(
+            searchText: searchText.trimmingCharacters(in: .whitespacesAndNewlines),
+            popularityRange: popularityFilterRange,
+            difficultyRange: difficultyFilterRange,
+            positionRange: positionFilterRange,
+            changeRange: changeFilterRange,
+            showsOnlyChangedKeywords: showsOnlyChangedKeywords
+        )
+    }
+
+    private var filterID: KeywordWorkspaceProjection.FilterID {
+        KeywordWorkspaceProjection.FilterID(
+            materializationGeneration: workspaceModel.materializationGeneration,
+            filters: filters
+        )
     }
 
     private var isLoadingKeywordRows: Bool {
-        derivedRowsSignature != rowReloadSignature
+        workspaceModel.isLoading(for: materializationID)
     }
 
     private func insightsSignature(for rows: [KeywordWorkspaceRow]) -> String {
@@ -147,9 +153,10 @@ struct AppKeywordsView: View {
 
     private static let rankingFetchChunkSize = 500
 
-    private func makeFilteredRows(
+    private func makeRows(
         from tracks: [TrackedAppKeyword],
-        snapshotBuckets: SnapshotBuckets
+        snapshotBuckets: SnapshotBuckets,
+        metricsByQueryKey: [String: KeywordMetricsSnapshot]
     ) -> [KeywordWorkspaceRow] {
         let storefrontLookup = storefrontLookup
         var rows: [KeywordWorkspaceRow] = []
@@ -159,7 +166,8 @@ struct AppKeywordsView: View {
             guard let row = makeRow(
                 for: track,
                 snapshotBuckets: snapshotBuckets,
-                storefrontLookup: storefrontLookup
+                storefrontLookup: storefrontLookup,
+                metricsByQueryKey: metricsByQueryKey
             ) else {
                 continue
             }
@@ -167,15 +175,11 @@ struct AppKeywordsView: View {
             rows.append(row)
         }
 
-        return rows
-            .filter(matchesPosition)
-            .filter(matchesChange)
-            .filter(matchesChangedOnly)
-            .sorted(by: rowSort)
+        return KeywordWorkspaceProjection.orderedRows(rows)
     }
 
     var body: some View {
-        let rows = keywordRows
+        let rows = workspaceModel.rows
         VStack(alignment: .leading, spacing: 0) {
             if tracks.isEmpty {
                 ContentUnavailableView(
@@ -202,34 +206,50 @@ struct AppKeywordsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: rowReloadSignature) {
-            await updateKeywordRows()
+        .task(id: materializationID) {
+            await materializeKeywordRows(for: materializationID)
+        }
+        .task(id: filterID) {
+            await applyRowFilters(for: filterID)
         }
         .task(id: insightsSignature(for: rows)) {
             await reloadInsights(visibleTracks: rows.map(\.track))
         }
     }
 
-    private func updateKeywordRows() async {
-        let signature = rowReloadSignature
-        do {
-            let searchFilteredTracks = tracks
-                .filter(matchesPlatform)
-                .filter(matchesSearch)
-            let loadedMetrics = try await loadMetricsSnapshots(for: searchFilteredTracks.map(\.queryKey))
-            metricsByQueryKey = loadedMetrics
-            let filteredTracks = searchFilteredTracks.filter(matchesMetrics)
-            let snapshotBuckets = try fetchSnapshotBuckets(for: filteredTracks)
-            keywordRows = makeFilteredRows(
-                from: filteredTracks,
-                snapshotBuckets: snapshotBuckets
+    private func materializeKeywordRows(
+        for targetMaterializationID: KeywordWorkspaceProjection.MaterializationID
+    ) async {
+        let errorMessage = await workspaceModel.materialize(
+            id: targetMaterializationID,
+            initialFilters: filters
+        ) {
+            try Task.checkCancellation()
+            let platformTracks = tracks.filter(matchesPlatform)
+            let loadedMetrics = try await loadMetricsSnapshots(for: platformTracks.map(\.queryKey))
+            try Task.checkCancellation()
+            let snapshotBuckets = try fetchSnapshotBuckets(for: platformTracks)
+            let loadedRows = makeRows(
+                from: platformTracks,
+                snapshotBuckets: snapshotBuckets,
+                metricsByQueryKey: loadedMetrics
             )
-        } catch {
-            metricsByQueryKey = [:]
-            keywordRows = []
-            reportError(OpenASOError.map(error).localizedDescription)
+            try Task.checkCancellation()
+            return loadedRows
         }
-        derivedRowsSignature = signature
+
+        if let errorMessage {
+            reportError(errorMessage)
+        }
+    }
+
+    private func applyRowFilters(for targetFilterID: KeywordWorkspaceProjection.FilterID) async {
+        await workspaceModel.updateFilter(id: targetFilterID) { rows, filters in
+            try await KeywordWorkspaceProjection.debouncedRows(
+                rows,
+                filters: filters
+            )
+        }
     }
 
     private func loadMetricsSnapshots(for queryKeys: [String]) async throws -> [String: KeywordMetricsSnapshot] {
@@ -244,15 +264,6 @@ struct AppKeywordsView: View {
         }
 
         return try KeywordMetricsSnapshot.map(for: queryKeys, in: modelContext)
-    }
-
-    private func matchesSearch(for track: TrackedAppKeyword) -> Bool {
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSearch.isEmpty else {
-            return true
-        }
-
-        return track.term.localizedStandardContains(trimmedSearch)
     }
 
     private func matchesPlatform(for track: TrackedAppKeyword) -> Bool {
@@ -276,7 +287,8 @@ struct AppKeywordsView: View {
     private func makeRow(
         for track: TrackedAppKeyword,
         snapshotBuckets: SnapshotBuckets,
-        storefrontLookup: [String: StorefrontDefinition]
+        storefrontLookup: [String: StorefrontDefinition],
+        metricsByQueryKey: [String: KeywordMetricsSnapshot]
     ) -> KeywordWorkspaceRow? {
         let latestSnapshot = snapshotBuckets.latestByTrackKey[track.identityKey]
         let trendSnapshots = snapshotBuckets.trendByTrackKey[track.identityKey] ?? []
@@ -290,12 +302,6 @@ struct AppKeywordsView: View {
             trendSnapshots: trendSnapshots,
             rankingApps: rankingApps
         )
-    }
-
-    private func matchesMetrics(for track: TrackedAppKeyword) -> Bool {
-        let metrics = metricsByQueryKey[track.queryKey]
-        return matches(metrics?.popularityScore, in: popularityFilterRange, configuration: .popularity)
-            && matches(metrics?.difficultyScore, in: difficultyFilterRange, configuration: .difficulty)
     }
 
     private func fetchSnapshotBuckets(for tracks: [TrackedAppKeyword]) throws -> SnapshotBuckets {
@@ -521,53 +527,6 @@ struct AppKeywordsView: View {
         return itemsByCrawlKey
     }
 
-    private func matchesPosition(_ row: KeywordWorkspaceRow) -> Bool {
-        matches(row.currentRank, in: positionFilterRange, configuration: .position)
-    }
-
-    private func matchesChange(_ row: KeywordWorkspaceRow) -> Bool {
-        matches(row.trendDelta, in: changeFilterRange, configuration: .change)
-    }
-
-    private func matchesChangedOnly(_ row: KeywordWorkspaceRow) -> Bool {
-        guard showsOnlyChangedKeywords else {
-            return true
-        }
-
-        guard let trendDelta = row.trendDelta else {
-            return false
-        }
-
-        return trendDelta != 0
-    }
-
-    private func matches(_ value: Int?, in range: ClosedRange<Double>, configuration: MetricFilterRange) -> Bool {
-        if configuration.isDefault(range) {
-            return true
-        }
-
-        guard let value else {
-            return false
-        }
-
-        return range.contains(Double(value))
-    }
-
-    private func rowSort(_ lhs: KeywordWorkspaceRow, _ rhs: KeywordWorkspaceRow) -> Bool {
-        switch (lhs.currentRank, rhs.currentRank) {
-        case let (left?, right?):
-            if left == right {
-                return lhs.track.term.localizedCaseInsensitiveCompare(rhs.track.term) == .orderedAscending
-            }
-            return left < right
-        case (_?, nil):
-            return true
-        case (nil, _?):
-            return false
-        case (nil, nil):
-            return lhs.track.term.localizedCaseInsensitiveCompare(rhs.track.term) == .orderedAscending
-        }
-    }
 }
 
 #Preview("Keyword Workspace") {

@@ -1,0 +1,540 @@
+import Foundation
+import Testing
+@testable import OpenASO
+
+@MainActor
+struct KeywordWorkspaceProjectionTests {
+    @Test
+    func precomputesLongHistoryAndPreservesFilterSemantics() {
+        let start = Date(timeIntervalSince1970: 1_900_000_000)
+        let longHistory = (0..<10_000).reversed().map { index in
+            KeywordRankingCrawlSummary(
+                id: "history-\(index)",
+                rank: index == 4_000 ? nil : 10 + index % 100,
+                searchedAt: start.addingTimeInterval(TimeInterval(index * 60)),
+                source: .appStoreWeb,
+                resultCount: 300
+            )
+        }
+        let focusRow = makeRow(
+            term: "Focus Timer",
+            appStoreID: 1,
+            currentRank: 5,
+            popularity: 80,
+            difficulty: 40,
+            trendSnapshots: longHistory
+        )
+        let habitRow = makeRow(
+            term: "Habit Tracker",
+            appStoreID: 2,
+            currentRank: 2,
+            popularity: 20,
+            difficulty: 70,
+            trendSnapshots: [
+                summary(id: "habit-old", rank: 2, date: start),
+                summary(id: "habit-new", rank: 2, date: start.addingTimeInterval(60))
+            ]
+        )
+        let unrankedRow = makeRow(
+            term: "Pomodoro",
+            appStoreID: 3,
+            currentRank: nil,
+            popularity: nil,
+            difficulty: nil,
+            trendSnapshots: []
+        )
+
+        #expect(focusRow.trendSnapshots.first?.id == "history-0")
+        #expect(focusRow.trendSnapshots.last?.id == "history-9999")
+        #expect(focusRow.trendPoints.count == 9_999)
+        #expect(focusRow.trendDelta == -99)
+
+        let ordered = KeywordWorkspaceProjection.orderedRows([focusRow, unrankedRow, habitRow])
+        #expect(ordered.map { $0.track.term } == ["Habit Tracker", "Focus Timer", "Pomodoro"])
+
+        let filtered = KeywordWorkspaceProjection.filteredRows(
+            ordered,
+            filters: filters(searchText: "FOCUS", popularityRange: 50...100, changedOnly: true)
+        )
+        #expect(filtered.map { $0.track.term } == ["Focus Timer"])
+    }
+
+    @Test
+    func initialMaterializationPublishesLatestFiltersAndLoadingCompletionTogether() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let id = materializationID(refreshToken: 1)
+        let focusRow = makeRow(term: "Focus Timer", appStoreID: 1)
+        let habitRow = makeRow(term: "Habit Tracker", appStoreID: 2)
+
+        let loadTask = Task { @MainActor in
+            await model.materialize(
+                id: id,
+                initialFilters: filters(searchText: "focus"),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+        #expect(model.isLoading(for: id))
+        #expect(model.rows.isEmpty)
+
+        let latestFilters = filters(searchText: "habit")
+        var didRunDebouncedFilter = false
+        await model.updateFilter(
+            id: KeywordWorkspaceProjection.FilterID(
+                materializationGeneration: model.materializationGeneration,
+                filters: latestFilters
+            )
+        ) { rows, filters in
+            didRunDebouncedFilter = true
+            return KeywordWorkspaceProjection.filteredRows(rows, filters: filters)
+        }
+        #expect(!didRunDebouncedFilter)
+
+        materializer.succeedRequest(at: 0, with: [focusRow, habitRow])
+        let errorMessage = await loadTask.value
+
+        #expect(errorMessage == nil)
+        #expect(!model.isLoading(for: id))
+        #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+    }
+
+    @Test
+    func canceledSupersededErrorCannotClearFreshPublicationOrReportAnError() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let staleID = materializationID(refreshToken: 1)
+        let freshID = materializationID(refreshToken: 2)
+        let freshRow = makeRow(term: "Fresh Keyword", appStoreID: 2)
+
+        let staleTask = Task { @MainActor in
+            await model.materialize(
+                id: staleID,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+        staleTask.cancel()
+
+        let freshTask = Task { @MainActor in
+            await model.materialize(
+                id: freshID,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(2)
+        materializer.succeedRequest(at: 1, with: [freshRow])
+        let freshError = await freshTask.value
+        #expect(freshError == nil)
+        #expect(model.rows.map { $0.track.term } == ["Fresh Keyword"])
+        #expect(!model.isLoading(for: freshID))
+
+        materializer.failRequest(at: 0)
+        let staleError = await staleTask.value
+        #expect(staleError == nil)
+        #expect(model.rows.map { $0.track.term } == ["Fresh Keyword"])
+        #expect(!model.isLoading(for: freshID))
+    }
+
+    @Test
+    func supersededSuccessCannotReplaceFreshPublication() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let staleID = materializationID(refreshToken: 1)
+        let freshID = materializationID(refreshToken: 2)
+
+        let staleTask = Task { @MainActor in
+            await model.materialize(
+                id: staleID,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+
+        let freshTask = Task { @MainActor in
+            await model.materialize(
+                id: freshID,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(2)
+
+        materializer.succeedRequest(
+            at: 1,
+            with: [makeRow(term: "Fresh Keyword", appStoreID: 2)]
+        )
+        let freshError = await freshTask.value
+        #expect(freshError == nil)
+        #expect(model.rows.map { $0.track.term } == ["Fresh Keyword"])
+
+        materializer.succeedRequest(
+            at: 0,
+            with: [makeRow(term: "Stale Keyword", appStoreID: 1)]
+        )
+        let staleError = await staleTask.value
+        #expect(staleError == nil)
+        #expect(model.rows.map { $0.track.term } == ["Fresh Keyword"])
+        #expect(!model.isLoading(for: freshID))
+    }
+
+    @Test
+    func preCancelledStaleMaterializationCannotInvalidateFreshRequest() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let staleID = materializationID(refreshToken: 1)
+        let freshID = materializationID(refreshToken: 2)
+        let freshRow = makeRow(term: "Fresh Keyword", appStoreID: 2)
+
+        let freshTask = Task { @MainActor in
+            await model.materialize(
+                id: freshID,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+
+        let staleTask = Task { @MainActor in
+            await model.materialize(
+                id: staleID,
+                initialFilters: filters()
+            ) {
+                try Task.checkCancellation()
+                return []
+            }
+        }
+        staleTask.cancel()
+        let staleError = await staleTask.value
+        #expect(staleError == nil)
+
+        materializer.succeedRequest(at: 0, with: [freshRow])
+        let freshError = await freshTask.value
+
+        #expect(freshError == nil)
+        #expect(model.rows.map { $0.track.term } == ["Fresh Keyword"])
+        #expect(!model.isLoading(for: freshID))
+    }
+
+    @Test
+    func currentFailureCompletesLoadingAndReportsError() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let id = materializationID(refreshToken: 1)
+
+        let loadTask = Task { @MainActor in
+            await model.materialize(
+                id: id,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+        materializer.failRequest(at: 0)
+
+        let errorMessage = await loadTask.value
+        #expect(errorMessage != nil)
+        #expect(!model.isLoading(for: id))
+        #expect(model.rows.isEmpty)
+    }
+
+    @Test
+    func staleFilterCompletionCannotReplaceNewerFilteredRows() async {
+        let model = KeywordWorkspaceModel()
+        let id = materializationID(refreshToken: 1)
+        let focusRow = makeRow(term: "Focus Timer", appStoreID: 1)
+        let habitRow = makeRow(term: "Habit Tracker", appStoreID: 2)
+        let loadError = await model.materialize(
+            id: id,
+            initialFilters: filters()
+        ) {
+            [focusRow, habitRow]
+        }
+        #expect(loadError == nil)
+
+        let filterer = ControlledWorkspaceFilterer()
+        let generation = model.materializationGeneration
+        let staleTask = Task { @MainActor in
+            await model.updateFilter(
+                id: KeywordWorkspaceProjection.FilterID(
+                    materializationGeneration: generation,
+                    filters: filters(searchText: "focus")
+                ),
+                using: filterer.filter
+            )
+        }
+        await filterer.waitForRequestCount(1)
+
+        let freshTask = Task { @MainActor in
+            await model.updateFilter(
+                id: KeywordWorkspaceProjection.FilterID(
+                    materializationGeneration: generation,
+                    filters: filters(searchText: "habit")
+                ),
+                using: filterer.filter
+            )
+        }
+        await filterer.waitForRequestCount(2)
+        filterer.succeedRequest(at: 1)
+        await freshTask.value
+        #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+
+        filterer.succeedRequest(at: 0)
+        await staleTask.value
+        #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+    }
+
+    @Test
+    func preCancelledStaleFilterCannotInvalidateFreshRequest() async {
+        let model = KeywordWorkspaceModel()
+        let id = materializationID(refreshToken: 1)
+        let focusRow = makeRow(term: "Focus Timer", appStoreID: 1)
+        let habitRow = makeRow(term: "Habit Tracker", appStoreID: 2)
+        let loadError = await model.materialize(
+            id: id,
+            initialFilters: filters()
+        ) {
+            [focusRow, habitRow]
+        }
+        #expect(loadError == nil)
+
+        let filterer = ControlledWorkspaceFilterer()
+        let generation = model.materializationGeneration
+        let freshTask = Task { @MainActor in
+            await model.updateFilter(
+                id: KeywordWorkspaceProjection.FilterID(
+                    materializationGeneration: generation,
+                    filters: filters(searchText: "habit")
+                ),
+                using: filterer.filter
+            )
+        }
+        await filterer.waitForRequestCount(1)
+
+        let staleTask = Task { @MainActor in
+            await model.updateFilter(
+                id: KeywordWorkspaceProjection.FilterID(
+                    materializationGeneration: generation,
+                    filters: filters(searchText: "focus")
+                )
+            ) { _, _ in
+                try Task.checkCancellation()
+                return []
+            }
+        }
+        staleTask.cancel()
+        await staleTask.value
+
+        filterer.succeedRequest(at: 0)
+        await freshTask.value
+
+        #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+    }
+
+    private func materializationID(refreshToken: Int) -> KeywordWorkspaceProjection.MaterializationID {
+        KeywordWorkspaceProjection.MaterializationID(
+            refreshToken: refreshToken,
+            backgroundStoreRevision: 0,
+            appStoreID: 1,
+            storefrontFilterID: "all",
+            platformFilterID: "all",
+            dateRangeID: "30d",
+            tracks: []
+        )
+    }
+
+    private func filters(
+        searchText: String = "",
+        popularityRange: ClosedRange<Double> = MetricFilterRange.popularity.defaultRange,
+        changedOnly: Bool = false
+    ) -> KeywordWorkspaceProjection.Filters {
+        KeywordWorkspaceProjection.Filters(
+            searchText: searchText,
+            popularityRange: popularityRange,
+            difficultyRange: MetricFilterRange.difficulty.defaultRange,
+            positionRange: MetricFilterRange.position.defaultRange,
+            changeRange: MetricFilterRange.change.defaultRange,
+            showsOnlyChangedKeywords: changedOnly
+        )
+    }
+
+    private func makeRow(
+        term: String,
+        appStoreID: Int64,
+        currentRank: Int? = nil,
+        popularity: Int? = nil,
+        difficulty: Int? = nil,
+        trendSnapshots: [KeywordRankingCrawlSummary] = []
+    ) -> KeywordWorkspaceRow {
+        let trackedApp = TrackedApp(
+            appStoreID: appStoreID,
+            bundleID: "com.example.\(appStoreID)",
+            name: "App \(appStoreID)",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let query = KeywordQuery(term: term, storefront: "us", platform: .iphone)
+        let track = TrackedAppKeyword(
+            term: term,
+            storefront: "us",
+            platform: .iphone,
+            trackedApp: trackedApp,
+            query: query
+        )
+        let latestSnapshot = currentRank.map { rank in
+            summary(
+                id: "latest-\(appStoreID)",
+                rank: rank,
+                date: Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        }
+        let metrics = KeywordMetricsSnapshot(
+            popularityScore: popularity,
+            difficultyScore: difficulty,
+            updatedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            notes: nil
+        )
+
+        return KeywordWorkspaceRow(
+            track: track,
+            storefront: StorefrontDefinition(
+                code: "us",
+                name: "United States",
+                flagEmoji: "🇺🇸",
+                title: "🇺🇸 United States"
+            ),
+            metrics: metrics,
+            latestSnapshot: latestSnapshot,
+            trendSnapshots: trendSnapshots,
+            rankingApps: []
+        )
+    }
+
+    private func summary(id: String, rank: Int?, date: Date) -> KeywordRankingCrawlSummary {
+        KeywordRankingCrawlSummary(
+            id: id,
+            rank: rank,
+            searchedAt: date,
+            source: .appStoreWeb,
+            resultCount: 300
+        )
+    }
+}
+
+@MainActor
+private final class ControlledWorkspaceMaterializer {
+    private struct Request {
+        var rows: [KeywordWorkspaceRow]?
+        var didFail = false
+        var continuation: CheckedContinuation<Void, Never>?
+    }
+
+    private var requests: [Request] = []
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func load() async throws -> [KeywordWorkspaceRow] {
+        let index = requests.count
+        await withCheckedContinuation { continuation in
+            requests.append(Request(continuation: continuation))
+            resumeSatisfiedWaiters()
+        }
+
+        if requests[index].didFail {
+            throw ControlledWorkspaceError.expected
+        }
+        return requests[index].rows ?? []
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        guard requests.count < count else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append((count, continuation))
+        }
+    }
+
+    func succeedRequest(at index: Int, with rows: [KeywordWorkspaceRow]) {
+        let continuation = requests[index].continuation
+        requests[index].rows = rows
+        requests[index].continuation = nil
+        continuation?.resume()
+    }
+
+    func failRequest(at index: Int) {
+        let continuation = requests[index].continuation
+        requests[index].didFail = true
+        requests[index].continuation = nil
+        continuation?.resume()
+    }
+
+    private func resumeSatisfiedWaiters() {
+        var remaining: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+        for waiter in waiters {
+            if requests.count >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        waiters = remaining
+    }
+}
+
+@MainActor
+private final class ControlledWorkspaceFilterer {
+    private struct Request {
+        let rows: [KeywordWorkspaceRow]
+        let filters: KeywordWorkspaceProjection.Filters
+        var continuation: CheckedContinuation<Void, Never>?
+    }
+
+    private var requests: [Request] = []
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func filter(
+        rows: [KeywordWorkspaceRow],
+        filters: KeywordWorkspaceProjection.Filters
+    ) async throws -> [KeywordWorkspaceRow] {
+        let index = requests.count
+        await withCheckedContinuation { continuation in
+            requests.append(Request(rows: rows, filters: filters, continuation: continuation))
+            resumeSatisfiedWaiters()
+        }
+
+        return KeywordWorkspaceProjection.filteredRows(
+            requests[index].rows,
+            filters: requests[index].filters
+        )
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        guard requests.count < count else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append((count, continuation))
+        }
+    }
+
+    func succeedRequest(at index: Int) {
+        let continuation = requests[index].continuation
+        requests[index].continuation = nil
+        continuation?.resume()
+    }
+
+    private func resumeSatisfiedWaiters() {
+        var remaining: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+        for waiter in waiters {
+            if requests.count >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        waiters = remaining
+    }
+}
+
+private enum ControlledWorkspaceError: Error {
+    case expected
+}

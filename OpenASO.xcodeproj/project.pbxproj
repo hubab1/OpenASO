@@ -101,9 +101,12 @@
 		A2000000000000000000000C /* KeywordRankingHistoryDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001C /* KeywordRankingHistoryDataSource.swift */; };
 		A2000000000000000000000D /* KeywordRankingHistoryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001D /* KeywordRankingHistoryModel.swift */; };
 		B70000000000000000000001 /* AddKeywordsStorefrontProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000011 /* AddKeywordsStorefrontProjection.swift */; };
+		B70000000000000000000002 /* KeywordWorkspaceProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000012 /* KeywordWorkspaceProjection.swift */; };
+		B70000000000000000000007 /* KeywordWorkspaceModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000017 /* KeywordWorkspaceModel.swift */; };
 		B7000000000000000000000A /* AddKeywordsStorefrontProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000001A /* AddKeywordsStorefrontProjectionTests.swift */; };
 		B71000000000000000000001 /* AddKeywordsQueryResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B71000000000000000000011 /* AddKeywordsQueryResolver.swift */; };
 		B7100000000000000000000A /* AddKeywordsQueryResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7100000000000000000001A /* AddKeywordsQueryResolverTests.swift */; };
+		B7000000000000000000000B /* KeywordWorkspaceProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000001B /* KeywordWorkspaceProjectionTests.swift */; };
 		A30000000000000000000001 /* Persistence/BackgroundModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000002 /* Persistence/BackgroundModelStore.swift */; };
 		A30000000000000000000003 /* Persistence/ModelContainerFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30000000000000000000004 /* Persistence/ModelContainerFactory.swift */; };
 		A301EA7838159D6EE3E53FD0 /* ITunesSearchFallbackProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C6BDA000FFE3FC055867E78 /* ITunesSearchFallbackProviderTests.swift */; };
@@ -309,9 +312,12 @@
 		A2000000000000000000001C /* KeywordRankingHistoryDataSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingHistoryDataSource.swift; sourceTree = "<group>"; };
 		A2000000000000000000001D /* KeywordRankingHistoryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingHistoryModel.swift; sourceTree = "<group>"; };
 		B70000000000000000000011 /* AddKeywordsStorefrontProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddKeywordsStorefrontProjection.swift; sourceTree = "<group>"; };
+		B70000000000000000000012 /* KeywordWorkspaceProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordWorkspaceProjection.swift; sourceTree = "<group>"; };
+		B70000000000000000000017 /* KeywordWorkspaceModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordWorkspaceModel.swift; sourceTree = "<group>"; };
 		B7000000000000000000001A /* AddKeywordsStorefrontProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddKeywordsStorefrontProjectionTests.swift; sourceTree = "<group>"; };
 		B71000000000000000000011 /* AddKeywordsQueryResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddKeywordsQueryResolver.swift; sourceTree = "<group>"; };
 		B7100000000000000000001A /* AddKeywordsQueryResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddKeywordsQueryResolverTests.swift; sourceTree = "<group>"; };
+		B7000000000000000000001B /* KeywordWorkspaceProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordWorkspaceProjectionTests.swift; sourceTree = "<group>"; };
 		A30000000000000000000002 /* Persistence/BackgroundModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/BackgroundModelStore.swift; sourceTree = "<group>"; };
 		A30000000000000000000004 /* Persistence/ModelContainerFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/ModelContainerFactory.swift; sourceTree = "<group>"; };
 		A40000000000000000000011 /* RatingsDashboardSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RatingsDashboardSupport.swift; sourceTree = "<group>"; };
@@ -431,6 +437,7 @@
 				A2000000000000000000001B /* KeywordRankingHistoryTests.swift */,
 				B7000000000000000000001A /* AddKeywordsStorefrontProjectionTests.swift */,
 				B7100000000000000000001A /* AddKeywordsQueryResolverTests.swift */,
+				B7000000000000000000001B /* KeywordWorkspaceProjectionTests.swift */,
 				4D4350545345525600000001 /* OpenASOMCPServerTests.swift */,
 				4D4350544553545300000001 /* OpenASOMCPServiceTests.swift */,
 				A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */,
@@ -615,6 +622,8 @@
 				B70000000000000000000011 /* AddKeywordsStorefrontProjection.swift */,
 				B71000000000000000000011 /* AddKeywordsQueryResolver.swift */,
 				E87EC021EFE3EDFB1445FFA7 /* AddKeywordsSheet.swift */,
+				B70000000000000000000017 /* KeywordWorkspaceModel.swift */,
+				B70000000000000000000012 /* KeywordWorkspaceProjection.swift */,
 				A7E539E28041AF31B5E3E321 /* TrackedKeywordDetailView.swift */,
 				A0D71B4C0000000000000010 /* KeywordInsightsTypes.swift */,
 				C10000000000000000000003 /* Insights */,
@@ -940,6 +949,8 @@
 				A08A2D06F81C49F4A34FB388 /* KeywordTrendSparklineView.swift in Sources */,
 				A0D71B4C0000000000000015 /* KeywordVisibilitySummaryView.swift in Sources */,
 				A0D71B4C000000000000000C /* AppKeywordsView.swift in Sources */,
+				B70000000000000000000007 /* KeywordWorkspaceModel.swift in Sources */,
+				B70000000000000000000002 /* KeywordWorkspaceProjection.swift in Sources */,
 				C0DEC0DE0000000000000002 /* CustomSegmentedPicker.swift in Sources */,
 				C0DEC0DE0000000000000008 /* Tooltip.swift in Sources */,
 				C0DEC0DE000000000000000A /* TertiaryActionButton.swift in Sources */,
@@ -1008,6 +1019,7 @@
 				A2000000000000000000000B /* KeywordRankingHistoryTests.swift in Sources */,
 				B7000000000000000000000A /* AddKeywordsStorefrontProjectionTests.swift in Sources */,
 				B7100000000000000000000A /* AddKeywordsQueryResolverTests.swift in Sources */,
+				B7000000000000000000000B /* KeywordWorkspaceProjectionTests.swift in Sources */,
 				4D4350545345525600000002 /* OpenASOMCPServerTests.swift in Sources */,
 				4D4350544553545300000002 /* OpenASOMCPServiceTests.swift in Sources */,
 				A0BEEF000000000000000014 /* ScreenshotDownloadServiceTests.swift in Sources */,
