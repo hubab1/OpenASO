@@ -152,7 +152,16 @@ final class DailyRefreshScheduler {
         }.filter { !$0.isEmpty })).sorted()
 
         return apps.map { app in
-            AppDetailRefreshRequest(
+            // Only refresh ratings/reviews for the storefronts this app actually
+            // tracks keywords in. Falling back to the full catalog made the daily
+            // refresh fan out across every bundled storefront, which timed out for
+            // anyone tracking keywords in more than a handful of countries.
+            let appStorefrontCodes = Self.ratingsReviewsStorefrontCodes(
+                for: app,
+                fallback: normalizedStorefrontCodes
+            )
+
+            return AppDetailRefreshRequest(
                 app: AppDetailRefreshAppSnapshot(
                     appStoreID: app.appStoreID,
                     bundleID: app.bundleID,
@@ -162,7 +171,7 @@ final class DailyRefreshScheduler {
                     defaultPlatform: app.defaultPlatform
                 ),
                 workspace: .keywords,
-                storefrontSelection: .all(codes: normalizedStorefrontCodes),
+                storefrontSelection: .all(codes: appStorefrontCodes),
                 trackIdentityKeys: app.keywordTracks.map(\.identityKey),
                 trigger: "daily_refresh",
                 refreshRatings: refreshRatingsReviews,
@@ -173,6 +182,45 @@ final class DailyRefreshScheduler {
                 appStoreConnectCredentials: appStoreConnectCredentialsProvider()
             )
         }
+    }
+
+    /// The storefronts whose ratings/reviews should be refreshed for `app`.
+    ///
+    /// Scoped to the countries the app actually tracks keywords in. Apps with no
+    /// tracked keywords use their default storefront. If that is unavailable, at
+    /// most one valid storefront is selected from `fallback`, preferring the US.
+    static func ratingsReviewsStorefrontCodes(
+        for app: TrackedApp,
+        fallback: [String]
+    ) -> [String] {
+        let trackedStorefrontCodes = Array(Set(app.keywordTracks.map {
+            $0.storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }.filter { !$0.isEmpty })).sorted()
+        guard trackedStorefrontCodes.isEmpty else {
+            return trackedStorefrontCodes
+        }
+
+        let defaultStorefront = app.storeApp.defaultStorefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if !defaultStorefront.isEmpty {
+            return [defaultStorefront]
+        }
+
+        var firstValidFallback: String?
+        for code in fallback {
+            let normalizedCode = code
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !normalizedCode.isEmpty else { continue }
+            if normalizedCode == "us" {
+                return [normalizedCode]
+            }
+            if firstValidFallback == nil {
+                firstValidFallback = normalizedCode
+            }
+        }
+        return firstValidFallback.map { [$0] } ?? []
     }
 
     func nextCheckSleepNanoseconds(now: Date? = nil) -> UInt64 {

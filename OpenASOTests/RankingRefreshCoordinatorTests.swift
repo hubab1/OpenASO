@@ -452,6 +452,7 @@ struct RankingRefreshCoordinatorTests {
             sellerName: "Apple",
             defaultPlatform: .iphone
         )
+        secondApp.storeApp.defaultStorefront = "gb"
         modelContext.insert(firstApp)
         modelContext.insert(firstTrack)
         modelContext.insert(secondApp)
@@ -488,12 +489,18 @@ struct RankingRefreshCoordinatorTests {
         #expect(requests.allSatisfy { $0.refreshKeywords && $0.refreshMetrics })
         #expect(requests.allSatisfy { $0.refreshRatings && $0.refreshReviews })
         #expect(requests.allSatisfy { !$0.recordsRatingsReviewsRefresh })
-        #expect(requests.allSatisfy {
-            if case .all(let codes) = $0.storefrontSelection {
-                return codes == ["gb", "us"]
-            }
-            return false
-        })
+        if let request = requestsByAppID[842842640],
+           case .all(let codes) = request.storefrontSelection {
+            #expect(codes == ["us"])
+        } else {
+            Issue.record("Expected the tracked app to use its keyword storefronts.")
+        }
+        if let request = requestsByAppID[361309726],
+           case .all(let codes) = request.storefrontSelection {
+            #expect(codes == ["gb"])
+        } else {
+            Issue.record("Expected the no-keyword app to use its default storefront.")
+        }
     }
 
     @Test
