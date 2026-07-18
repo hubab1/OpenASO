@@ -8,7 +8,9 @@ enum OpenASOMCPMain {
                 configuration: OpenASOMCPServerConfiguration(version: "1.5.0")
             )
         } catch {
-            FileHandle.standardError.write(Data("OpenASO MCP server failed: \(error)\n".utf8))
+            let description = (error as? PersistentStoreError)?.diagnosticReport
+                ?? String(reflecting: error)
+            FileHandle.standardError.write(Data("OpenASO MCP server failed: \(description)\n".utf8))
             Foundation.exit(1)
         }
     }

@@ -209,6 +209,7 @@
 		C70260E8797CC353D9AD1B3A /* SearchRanking/SearchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1EE58C790084CF7A83CA8A /* SearchRanking/SearchModels.swift */; };
 		CB1733C5A8778748B70BA4FD /* AppDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378F7AF5B5856F0183D027B4 /* AppDetailView.swift */; };
 		D30000000000000000000002 /* AppNamespace.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AppNamespace.swift */; };
+		DA7A00000000000000000002 /* PersistentStoreRecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7A00000000000000000001 /* PersistentStoreRecoveryView.swift */; };
 		D6807507E1AF0AB52CB2C7E2 /* SearchRanking/DefaultAppResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 465129A02F247ED683558D8B /* SearchRanking/DefaultAppResolver.swift */; };
 		EF3B2BA43807572789A250A7 /* AddAppSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCCBBF8A3FABA145BF5122ED /* AddAppSheet.swift */; };
 		FC2B65186E0CA31841938E40 /* Storefront.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECBEF6240F66A5F359B09D41 /* Storefront.swift */; };
@@ -393,6 +394,7 @@
 		C5A400000000000000000004 /* CSVFormatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVFormatsTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000001 /* AppNamespace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNamespace.swift; sourceTree = "<group>"; };
 		D30000000000000000000005 /* OpenASO.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenASO.entitlements; sourceTree = "<group>"; };
+		DA7A00000000000000000001 /* PersistentStoreRecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentStoreRecoveryView.swift; sourceTree = "<group>"; };
 		D8F922DEEB1FCD8E26B1A64A /* Networking/HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/HTTPClient.swift; sourceTree = "<group>"; };
 		DEB53B31A2B107CEE141F744 /* SearchRanking/ITunesSearchFallbackProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/ITunesSearchFallbackProvider.swift; sourceTree = "<group>"; };
 		E87EC021EFE3EDFB1445FFA7 /* AddKeywordsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddKeywordsSheet.swift; sourceTree = "<group>"; };
@@ -475,6 +477,7 @@
 			children = (
 				5D89E788AED9CC1E4FD78B3D /* AppServices.swift */,
 				88F93BD35C340B950DE2A5A8 /* OpenASOApp.swift */,
+				DA7A00000000000000000001 /* PersistentStoreRecoveryView.swift */,
 				2EB55596DB73489FB40D836C /* PreviewAppDependencies.swift */,
 				B8B0B017D61A316FA58E2040 /* RootSidebarView.swift */,
 				B8B0B017D61A316FA58E2039 /* RootView.swift */,
@@ -986,6 +989,7 @@
 				C0DEC0DE000000000000000A /* TertiaryActionButton.swift in Sources */,
 				A50000000000000000000001 /* PaginatedList.swift in Sources */,
 				FEAE526BDAAC6C7B67A731ED /* OpenASOApp.swift in Sources */,
+				DA7A00000000000000000002 /* PersistentStoreRecoveryView.swift in Sources */,
 				A30000000000000000000003 /* Persistence/ModelContainerFactory.swift in Sources */,
 				C0DEFACE0000000000000102 /* MCP/OpenASOMCPDTOs.swift in Sources */,
 				C0DEC0DE0000000000000012 /* MCPServerSheet.swift in Sources */,
