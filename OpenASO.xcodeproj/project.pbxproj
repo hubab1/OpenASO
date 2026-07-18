@@ -29,6 +29,8 @@
 		04E8C4E18F1A4D519C0A1140 /* AppDetail/AppDetailRefreshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1141 /* AppDetail/AppDetailRefreshService.swift */; };
 		04E8C4E18F1A4D519C0A1142 /* AppDetail/AppRefreshProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1143 /* AppDetail/AppRefreshProgressStore.swift */; };
 		05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */; };
+		D13000000000000000000001 /* Storefront/AppMetadataRefreshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13000000000000000000003 /* Storefront/AppMetadataRefreshService.swift */; };
+		D13000000000000000000002 /* AppMetadataRefreshServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13000000000000000000004 /* AppMetadataRefreshServiceTests.swift */; };
 		0A1B2C3D4E5F678901234505 /* AppKeywordStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F678901234506 /* AppKeywordStats.swift */; };
 		0A1B2C3D4E5F678901234509 /* RatingsReviews/AppStorefrontRatingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F67890123450A /* RatingsReviews/AppStorefrontRatingService.swift */; };
 		0A1B2C3D4E5F67890123450D /* AppStorefrontRatingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F67890123450E /* AppStorefrontRatingServiceTests.swift */; };
@@ -266,6 +268,8 @@
 		0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreConnectReviewServiceTests.swift; sourceTree = "<group>"; };
 		0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreWebMetadataProviderTests.swift; sourceTree = "<group>"; };
 		0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServicesDependencyTests.swift; sourceTree = "<group>"; };
+		D13000000000000000000003 /* Storefront/AppMetadataRefreshService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/AppMetadataRefreshService.swift; sourceTree = "<group>"; };
+		D13000000000000000000004 /* AppMetadataRefreshServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMetadataRefreshServiceTests.swift; sourceTree = "<group>"; };
 		1C1EE58C790084CF7A83CA8A /* SearchRanking/SearchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/SearchModels.swift; sourceTree = "<group>"; };
 		26D4B2C87FDED9CFCFA50D7D /* SearchRanking/RankingRefreshCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/RankingRefreshCoordinator.swift; sourceTree = "<group>"; };
 		2BC7973645CC5F20071230DE /* RankingRefreshCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingRefreshCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -443,6 +447,7 @@
 				A60000000000000000000002 /* AIServiceTests.swift */,
 				A80000000000000000000004 /* AnalyticsServiceTests.swift */,
 				0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */,
+				D13000000000000000000004 /* AppMetadataRefreshServiceTests.swift */,
 				0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */,
 				0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */,
 				0A1B2C3D4E5F67890123450E /* AppStorefrontRatingServiceTests.swift */,
@@ -502,6 +507,7 @@
 				04E8C4E18F1A4D519C0A1141 /* AppDetail/AppDetailRefreshService.swift */,
 				04E8C4E18F1A4D519C0A1143 /* AppDetail/AppRefreshProgressStore.swift */,
 				04E8C4E18F1A4D519C0A1105 /* Storefront/AppCatalogService.swift */,
+				D13000000000000000000003 /* Storefront/AppMetadataRefreshService.swift */,
 				04E8C4E18F1A4D519C0A1107 /* Storefront/AppStoreWebMetadataProvider.swift */,
 				A0BEEF000000000000000013 /* Storefront/ScreenshotDownloadProgressStore.swift */,
 				A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */,
@@ -902,6 +908,7 @@
 				04E8C4E18F1A4D519C0A1134 /* AI/AITranslationService.swift in Sources */,
 				A80000000000000000000001 /* AnalyticsService.swift in Sources */,
 				04E8C4E18F1A4D519C0A1101 /* Storefront/AppCatalogService.swift in Sources */,
+				D13000000000000000000001 /* Storefront/AppMetadataRefreshService.swift in Sources */,
 				A0BEEF000000000000000011 /* Storefront/ScreenshotDownloadProgressStore.swift in Sources */,
 				A0BEEF000000000000000010 /* Storefront/ScreenshotDownloadService.swift in Sources */,
 				BEEF0000000000000000000E /* AppDailyRating.swift in Sources */,
@@ -1039,6 +1046,7 @@
 				A60000000000000000000001 /* AIServiceTests.swift in Sources */,
 				A80000000000000000000003 /* AnalyticsServiceTests.swift in Sources */,
 				05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */,
+				D13000000000000000000002 /* AppMetadataRefreshServiceTests.swift in Sources */,
 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
 				0A5C00000000000000000007 /* AppStoreWebMetadataProviderTests.swift in Sources */,
 				0A1B2C3D4E5F67890123450D /* AppStorefrontRatingServiceTests.swift in Sources */,
