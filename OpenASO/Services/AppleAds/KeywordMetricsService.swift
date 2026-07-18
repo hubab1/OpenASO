@@ -254,6 +254,7 @@ final class KeywordMetricsService: Sendable {
             tracksNeedingPopularity.append(track)
         }
 
+        let webSession = popularityClient.recoverSessionIfNeeded()
         if let contextAppStoreID = settingsStore.popularityContextAppStoreID {
             let storefrontGroups = Self.orderedTrackGroups(tracksNeedingPopularity)
             if webSessionStore.requiresReconnect {
@@ -275,7 +276,8 @@ final class KeywordMetricsService: Sendable {
                 let popularityResult = await popularityClient.searchPopularities(
                     for: storefrontTracks.map(\.term),
                     storefrontCode: storefrontCode,
-                    adamId: contextAppStoreID
+                    adamId: contextAppStoreID,
+                    session: webSession
                 )
                 guard !Task.isCancelled else { return outcomes }
 
@@ -1329,8 +1331,12 @@ private final class AppleAdsPopularityClient {
         self.cmPopularityClient = AppleAdsCMPopularityClient(httpClient: httpClient)
     }
 
+    func recoverSessionIfNeeded() -> AppleAdsWebSession? {
+        webSessionStore.recoverSessionIfNeeded()
+    }
+
     func searchPopularity(for keyword: String, storefrontCode: String, adamId: Int64) async -> AppleAdsPopularityResult {
-        guard let session = webSessionStore.session, session.isComplete else {
+        guard let session = webSessionStore.recoverSessionIfNeeded(), session.isComplete else {
             return .missingCredentials
         }
 
@@ -1350,8 +1356,13 @@ private final class AppleAdsPopularityClient {
         }
     }
 
-    func searchPopularities(for keywords: [String], storefrontCode: String, adamId: Int64) async -> AppleAdsPopularityBatchResult {
-        guard let session = webSessionStore.session, session.isComplete else {
+    func searchPopularities(
+        for keywords: [String],
+        storefrontCode: String,
+        adamId: Int64,
+        session: AppleAdsWebSession?
+    ) async -> AppleAdsPopularityBatchResult {
+        guard let session, session.isComplete else {
             return .missingCredentials
         }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SwiftData
 import Testing
 @testable import OpenASO
@@ -288,7 +289,7 @@ struct AppServicesDependencyTests {
         let defaults = Self.makeDefaults()
         let keychain = RecordingKeychainService()
 
-        _ = AppServices(
+        let services = AppServices(
             httpClient: MockHTTPClient { request in
                 throw OpenASOError.providerUnavailable("Unexpected request to \(request.url?.absoluteString ?? "unknown URL")")
             },
@@ -298,6 +299,7 @@ struct AppServicesDependencyTests {
             allowsIconNetworkFetches: false
         )
 
+        #expect(!services.appleAdsWebSessionStore.hasSession)
         #expect(keychain.dataRequests.isEmpty)
     }
 
@@ -727,6 +729,316 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func keychainReadFailureRetriesOnlyKnownTransientStatuses() {
+        #expect(KeychainReadFailure.status(errSecInteractionNotAllowed).isTransient)
+        #expect(KeychainReadFailure.status(errSecNotAvailable).isTransient)
+        #expect(!KeychainReadFailure.status(errSecAuthFailed).isTransient)
+        #expect(!KeychainReadFailure.status(errSecUserCanceled).isTransient)
+        #expect(!KeychainReadFailure.status(errSecIO).isTransient)
+        #expect(!KeychainReadFailure.status(errSecDecode).isTransient)
+        #expect(!KeychainReadFailure.unexpectedResultType.isTransient)
+    }
+
+    @Test
+    func systemKeychainReportsStructuredFailureWithoutItemIdentifiers() {
+        var reportedFailures: [KeychainReadFailure] = []
+        let keychain = SystemKeychainService(
+            copyMatching: { _, _ in errSecInteractionNotAllowed },
+            reportReadFailure: { reportedFailures.append($0) }
+        )
+
+        let result = keychain.readData(
+            service: "sensitive-service-identifier",
+            account: "sensitive-account-identifier"
+        )
+
+        #expect(result == .failure(.status(errSecInteractionNotAllowed)))
+        #expect(reportedFailures == [.status(errSecInteractionNotAllowed)])
+    }
+
+    @Test
+    func systemKeychainTreatsMissingItemAsExpectedAbsence() {
+        var reportedFailures: [KeychainReadFailure] = []
+        let keychain = SystemKeychainService(
+            copyMatching: { _, _ in errSecItemNotFound },
+            reportReadFailure: { reportedFailures.append($0) }
+        )
+
+        let result = keychain.readData(service: "service", account: "account")
+
+        #expect(result == .notFound)
+        #expect(reportedFailures.isEmpty)
+    }
+
+    @Test
+    func webSessionStoreRecoversTransientReadAndMemoizesSuccess() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = ScriptedKeychainService()
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+            xsrfToken: "token",
+            updatedAt: .now
+        )
+        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
+        keychain.enqueueReadResults([.failure(.status(errSecInteractionNotAllowed))])
+
+        let store = AppleAdsWebSessionStore(defaults: defaults, keychain: keychain)
+
+        #expect(keychain.readCallCount == 1)
+        #expect(store.session == nil)
+        #expect(!store.hasSession)
+        #expect(store.hasPendingTransientReadRecovery)
+        #expect(keychain.readCallCount == 1)
+        #expect(store.recoverSessionIfNeeded() == session)
+        #expect(keychain.readCallCount == 2)
+        #expect(store.hasSession)
+        #expect(!store.hasPendingTransientReadRecovery)
+        #expect(store.session == session)
+        #expect(keychain.readCallCount == 2)
+        #expect(keychain.deleteCallCount == 0)
+    }
+
+    @Test
+    func passiveWebSessionReadsDoNotRepeatTransientKeychainFailures() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = ScriptedKeychainService()
+        let session = AppleAdsWebSession(cookieHeader: "cookie=value", xsrfToken: "token", updatedAt: .now)
+        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
+        keychain.enqueueReadResults([
+            .failure(.status(errSecInteractionNotAllowed)),
+            .failure(.status(errSecNotAvailable)),
+        ])
+
+        let store = AppleAdsWebSessionStore(defaults: defaults, keychain: keychain)
+        #expect(keychain.readCallCount == 1)
+        #expect(store.hasPendingTransientReadRecovery)
+
+        for _ in 0..<20 {
+            #expect(store.session == nil)
+            #expect(!store.hasSession)
+        }
+        #expect(keychain.readCallCount == 1)
+
+        #expect(store.recoverSessionIfNeeded() == nil)
+        #expect(keychain.readCallCount == 2)
+        #expect(store.hasPendingTransientReadRecovery)
+        for _ in 0..<20 {
+            #expect(store.session == nil)
+            #expect(!store.hasSession)
+        }
+        #expect(keychain.readCallCount == 2)
+        #expect(keychain.deleteCallCount == 0)
+    }
+
+    @Test
+    func webSessionStoreStopsPendingRecoveryAfterTerminalRetry() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = ScriptedKeychainService()
+        let session = AppleAdsWebSession(cookieHeader: "cookie=value", xsrfToken: "token", updatedAt: .now)
+        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
+        keychain.enqueueReadResults([
+            .failure(.status(errSecInteractionNotAllowed)),
+            .failure(.status(errSecAuthFailed)),
+        ])
+
+        let store = AppleAdsWebSessionStore(defaults: defaults, keychain: keychain)
+        #expect(keychain.readCallCount == 1)
+        #expect(store.hasPendingTransientReadRecovery)
+
+        #expect(store.recoverSessionIfNeeded() == nil)
+        #expect(keychain.readCallCount == 2)
+        #expect(!store.hasPendingTransientReadRecovery)
+
+        for _ in 0..<20 {
+            #expect(store.session == nil)
+            #expect(!store.hasSession)
+            #expect(!store.hasPendingTransientReadRecovery)
+        }
+        #expect(keychain.readCallCount == 2)
+        #expect(keychain.deleteCallCount == 0)
+    }
+
+    @Test
+    func keywordMetricsRefreshAttemptsTransientRecoveryOnceAcrossStorefronts() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let defaults = Self.makeDefaults()
+        let keychain = ScriptedKeychainService()
+        let session = AppleAdsWebSession(cookieHeader: "cookie=value", xsrfToken: "token", updatedAt: .now)
+        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
+        keychain.enqueueReadResults([
+            .failure(.status(errSecInteractionNotAllowed)),
+            .failure(.status(errSecNotAvailable)),
+        ])
+        let services = AppServices(
+            httpClient: MockHTTPClient { request in
+                throw OpenASOError.providerUnavailable(
+                    "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+                )
+            },
+            defaults: defaults,
+            keychain: keychain,
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false
+        )
+        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
+
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        var tracks: [TrackedAppKeyword] = []
+        for storefront in ["us", "gb"] {
+            let query = try KeywordQuery.fetchOrInsert(
+                term: "focus app \(storefront)",
+                storefront: storefront,
+                platform: .iphone,
+                in: modelContext
+            )
+            let track = TrackedAppKeyword(
+                term: query.term,
+                storefront: storefront,
+                platform: .iphone,
+                trackedApp: trackedApp,
+                query: query
+            )
+            trackedApp.keywordTracks.append(track)
+            modelContext.insert(track)
+            tracks.append(track)
+        }
+        modelContext.insert(trackedApp)
+        try modelContext.save()
+
+        let outcomes = await services.keywordMetricsService.refreshMetrics(
+            for: trackedApp,
+            tracks: tracks,
+            in: modelContext
+        )
+
+        #expect(outcomes.count == 2)
+        #expect(outcomes.allSatisfy { $0.errorMessage != nil })
+        #expect(keychain.readCallCount == 2)
+        #expect(keychain.deleteCallCount == 0)
+    }
+
+    @Test
+    func webSessionStoreDoesNotRetryPermanentReadFailure() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = ScriptedKeychainService()
+        let session = AppleAdsWebSession(cookieHeader: "cookie=value", xsrfToken: "token", updatedAt: .now)
+        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
+        keychain.enqueueReadResults([.failure(.status(errSecAuthFailed))])
+
+        let store = AppleAdsWebSessionStore(defaults: defaults, keychain: keychain)
+
+        #expect(store.session == nil)
+        #expect(!store.hasSession)
+        #expect(keychain.readCallCount == 1)
+        #expect(keychain.deleteCallCount == 0)
+    }
+
+    @Test
+    func webSessionStoreDoesNotRetryMissingOrMalformedItems() throws {
+        let missingDefaults = Self.makeDefaults()
+        let missingKeychain = ScriptedKeychainService()
+        let session = AppleAdsWebSession(cookieHeader: "cookie=value", xsrfToken: "token", updatedAt: .now)
+        try AppleAdsWebSessionStore(defaults: missingDefaults, keychain: missingKeychain).save(session)
+        missingKeychain.enqueueReadResults([.notFound])
+
+        let missingStore = AppleAdsWebSessionStore(defaults: missingDefaults, keychain: missingKeychain)
+        #expect(missingStore.session == nil)
+        #expect(missingStore.session == nil)
+        #expect(missingKeychain.readCallCount == 1)
+        #expect(missingKeychain.deleteCallCount == 0)
+
+        let malformedDefaults = Self.makeDefaults()
+        let malformedKeychain = ScriptedKeychainService()
+        try AppleAdsWebSessionStore(defaults: malformedDefaults, keychain: malformedKeychain).save(session)
+        try malformedKeychain.save(
+            Data("not a web session".utf8),
+            service: AppNamespace.current.keychainService("apple-ads-web"),
+            account: "web-session"
+        )
+
+        let malformedStore = AppleAdsWebSessionStore(defaults: malformedDefaults, keychain: malformedKeychain)
+        #expect(malformedStore.session == nil)
+        #expect(malformedStore.session == nil)
+        #expect(malformedKeychain.readCallCount == 1)
+        #expect(malformedKeychain.deleteCallCount == 0)
+    }
+
+    @Test
+    func keywordMetricsRefreshRecoversAfterTransientStartupRead() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let defaults = Self.makeDefaults()
+        let keychain = ScriptedKeychainService()
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+            xsrfToken: "token",
+            updatedAt: .now
+        )
+        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
+        keychain.enqueueReadResults([.failure(.status(errSecNotAvailable))])
+        let services = AppServices(
+            httpClient: MockHTTPClient { request in
+                let payload = #"{"status":"success","data":[{"name":"focus app","popularity":41}]}"#
+                return (
+                    Data(payload.utf8),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                )
+            },
+            defaults: defaults,
+            keychain: keychain,
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false
+        )
+        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
+
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        let query = try KeywordQuery.fetchOrInsert(
+            term: "focus app",
+            storefront: "us",
+            platform: .iphone,
+            in: modelContext
+        )
+        let track = TrackedAppKeyword(
+            term: "focus app",
+            storefront: "us",
+            platform: .iphone,
+            trackedApp: trackedApp,
+            query: query
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(trackedApp)
+        modelContext.insert(track)
+        try modelContext.save()
+
+        let outcomes = await services.keywordMetricsService.refreshMetrics(
+            for: trackedApp,
+            tracks: [track],
+            in: modelContext
+        )
+        let metrics = try #require(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
+
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.errorMessage == nil)
+        #expect(metrics.popularityScore == 41)
+        #expect(track.statusMessage == nil)
+        #expect(keychain.readCallCount == 2)
+        #expect(keychain.deleteCallCount == 0)
+    }
+
+    @Test
     func cmPopularityClientBatchesTermsAtOneHundred() async throws {
         struct RequestBody: Decodable {
             let storefronts: [String]
@@ -961,12 +1273,49 @@ private enum SimulatedDirectoryLookupFailure: Error {
 private final class RecordingKeychainService: KeychainService {
     private(set) var dataRequests: [(service: String, account: String)] = []
 
-    func data(service: String, account: String) -> Data? {
+    func readData(service: String, account: String) -> KeychainReadResult {
         dataRequests.append((service: service, account: account))
-        return nil
+        return .notFound
     }
 
     func save(_ data: Data, service: String, account: String) throws {}
 
     func delete(service: String, account: String) {}
+}
+
+private final class ScriptedKeychainService: KeychainService {
+    private var storage: [Key: Data] = [:]
+    private var readResults: [KeychainReadResult] = []
+
+    private(set) var readCallCount = 0
+    private(set) var deleteCallCount = 0
+
+    func enqueueReadResults(_ results: [KeychainReadResult]) {
+        readResults.append(contentsOf: results)
+    }
+
+    func readData(service: String, account: String) -> KeychainReadResult {
+        readCallCount += 1
+        if !readResults.isEmpty {
+            return readResults.removeFirst()
+        }
+        guard let data = storage[Key(service: service, account: account)] else {
+            return .notFound
+        }
+        return .success(data)
+    }
+
+    func save(_ data: Data, service: String, account: String) throws {
+        storage[Key(service: service, account: account)] = data
+    }
+
+    func delete(service: String, account: String) {
+        deleteCallCount += 1
+        storage.removeValue(forKey: Key(service: service, account: account))
+    }
+
+    private struct Key: Hashable {
+        var service: String
+        var account: String
+    }
 }
