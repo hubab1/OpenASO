@@ -16,12 +16,10 @@ struct KeywordRankingListSheet: View {
     let modelContext: ModelContext
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
+    private let fallbackItems: [KeywordRankingListItem]
 
-    @State private var items: [KeywordRankingListItem]
-    @State private var enrichedRows: [KeywordRankingCatalogRow] = []
-    @State private var enrichedRowsIncludeScreenshots = false
-    @State private var storefrontLanguageCode: String?
-    @State private var storefrontFlagEmoji: String?
+    @State private var rankingModel = KeywordRankingListModel()
+    @State private var retryToken = 0
     @AppStorage(
         "keywordRankingListShowsScreenshots",
         store: .openASOShared
@@ -47,102 +45,138 @@ struct KeywordRankingListSheet: View {
         self.modelContext = modelContext
         self.appCatalogService = appCatalogService
         self.appIconStore = appIconStore
-        _items = State(initialValue: row.rankingApps.map(KeywordRankingListItem.init))
+        self.fallbackItems = row.rankingApps.map(KeywordRankingListItem.init)
     }
 
     private var sortedRows: [KeywordRankingCatalogRow] {
-        enrichedRows.sorted(using: sortOrder)
+        (rankingModel.snapshot?.rows ?? []).sorted(using: sortOrder)
     }
 
-    private var enrichmentID: String {
-        [
-            storefrontCode.lowercased(),
-            items.map { "\($0.appStoreID):\($0.position)" }.joined(separator: ",")
-        ].joined(separator: "::")
+    private var loadID: KeywordRankingListLoader.LoadID {
+        KeywordRankingListLoader.LoadID(
+            crawlKey: crawlKey,
+            storefrontCode: storefrontCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            includesScreenshots: isShowingScreenshots || rankingModel.includesScreenshots
+        )
+    }
+
+    private var requestID: KeywordRankingListModel.RequestID {
+        KeywordRankingListModel.RequestID(
+            loadID: loadID,
+            retryToken: retryToken
+        )
     }
 
     var body: some View {
+        let snapshot = rankingModel.snapshot
+        let sortedRows = (snapshot?.rows ?? []).sorted(using: sortOrder)
+
         VStack(spacing: 0) {
             KeywordRankingListHeader(
                 keyword: keyword,
                 storefrontCode: storefrontCode,
-                storefrontFlagEmoji: storefrontFlagEmoji,
+                storefrontFlagEmoji: snapshot?.storefrontFlagEmoji,
                 searchedAt: searchedAt,
                 resultCount: resultCount
             )
 
             Divider()
 
-            if items.isEmpty {
-                ContentUnavailableView(
-                    "No Ranking Apps",
-                    systemImage: "list.number",
-                    description: Text("Refresh this keyword to capture ranking apps for this country.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                if isShowingScreenshots {
-                    KeywordRankingScreenshotList(
-                        rows: sortedRows,
-                        keyword: keyword,
-                        storefrontCode: storefrontCode,
-                        storefrontLanguageCode: storefrontLanguageCode,
-                        platform: platform,
-                        trackedAppStoreID: trackedAppStoreID,
-                        modelContext: modelContext,
-                        appCatalogService: appCatalogService,
-                        appIconStore: appIconStore
-                    )
-                } else {
-                    Table(sortedRows, sortOrder: $sortOrder) {
-                        TableColumn("Rank", value: \.positionSortValue) { row in
-                            KeywordRankingPositionCell(row: row)
-                        }
-                        .width(min: 55, ideal: 60)
+            ZStack(alignment: .top) {
+                if let snapshot {
+                    if snapshot.items.isEmpty {
+                        ContentUnavailableView(
+                            "No Ranking Apps",
+                            systemImage: "list.number",
+                            description: Text("Refresh this keyword to capture ranking apps for this country.")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if isShowingScreenshots {
+                        KeywordRankingScreenshotList(
+                            rows: sortedRows,
+                            keyword: keyword,
+                            storefrontCode: storefrontCode,
+                            storefrontLanguageCode: snapshot.storefrontLanguageCode,
+                            platform: platform,
+                            trackedAppStoreID: trackedAppStoreID,
+                            modelContext: modelContext,
+                            appCatalogService: appCatalogService,
+                            appIconStore: appIconStore
+                        )
+                    } else {
+                        Table(sortedRows, sortOrder: $sortOrder) {
+                            TableColumn("Rank", value: \.positionSortValue) { row in
+                                KeywordRankingPositionCell(row: row)
+                            }
+                            .width(min: 55, ideal: 60)
 
-                        TableColumn("App", value: \.appNameSortValue) { row in
-                            KeywordRankingAppCell(
-                                row: row,
-                                keyword: keyword,
-                                storefrontCode: storefrontCode,
-                                trackedAppStoreID: trackedAppStoreID,
-                                modelContext: modelContext,
-                                appCatalogService: appCatalogService,
-                                appIconStore: appIconStore
-                            )
-                        }
-                        .width(min: 300, ideal: 340)
+                            TableColumn("App", value: \.appNameSortValue) { row in
+                                KeywordRankingAppCell(
+                                    row: row,
+                                    keyword: keyword,
+                                    storefrontCode: storefrontCode,
+                                    trackedAppStoreID: trackedAppStoreID,
+                                    modelContext: modelContext,
+                                    appCatalogService: appCatalogService,
+                                    appIconStore: appIconStore
+                                )
+                            }
+                            .width(min: 300, ideal: 340)
 
-                        TableColumn("Ratings", value: \.ratingCountSortValue) { row in
-                            KeywordRankingRatingCountCell(row: row)
-                        }
-                        .width(min: 66, ideal: 72, max: 82)
+                            TableColumn("Ratings", value: \.ratingCountSortValue) { row in
+                                KeywordRankingRatingCountCell(row: row)
+                            }
+                            .width(min: 66, ideal: 72, max: 82)
 
-                        TableColumn("Avg. Rating", value: \.averageRatingSortValue) { row in
-                            KeywordRankingAverageRatingCell(row: row)
-                        }
-                        .width(min: 72, ideal: 78, max: 88)
+                            TableColumn("Avg. Rating", value: \.averageRatingSortValue) { row in
+                                KeywordRankingAverageRatingCell(row: row)
+                            }
+                            .width(min: 72, ideal: 78, max: 88)
 
-                        TableColumn("New Ratings (30d)", value: \.newRatingsSortValue) { row in
-                            KeywordRankingNewRatingsCell(row: row)
-                        }
-                        .width(min: 140, ideal: 150, max: 180)
+                            TableColumn("New Ratings (30d)", value: \.newRatingsSortValue) { row in
+                                KeywordRankingNewRatingsCell(row: row)
+                            }
+                            .width(min: 140, ideal: 150, max: 180)
 
-                        TableColumn("Localized", value: \.localizationSortValue) { row in
-                            KeywordRankingLocalizationCell(row: row, storefrontLanguageCode: storefrontLanguageCode)
-                        }
-                        .width(min: 82, ideal: 92, max: 104)
+                            TableColumn("Localized", value: \.localizationSortValue) { row in
+                                KeywordRankingLocalizationCell(
+                                    row: row,
+                                    storefrontLanguageCode: snapshot.storefrontLanguageCode
+                                )
+                            }
+                            .width(min: 82, ideal: 92, max: 104)
 
-                        TableColumn("Released", value: \.releaseDateSortValue) { row in
-                            KeywordRankingDateCell(date: row.releaseDate)
-                        }
-                        .width(min: 80, ideal: 92)
+                            TableColumn("Released", value: \.releaseDateSortValue) { row in
+                                KeywordRankingDateCell(date: row.releaseDate)
+                            }
+                            .width(min: 80, ideal: 92)
 
-                        TableColumn("Last Updated", value: \.updatedDateSortValue) { row in
-                            KeywordRankingTimeAgoCell(date: row.currentVersionReleaseDate)
+                            TableColumn("Last Updated", value: \.updatedDateSortValue) { row in
+                                KeywordRankingTimeAgoCell(date: row.currentVersionReleaseDate)
+                            }
+                            .width(min: 100, ideal: 112)
                         }
-                        .width(min: 100, ideal: 112)
                     }
+                } else if let errorMessage = rankingModel.errorMessage {
+                    ContentUnavailableView {
+                        Label("Unable to Load Ranking Apps", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(errorMessage)
+                    } actions: {
+                        Button("Try Again", action: retryLoading)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ProgressView("Loading ranking apps…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+
+                if snapshot != nil {
+                    KeywordRankingListLoadStatusView(
+                        isLoading: rankingModel.isLoading,
+                        errorMessage: rankingModel.errorMessage,
+                        retry: retryLoading
+                    )
                 }
             }
 
@@ -155,141 +189,27 @@ struct KeywordRankingListSheet: View {
                 downloadTopTenScreenshots: startTopTenScreenshotDownload
             )
         }
-        .task(id: crawlKey) {
-            loadRankingItems()
-            loadEnrichedRows(includeScreenshots: isShowingScreenshots)
-        }
-        .task(id: isShowingScreenshots) {
-            guard isShowingScreenshots, !enrichedRowsIncludeScreenshots else { return }
-            loadEnrichedRows(includeScreenshots: true)
+        .task(id: requestID) {
+            await reloadRankingRows(for: requestID.loadID)
         }
         .frame(minWidth: 1_260, idealWidth: 1_420, minHeight: 720, idealHeight: 920)
     }
 
-    private func loadRankingItems() {
-        guard let crawlKey else { return }
-
-        let targetCrawlKey = crawlKey
-        let descriptor = FetchDescriptor<KeywordAppRanking>(
-            predicate: #Predicate { ranking in
-                ranking.crawlKey == targetCrawlKey
-            },
-            sortBy: [
-                SortDescriptor(\KeywordAppRanking.position, order: .forward)
-            ]
+    private func reloadRankingRows(for targetLoadID: KeywordRankingListLoader.LoadID) async {
+        let dataSource = KeywordRankingListDataSource.production(
+            backgroundModelStore: services.backgroundModelStore,
+            fallbackModelContext: modelContext
         )
 
-        items = ((try? modelContext.fetch(descriptor)) ?? [])
-            .map(KeywordRankingAppSummary.init)
-            .map { KeywordRankingListItem(result: $0) }
+        await rankingModel.load(
+            request: targetLoadID,
+            fallbackItems: fallbackItems,
+            using: dataSource
+        )
     }
 
-    private func loadEnrichedRows(includeScreenshots: Bool) {
-        let appStoreIDs = items.map(\.appStoreID)
-        let appStoreIDSet = Set(appStoreIDs)
-        let normalizedStorefront = storefrontCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-        guard !appStoreIDs.isEmpty else {
-            enrichedRows = []
-            enrichedRowsIncludeScreenshots = false
-            return
-        }
-
-        let storeAppsDescriptor = FetchDescriptor<StoreApp>(
-            predicate: #Predicate { app in
-                appStoreIDs.contains(app.appStoreID)
-            }
-        )
-        let storeApps = (try? modelContext.fetch(storeAppsDescriptor)) ?? []
-        let catalogAppsByID = Dictionary(
-            uniqueKeysWithValues: storeApps
-                .map { ($0.appStoreID, StoreAppDisplayValue($0)) }
-        )
-        let storefrontDisplay = storefrontDisplay(for: normalizedStorefront)
-        storefrontLanguageCode = storefrontDisplay?.languageCode
-        storefrontFlagEmoji = storefrontDisplay?.flagEmoji
-
-        let storefrontMetadataByID = storefrontMetadataByAppStoreID(
-            storefront: normalizedStorefront,
-            appStoreIDSet: appStoreIDSet,
-            includeScreenshots: includeScreenshots
-        )
-        let usMetadataByID = normalizedStorefront == "us"
-            ? storefrontMetadataByID
-            : storefrontMetadataByAppStoreID(
-                storefront: "us",
-                appStoreIDSet: appStoreIDSet,
-                includeScreenshots: includeScreenshots
-            )
-
-        let latestDescriptor = FetchDescriptor<LatestAppRating>(
-            predicate: #Predicate { latest in
-                latest.storefront == normalizedStorefront && appStoreIDs.contains(latest.appStoreID)
-            },
-            sortBy: [SortDescriptor(\.appStoreID, order: .forward)]
-        )
-        let latestByID = Dictionary(
-            uniqueKeysWithValues: ((try? modelContext.fetch(latestDescriptor)) ?? [])
-                .map { ($0.appStoreID, RatingLatestDisplayValue($0)) }
-        )
-
-        let snapshotDescriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.storefront == normalizedStorefront && appStoreIDs.contains(snapshot.appStoreID)
-            },
-            sortBy: [
-                SortDescriptor(\.appStoreID, order: .forward),
-                SortDescriptor(\.ratingDate, order: .forward),
-                SortDescriptor(\.observedAt, order: .forward)
-            ]
-        )
-        let snapshotsByID = Dictionary(grouping: ((try? modelContext.fetch(snapshotDescriptor)) ?? [])
-            .map(RatingSnapshotDisplayValue.init), by: \.appStoreID)
-
-        enrichedRows = items.map { item in
-            KeywordRankingCatalogRow(
-                item: item,
-                storeApp: catalogAppsByID[item.appStoreID],
-                storefrontMetadata: storefrontMetadataByID[item.appStoreID],
-                usMetadata: usMetadataByID[item.appStoreID],
-                latestRating: latestByID[item.appStoreID],
-                ratingSnapshots: snapshotsByID[item.appStoreID] ?? []
-            )
-        }
-        enrichedRowsIncludeScreenshots = includeScreenshots
-    }
-
-    private func storefrontDisplay(for storefront: String) -> StorefrontDisplayValue? {
-        let targetStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let descriptor = FetchDescriptor<Storefront>(
-            predicate: #Predicate { storefront in
-                storefront.code == targetStorefront
-            }
-        )
-        return (try? modelContext.fetch(descriptor).first).map(StorefrontDisplayValue.init)
-    }
-
-    private func storefrontMetadataByAppStoreID(
-        storefront: String,
-        appStoreIDSet: Set<Int64>,
-        includeScreenshots: Bool
-    ) -> [Int64: AppStorefrontMetadataDisplayValue] {
-        let targetStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let descriptor = FetchDescriptor<AppStorefrontMetadata>(
-            predicate: #Predicate { metadata in
-                metadata.storefront == targetStorefront && appStoreIDSet.contains(metadata.appStoreID)
-            },
-            sortBy: [SortDescriptor(\.appStoreID, order: .forward)]
-        )
-        return Dictionary(
-            uniqueKeysWithValues: ((try? modelContext.fetch(descriptor)) ?? [])
-                .map {
-                    (
-                        $0.appStoreID,
-                        AppStorefrontMetadataDisplayValue($0, includeScreenshots: includeScreenshots)
-                    )
-                }
-        )
+    private func retryLoading() {
+        retryToken &+= 1
     }
 
     @MainActor
@@ -401,7 +321,7 @@ struct KeywordRankingListSheet: View {
     .openASOPreviewEnvironment(previewContainer)
 }
 
-private struct KeywordRankingCatalogRow: Identifiable {
+struct KeywordRankingCatalogRow: Identifiable, Sendable {
     let item: KeywordRankingListItem
     let storeApp: StoreAppDisplayValue?
     let storefrontMetadata: AppStorefrontMetadataDisplayValue?
@@ -552,7 +472,7 @@ private struct KeywordRankingCatalogRow: Identifiable {
     }
 }
 
-private struct StorefrontDisplayValue {
+struct StorefrontDisplayValue: Sendable {
     let flagEmoji: String
     let languageCode: String
 
@@ -562,7 +482,7 @@ private struct StorefrontDisplayValue {
     }
 }
 
-private struct StoreAppDisplayValue {
+struct StoreAppDisplayValue: Sendable {
     let appStoreID: Int64
     let name: String
     let subtitle: String?
@@ -586,7 +506,7 @@ private struct StoreAppDisplayValue {
     }
 }
 
-private struct AppStorefrontMetadataDisplayValue {
+struct AppStorefrontMetadataDisplayValue: Sendable {
     let appStoreID: Int64
     let name: String
     let subtitle: String?
@@ -610,7 +530,7 @@ private struct AppStorefrontMetadataDisplayValue {
     }
 }
 
-private struct AppStoreScreenshotDisplayValue: Identifiable, Hashable {
+struct AppStoreScreenshotDisplayValue: Identifiable, Hashable, Sendable {
     let id: String
     let platformRaw: String
     let displayTypeRaw: String
@@ -649,7 +569,7 @@ private struct AppStoreScreenshotDisplayValue: Identifiable, Hashable {
     }
 }
 
-private struct ScreenshotPlatformGroup: Identifiable, Hashable {
+struct ScreenshotPlatformGroup: Identifiable, Hashable, Sendable {
     let platformRaw: String
     let screenshots: [AppStoreScreenshotDisplayValue]
 
@@ -702,7 +622,7 @@ private struct ScreenshotPlatformGroup: Identifiable, Hashable {
     }
 }
 
-private struct RatingLatestDisplayValue {
+struct RatingLatestDisplayValue: Sendable {
     let appStoreID: Int64
     let ratingCount: Int?
     let averageRating: Double?
@@ -714,7 +634,7 @@ private struct RatingLatestDisplayValue {
     }
 }
 
-private struct RatingSnapshotDisplayValue {
+struct RatingSnapshotDisplayValue: Sendable {
     let appStoreID: Int64
     let ratingDate: String
     let ratingCount: Int?
@@ -728,7 +648,7 @@ private struct RatingSnapshotDisplayValue {
     }
 }
 
-private struct KeywordRankingNewRatingPoint: Identifiable {
+struct KeywordRankingNewRatingPoint: Identifiable, Sendable {
     let id: Int
     let label: String
     let delta: Int
