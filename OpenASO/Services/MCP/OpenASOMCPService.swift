@@ -4014,13 +4014,9 @@ extension OpenASOMCPService {
   }
 
   fileprivate static func popularityStatusMessage(from statusMessage: String?) -> String? {
-    guard let statusMessage else { return nil }
-    guard
-      statusMessage.hasPrefix("Popularity failed to fetch.")
-        || statusMessage.hasPrefix("Popularity unavailable.")
-    else {
-      return nil
-    }
+    guard let statusMessage,
+      KeywordMetricsService.isPopularityStatusMessage(statusMessage)
+    else { return nil }
     return statusMessage
   }
 

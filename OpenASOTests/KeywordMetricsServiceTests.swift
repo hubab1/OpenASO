@@ -448,6 +448,7 @@ struct KeywordMetricsServiceTests {
             modelContext.insert(trackedApp)
             for term in terms {
                 let track = try makeTrack(term: term, trackedApp: trackedApp, in: modelContext)
+                track.statusMessage = "Popularity failed to fetch. Resolved shared-query failure."
                 identityKeys.append(track.identityKey)
             }
         }
@@ -480,9 +481,13 @@ struct KeywordMetricsServiceTests {
                 await progressRecorder.record(completed: completed, total: total, failureCount: failureCount)
             }
         )
-        let storedScores = try await backgroundModelStore.read { context in
+        let storedState = try await backgroundModelStore.read { context in
             let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
-            return Dictionary(uniqueKeysWithValues: metrics.map { ($0.keyword, $0.popularityScore) })
+            let tracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
+            return (
+                scores: Dictionary(uniqueKeysWithValues: metrics.map { ($0.keyword, $0.popularityScore) }),
+                tracksWithStatus: tracks.filter { $0.statusMessage != nil }.count
+            )
         }
         let progressUpdates = await progressRecorder.snapshot()
         let recordedRequests = requestBodies.snapshot()
@@ -492,12 +497,286 @@ struct KeywordMetricsServiceTests {
         #expect(recordedRequests.count == 1)
         #expect(recordedRequests.first?.storefronts == ["US"])
         #expect(Set(recordedRequests.first?.terms ?? []) == Set(terms).subtracting(freshTerms))
-        #expect(freshTerms.allSatisfy { storedScores[$0] == 91 })
-        #expect(Set(terms).subtracting(freshTerms).allSatisfy { storedScores[$0] == 74 })
+        #expect(freshTerms.allSatisfy { storedState.scores[$0] == 91 })
+        #expect(Set(terms).subtracting(freshTerms).allSatisfy { storedState.scores[$0] == 74 })
+        #expect(storedState.tracksWithStatus == 0)
         #expect(progressUpdates.count == terms.count + 1)
         #expect(progressUpdates.first == .init(completed: 0, total: terms.count, failureCount: 0))
         #expect(progressUpdates.last == .init(completed: terms.count, total: terms.count, failureCount: 0))
         #expect(freshnessFetchRecorder.snapshot() == [terms.count])
+    }
+
+    @Test
+    func freshnessSkipClearsOnlyPopularityStatusMessages() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                Issue.record("Unexpected request to \(request.url?.absoluteString ?? "unknown URL")")
+                throw OpenASOError.providerUnavailable("Unexpected request")
+            },
+            modelContainer: container
+        )
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let failedTrack = try makeTrack(term: "failed", trackedApp: trackedApp, in: modelContext)
+        let unavailableTrack = try makeTrack(term: "unavailable", trackedApp: trackedApp, in: modelContext)
+        let rankingTrack = try makeTrack(term: "ranking", trackedApp: trackedApp, in: modelContext)
+        failedTrack.statusMessage = "Popularity failed to fetch. Previous failure."
+        unavailableTrack.statusMessage = "Popularity unavailable. Previous limitation."
+        let rankingStatus = "Ranking failed to refresh. Previous failure."
+        rankingTrack.statusMessage = rankingStatus
+
+        for track in [failedTrack, unavailableTrack, rankingTrack] {
+            modelContext.insert(
+                KeywordDailyMetric(
+                    queryKey: track.queryKey,
+                    keyword: track.term,
+                    storefront: track.storefront,
+                    platform: track.platform,
+                    popularityScore: 55,
+                    difficultyScore: nil,
+                    source: .appleAdsPopularity,
+                    updatedAt: .now
+                )
+            )
+        }
+        try modelContext.save()
+
+        let outcomes = await services.keywordMetricsService.refreshMetrics(
+            for: trackedApp,
+            tracks: [failedTrack, unavailableTrack, rankingTrack],
+            in: modelContext
+        )
+
+        #expect(outcomes.count == 3)
+        #expect(outcomes.allSatisfy { $0.errorMessage == nil })
+        #expect(failedTrack.statusMessage == nil)
+        #expect(unavailableTrack.statusMessage == nil)
+        #expect(rankingTrack.statusMessage == rankingStatus)
+    }
+
+    @Test
+    func directFreshnessSkipDoesNotClobberSameStatusWrittenDuringLaterProviderWork() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let client = SuspendedKeywordMetricsHTTPClient()
+        let services = AppServices.mocked(httpClient: client, modelContainer: container)
+        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
+        try services.appleAdsWebSessionStore.save(completeWebSession)
+        let backgroundModelStore = try #require(services.backgroundModelStore)
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let freshTrack = try makeTrack(term: "fresh", trackedApp: trackedApp, in: modelContext)
+        let staleTrack = try makeTrack(term: "needs-refresh", trackedApp: trackedApp, in: modelContext)
+        let repeatedStatus = "Popularity failed to fetch. Same repeated failure."
+        freshTrack.statusMessage = repeatedStatus
+        modelContext.insert(
+            KeywordDailyMetric(
+                queryKey: freshTrack.queryKey,
+                keyword: freshTrack.term,
+                storefront: freshTrack.storefront,
+                platform: freshTrack.platform,
+                popularityScore: 55,
+                difficultyScore: nil,
+                source: .appleAdsPopularity,
+                updatedAt: .now
+            )
+        )
+        try modelContext.save()
+
+        let refreshTask = Task { @MainActor in
+            await services.keywordMetricsService.refreshMetrics(
+                for: trackedApp,
+                tracks: [freshTrack, staleTrack],
+                in: modelContext
+            )
+        }
+        await client.waitUntilRequestStarts()
+        let freshTrackIdentityKey = freshTrack.identityKey
+        try await backgroundModelStore.write { context in
+            let descriptor = FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    track.identityKey == freshTrackIdentityKey
+                }
+            )
+            guard let persistedTrack = try context.fetch(descriptor).first else {
+                throw OpenASOError.appNotFound
+            }
+            persistedTrack.statusMessage = repeatedStatus
+        }
+        await client.succeed()
+        _ = await refreshTask.value
+
+        let persistedStatus = try await backgroundModelStore.read { context in
+            let descriptor = FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    track.identityKey == freshTrackIdentityKey
+                }
+            )
+            return try context.fetch(descriptor).first?.statusMessage
+        }
+        #expect(persistedStatus == repeatedStatus)
+    }
+
+    @Test
+    func backgroundFreshnessSkipAtomicallyClearsAndPreservesLaterStatus() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let client = MockHTTPClient { request in
+            Issue.record("Unexpected request to \(request.url?.absoluteString ?? "unknown URL")")
+            throw OpenASOError.providerUnavailable("Unexpected request")
+        }
+        let freshnessFetchRecorder = KeywordMetricsFreshnessFetchRecorder()
+        let service = makeKeywordMetricsService(
+            httpClient: client,
+            freshnessFetchRecorder: freshnessFetchRecorder
+        )
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let clearTrack = try makeTrack(term: "clear", trackedApp: trackedApp, in: modelContext)
+        let newerTrack = try makeTrack(term: "newer", trackedApp: trackedApp, in: modelContext)
+        let rankingTrack = try makeTrack(term: "ranking", trackedApp: trackedApp, in: modelContext)
+        clearTrack.statusMessage = "Popularity failed to fetch. Resolved failure."
+        let newerStatus = "Popularity failed to fetch. Same repeated failure."
+        newerTrack.statusMessage = newerStatus
+        let rankingStatus = "Ranking failed to refresh. Keep this failure."
+        rankingTrack.statusMessage = rankingStatus
+
+        for track in [clearTrack, newerTrack, rankingTrack] {
+            modelContext.insert(
+                KeywordDailyMetric(
+                    queryKey: track.queryKey,
+                    keyword: track.term,
+                    storefront: track.storefront,
+                    platform: track.platform,
+                    popularityScore: 55,
+                    difficultyScore: nil,
+                    source: .appleAdsPopularity,
+                    updatedAt: .now
+                )
+            )
+        }
+        try modelContext.save()
+
+        let outcomes = try await service.refreshStalePopularityMetrics(
+            popularityContextAppStoreID: 123_456_789,
+            webSession: completeWebSession,
+            using: backgroundModelStore
+        )
+        let newerTrackIdentityKey = newerTrack.identityKey
+        try await backgroundModelStore.write { context in
+            let descriptor = FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    track.identityKey == newerTrackIdentityKey
+                }
+            )
+            guard let persistedTrack = try context.fetch(descriptor).first else {
+                throw OpenASOError.appNotFound
+            }
+            persistedTrack.statusMessage = newerStatus
+        }
+        let persistedStatuses = try await backgroundModelStore.read { context in
+            let tracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
+            return (
+                clear: tracks.first { $0.term == "clear" }?.statusMessage,
+                newer: tracks.first { $0.term == "newer" }?.statusMessage,
+                ranking: tracks.first { $0.term == "ranking" }?.statusMessage
+            )
+        }
+
+        #expect(outcomes.isEmpty)
+        #expect(outcomes.allSatisfy { $0.errorMessage == nil })
+        #expect(persistedStatuses.clear == nil)
+        #expect(persistedStatuses.newer == newerStatus)
+        #expect(persistedStatuses.ranking == rankingStatus)
+        #expect(freshnessFetchRecorder.snapshot() == [3])
+    }
+
+    @Test
+    func sharedStaleQueryUsesOneProgressUnitAndSurvivingTrackForPersistence() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let firstApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "First",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        let secondApp = TrackedApp(
+            appStoreID: 2,
+            bundleID: nil,
+            name: "Second",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(firstApp)
+        modelContext.insert(secondApp)
+        let firstTrack = try makeTrack(term: "shared stale", trackedApp: firstApp, in: modelContext)
+        let secondTrack = try makeTrack(term: "shared stale", trackedApp: secondApp, in: modelContext)
+        let staleStatus = "Popularity failed to fetch. Previous shared failure."
+        firstTrack.statusMessage = staleStatus
+        secondTrack.statusMessage = staleStatus
+        try modelContext.save()
+
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let representativeIdentityKey = min(firstTrack.identityKey, secondTrack.identityKey)
+        let client = RemovingTrackHTTPClient(
+            modelStore: backgroundModelStore,
+            identityKeyToRemove: representativeIdentityKey
+        )
+        let freshnessFetchRecorder = KeywordMetricsFreshnessFetchRecorder()
+        let service = makeKeywordMetricsService(
+            httpClient: client,
+            freshnessFetchRecorder: freshnessFetchRecorder
+        )
+
+        let preparation = try await service.prepareStalePopularityRefresh(using: backgroundModelStore)
+        let outcomes = try await service.refreshMetrics(
+            for: preparation.trackIdentityKeys,
+            popularityContextAppStoreID: 123_456_789,
+            webSession: completeWebSession,
+            using: backgroundModelStore
+        )
+        let persisted = try await backgroundModelStore.read { context in
+            let tracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
+            let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
+            return (
+                trackCount: tracks.count,
+                statusMessage: tracks.first?.statusMessage,
+                popularityScore: metrics.first?.popularityScore
+            )
+        }
+
+        #expect(preparation.trackIdentityKeys.count == 2)
+        #expect(preparation.refreshQueryCount == 1)
+        #expect(preparation.clearedStatusCount == 0)
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.errorMessage == nil)
+        #expect(persisted.trackCount == 1)
+        #expect(persisted.statusMessage == nil)
+        #expect(persisted.popularityScore == 63)
+        #expect(freshnessFetchRecorder.snapshot() == [1, 1])
     }
 
     @Test
@@ -936,6 +1215,44 @@ private actor KeywordMetricsProgressRecorder {
 
     func snapshot() -> [Update] {
         updates
+    }
+}
+
+private actor SuspendedKeywordMetricsHTTPClient: HTTPClient {
+    typealias Output = (Data, URLResponse)
+
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var pendingRequest: (
+        request: URLRequest,
+        continuation: CheckedContinuation<Output, any Error>
+    )?
+
+    func data(for request: URLRequest) async throws -> Output {
+        try await withCheckedThrowingContinuation { continuation in
+            pendingRequest = (request, continuation)
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+    }
+
+    func waitUntilRequestStarts() async {
+        guard pendingRequest == nil else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func succeed() {
+        guard let pendingRequest else { return }
+        self.pendingRequest = nil
+        let payload = #"{"status":"success","data":[{"name":"needs-refresh","popularity":63}]}"#
+        pendingRequest.continuation.resume(returning: (
+            Data(payload.utf8),
+            makeHTTPURLResponse(url: pendingRequest.request.url!, statusCode: 200)
+        ))
     }
 }
 

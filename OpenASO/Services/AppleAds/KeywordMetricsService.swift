@@ -90,9 +90,15 @@ final class KeywordMetricsService: Sendable {
         let metricsByQueryKey = freshnessMetricsMap(for: Array(uniqueTracks.keys), in: modelContext)
         var outcomes: [KeywordMetricsRefreshOutcome] = []
         var tracksNeedingPopularity: [TrackedAppKeyword] = []
+        var clearedFreshStatuses: [(track: TrackedAppKeyword, statusMessage: String)] = []
 
         for track in uniqueTracks.values {
             guard Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey]) else {
+                if let statusMessage = track.statusMessage,
+                   Self.isPopularityStatusMessage(statusMessage) {
+                    track.statusMessage = nil
+                    clearedFreshStatuses.append((track, statusMessage))
+                }
                 outcomes.append(KeywordMetricsRefreshOutcome(trackID: track.persistentModelID, errorMessage: nil))
                 continue
             }
@@ -104,6 +110,16 @@ final class KeywordMetricsService: Sendable {
             }
 
             tracksNeedingPopularity.append(track)
+        }
+
+        if !clearedFreshStatuses.isEmpty {
+            do {
+                try modelContext.save()
+            } catch {
+                for clearedStatus in clearedFreshStatuses where clearedStatus.track.statusMessage == nil {
+                    clearedStatus.track.statusMessage = clearedStatus.statusMessage
+                }
+            }
         }
 
         if let contextAppStoreID = settingsStore.popularityContextAppStoreID {
@@ -149,7 +165,7 @@ final class KeywordMetricsService: Sendable {
         guard !trackIdentityKeys.isEmpty else { return [] }
 
         let metricsTTL = metricsTTL
-        let candidates = try await modelStore.read { modelContext in
+        let candidates = try await modelStore.write { modelContext in
             let targetIdentityKeys = trackIdentityKeys
             let descriptor = FetchDescriptor<TrackedAppKeyword>(
                 predicate: #Predicate { track in
@@ -157,15 +173,24 @@ final class KeywordMetricsService: Sendable {
                 }
             )
             let tracks = try modelContext.fetch(descriptor)
-            let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
+            let tracksByQueryKey = Dictionary(grouping: tracks, by: \.queryKey)
             let metricsByQueryKey = self.freshnessMetricsMap(
-                for: Array(uniqueTracks.keys),
+                for: Array(tracksByQueryKey.keys),
                 in: modelContext
             )
-            return uniqueTracks.values.map { track in
-                KeywordMetricsRefreshCandidate(
+            for track in tracks where !Self.shouldRefreshMetrics(
+                metricsTTL: metricsTTL,
+                metric: metricsByQueryKey[track.queryKey]
+            ) {
+                Self.clearPopularityStatusIfNeeded(for: track)
+            }
+            return tracksByQueryKey.values.compactMap { queryTracks -> KeywordMetricsRefreshCandidate? in
+                let sortedQueryTracks = queryTracks.sorted { $0.identityKey < $1.identityKey }
+                guard let track = sortedQueryTracks.first else { return nil }
+                return KeywordMetricsRefreshCandidate(
                     trackID: track.persistentModelID,
                     trackIdentityKey: track.identityKey,
+                    trackIdentityKeys: sortedQueryTracks.map(\.identityKey),
                     term: track.term,
                     storefront: track.storefront,
                     shouldRefresh: Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey])
@@ -276,7 +301,8 @@ final class KeywordMetricsService: Sendable {
     ) async throws -> [KeywordMetricsRefreshOutcome] {
         guard webSession.isComplete else { return [] }
 
-        let trackIdentityKeys = try await stalePopularityTrackIdentityKeys(using: modelStore)
+        let preparation = try await prepareStalePopularityRefresh(using: modelStore)
+        let trackIdentityKeys = preparation.trackIdentityKeys
 
         guard !trackIdentityKeys.isEmpty else { return [] }
 
@@ -289,21 +315,40 @@ final class KeywordMetricsService: Sendable {
         )
     }
 
-    func stalePopularityTrackIdentityKeys(using modelStore: BackgroundModelStore) async throws -> [String] {
+    func prepareStalePopularityRefresh(
+        using modelStore: BackgroundModelStore
+    ) async throws -> StalePopularityRefreshPreparation {
         let metricsTTL = metricsTTL
-        return try await modelStore.read { modelContext in
+        return try await modelStore.write { modelContext in
             let descriptor = FetchDescriptor<TrackedAppKeyword>()
             let tracks = try modelContext.fetch(descriptor)
-            let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
+            let tracksByQueryKey = Dictionary(grouping: tracks, by: \.queryKey)
             let metricsByQueryKey = self.freshnessMetricsMap(
-                for: Array(uniqueTracks.keys),
+                for: Array(tracksByQueryKey.keys),
                 in: modelContext
             )
-            return uniqueTracks.values
-                .filter { track in
-                    Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey])
+            var clearedStatusCount = 0
+            for track in tracks where !Self.shouldRefreshMetrics(
+                metricsTTL: metricsTTL,
+                metric: metricsByQueryKey[track.queryKey]
+            ) {
+                if Self.clearPopularityStatusIfNeeded(for: track) {
+                    clearedStatusCount += 1
                 }
-                .map(\.identityKey)
+            }
+            let queryTracksNeedingRefresh = tracksByQueryKey.values.filter { queryTracks in
+                guard let track = queryTracks.first else { return false }
+                return Self.shouldRefreshMetrics(
+                    metricsTTL: metricsTTL,
+                    metric: metricsByQueryKey[track.queryKey]
+                )
+            }
+            let refreshIdentityKeys = queryTracksNeedingRefresh.flatMap { $0.map(\.identityKey) }
+            return StalePopularityRefreshPreparation(
+                trackIdentityKeys: refreshIdentityKeys.sorted(),
+                refreshQueryCount: queryTracksNeedingRefresh.count,
+                clearedStatusCount: clearedStatusCount
+            )
         }
     }
 
@@ -315,7 +360,8 @@ final class KeywordMetricsService: Sendable {
         try await modelStore.write { modelContext in
             try Self.applyMetricsPayload(
                 payload,
-                forTrackIdentityKey: candidate.trackIdentityKey,
+                forTrackIdentityKeys: candidate.trackIdentityKeys,
+                preferredTrackIdentityKey: candidate.trackIdentityKey,
                 fallbackTrackID: candidate.trackID,
                 in: modelContext
             )
@@ -336,17 +382,20 @@ final class KeywordMetricsService: Sendable {
 
     private static func applyMetricsPayload(
         _ payload: KeywordMetricsPayload,
-        forTrackIdentityKey trackIdentityKey: String,
+        forTrackIdentityKeys trackIdentityKeys: [String],
+        preferredTrackIdentityKey: String,
         fallbackTrackID: PersistentIdentifier,
         in modelContext: ModelContext
     ) throws -> KeywordMetricsRefreshOutcome {
-        let targetIdentityKey = trackIdentityKey
+        let targetIdentityKeys = trackIdentityKeys
         let descriptor = FetchDescriptor<TrackedAppKeyword>(
             predicate: #Predicate { track in
-                track.identityKey == targetIdentityKey
+                targetIdentityKeys.contains(track.identityKey)
             }
         )
-        guard let track = try modelContext.fetch(descriptor).first else {
+        let tracks = try modelContext.fetch(descriptor)
+        guard let track = tracks.first(where: { $0.identityKey == preferredTrackIdentityKey })
+            ?? tracks.first else {
             return KeywordMetricsRefreshOutcome(
                 trackID: fallbackTrackID,
                 errorMessage: OpenASOError.appNotFound.localizedDescription
@@ -355,6 +404,11 @@ final class KeywordMetricsService: Sendable {
 
         var outcomes: [KeywordMetricsRefreshOutcome] = []
         applyMetricsPayload(payload, for: track, in: modelContext, outcomes: &outcomes)
+        if payload.statusMessage == nil {
+            for siblingTrack in tracks {
+                clearPopularityStatusIfNeeded(for: siblingTrack)
+            }
+        }
         return outcomes.last ?? KeywordMetricsRefreshOutcome(trackID: fallbackTrackID, errorMessage: nil)
     }
 
@@ -446,21 +500,21 @@ final class KeywordMetricsService: Sendable {
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity failed to fetch. Connect an Apple Ads web session in Settings."
+                statusMessage: "\(popularityFailedToFetchPrefix) Connect an Apple Ads web session in Settings."
             )
         case .missingContextApp:
             return KeywordMetricsPayload(
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity failed to fetch. Reconnect Apple Ads in Settings so OpenASO can detect a linked app."
+                statusMessage: "\(popularityFailedToFetchPrefix) Reconnect Apple Ads in Settings so OpenASO can detect a linked app."
             )
         case .notFound:
             return KeywordMetricsPayload(
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity failed to fetch. Apple Ads returned no popularity for this keyword using the configured popularity app."
+                statusMessage: "\(popularityFailedToFetchPrefix) Apple Ads returned no popularity for this keyword using the configured popularity app."
             )
         case .failure(let message):
             if isUnsupportedAppleAdsStorefrontMessage(message) {
@@ -468,7 +522,7 @@ final class KeywordMetricsService: Sendable {
                     popularityScore: nil,
                     difficultyScore: nil,
                     source: .appleAdsPopularity,
-                    statusMessage: "Popularity unavailable. \(message)"
+                    statusMessage: "\(popularityUnavailablePrefix) \(message)"
                 )
             }
 
@@ -476,7 +530,7 @@ final class KeywordMetricsService: Sendable {
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity failed to fetch. \(message)"
+                statusMessage: "\(popularityFailedToFetchPrefix) \(message)"
             )
         }
 
@@ -494,14 +548,20 @@ final class KeywordMetricsService: Sendable {
             && (lowercasedMessage.contains("not available") || lowercasedMessage.contains("does not support"))
     }
 
-    private static func clearPopularityStatusIfNeeded(for track: TrackedAppKeyword) {
-        guard track.statusMessage?.hasPrefix("Popularity failed to fetch.") == true
-            || track.statusMessage?.hasPrefix("Popularity unavailable.") == true
-        else {
-            return
-        }
-
+    @discardableResult
+    private static func clearPopularityStatusIfNeeded(for track: TrackedAppKeyword) -> Bool {
+        guard isPopularityStatusMessage(track.statusMessage) else { return false }
         track.statusMessage = nil
+        return true
+    }
+
+    static let popularityFailedToFetchPrefix = "Popularity failed to fetch."
+    static let popularityUnavailablePrefix = "Popularity unavailable."
+
+    static func isPopularityStatusMessage(_ statusMessage: String?) -> Bool {
+        guard let statusMessage else { return false }
+        return statusMessage.hasPrefix(popularityFailedToFetchPrefix)
+            || statusMessage.hasPrefix(popularityUnavailablePrefix)
     }
 }
 
@@ -510,9 +570,16 @@ struct KeywordMetricsRefreshOutcome: Sendable {
     let errorMessage: String?
 }
 
+struct StalePopularityRefreshPreparation: Sendable {
+    let trackIdentityKeys: [String]
+    let refreshQueryCount: Int
+    let clearedStatusCount: Int
+}
+
 private struct KeywordMetricsRefreshCandidate: Sendable {
     let trackID: PersistentIdentifier
     let trackIdentityKey: String
+    let trackIdentityKeys: [String]
     let term: String
     let storefront: String
     let shouldRefresh: Bool
