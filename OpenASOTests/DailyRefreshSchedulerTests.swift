@@ -40,7 +40,7 @@ struct DailyRefreshSchedulerTests {
     }
 
     @Test
-    func ratingsReviewsStorefrontsFallBackWhenNoKeywordsTracked() throws {
+    func ratingsReviewsStorefrontsUseDefaultWhenNoKeywordsTracked() throws {
         let container = try makeInMemoryContainer()
         let modelContext = ModelContext(container)
 
@@ -54,13 +54,62 @@ struct DailyRefreshSchedulerTests {
         modelContext.insert(app)
         try modelContext.save()
 
-        let fallback = ["us", "gb", "fr"]
+        app.storeApp.defaultStorefront = " GB "
+        let fallback = ["us", "fr"]
         let codes = DailyRefreshScheduler.ratingsReviewsStorefrontCodes(
             for: app,
             fallback: fallback
         )
 
-        #expect(codes == fallback)
+        #expect(codes == ["gb"])
+    }
+
+    @Test
+    func ratingsReviewsStorefrontsPreferUSCatalogFallback() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+
+        let app = TrackedApp(
+            appStoreID: 1,
+            bundleID: "com.example.app",
+            name: "Example",
+            sellerName: "Example Inc",
+            defaultPlatform: .iphone
+        )
+        app.storeApp.defaultStorefront = "  "
+        modelContext.insert(app)
+        try modelContext.save()
+
+        let codes = DailyRefreshScheduler.ratingsReviewsStorefrontCodes(
+            for: app,
+            fallback: ["", " FR ", "us"]
+        )
+
+        #expect(codes == ["us"])
+    }
+
+    @Test
+    func ratingsReviewsStorefrontsUseFirstValidCatalogFallbackWhenUSUnavailable() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+
+        let app = TrackedApp(
+            appStoreID: 1,
+            bundleID: "com.example.app",
+            name: "Example",
+            sellerName: "Example Inc",
+            defaultPlatform: .iphone
+        )
+        app.storeApp.defaultStorefront = "  "
+        modelContext.insert(app)
+        try modelContext.save()
+
+        let codes = DailyRefreshScheduler.ratingsReviewsStorefrontCodes(
+            for: app,
+            fallback: ["", " FR ", "gb"]
+        )
+
+        #expect(codes == ["fr"])
     }
 }
 

@@ -187,8 +187,8 @@ final class DailyRefreshScheduler {
     /// The storefronts whose ratings/reviews should be refreshed for `app`.
     ///
     /// Scoped to the countries the app actually tracks keywords in. Apps with no
-    /// tracked keywords fall back to `fallback` (the full storefront catalog) so
-    /// existing behavior is preserved for them.
+    /// tracked keywords use their default storefront. If that is unavailable, at
+    /// most one valid storefront is selected from `fallback`, preferring the US.
     static func ratingsReviewsStorefrontCodes(
         for app: TrackedApp,
         fallback: [String]
@@ -196,7 +196,31 @@ final class DailyRefreshScheduler {
         let trackedStorefrontCodes = Array(Set(app.keywordTracks.map {
             $0.storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }.filter { !$0.isEmpty })).sorted()
-        return trackedStorefrontCodes.isEmpty ? fallback : trackedStorefrontCodes
+        guard trackedStorefrontCodes.isEmpty else {
+            return trackedStorefrontCodes
+        }
+
+        let defaultStorefront = app.storeApp.defaultStorefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if !defaultStorefront.isEmpty {
+            return [defaultStorefront]
+        }
+
+        var firstValidFallback: String?
+        for code in fallback {
+            let normalizedCode = code
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !normalizedCode.isEmpty else { continue }
+            if normalizedCode == "us" {
+                return [normalizedCode]
+            }
+            if firstValidFallback == nil {
+                firstValidFallback = normalizedCode
+            }
+        }
+        return firstValidFallback.map { [$0] } ?? []
     }
 
     func nextCheckSleepNanoseconds(now: Date? = nil) -> UInt64 {
