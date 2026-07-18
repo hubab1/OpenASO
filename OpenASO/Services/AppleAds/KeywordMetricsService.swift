@@ -6,6 +6,8 @@ final class KeywordMetricsService: Sendable {
     private let apiClient: AppleAdsAPIClient
     @MainActor private let popularityClient: AppleAdsPopularityClient
     @MainActor private let settingsStore: AppSettingsStore
+    private let freshnessFetchObserver: @Sendable (_ queryKeyCount: Int) -> Void
+    private let bulkFreshnessFetchHook: @Sendable () throws -> Void
     private let metricsTTL: TimeInterval = 60 * 60 * 24 * 7
 
     @MainActor
@@ -13,11 +15,15 @@ final class KeywordMetricsService: Sendable {
         httpClient: HTTPClient,
         credentialStore: AppleAdsCredentialStore,
         settingsStore: AppSettingsStore,
-        webSessionStore: AppleAdsWebSessionStore
+        webSessionStore: AppleAdsWebSessionStore,
+        freshnessFetchObserver: @escaping @Sendable (_ queryKeyCount: Int) -> Void = { _ in },
+        bulkFreshnessFetchHook: @escaping @Sendable () throws -> Void = {}
     ) {
         self.httpClient = httpClient
         self.apiClient = AppleAdsAPIClient(httpClient: httpClient)
         self.settingsStore = settingsStore
+        self.freshnessFetchObserver = freshnessFetchObserver
+        self.bulkFreshnessFetchHook = bulkFreshnessFetchHook
         self.popularityClient = AppleAdsPopularityClient(
             httpClient: httpClient,
             webSessionStore: webSessionStore
@@ -37,11 +43,12 @@ final class KeywordMetricsService: Sendable {
     }
 
     func metricsMap(for queryKeys: [String], in modelContext: ModelContext) throws -> [String: KeywordDailyMetric] {
-        guard !queryKeys.isEmpty else {
+        let uniqueQueryKeys = Array(Set(queryKeys))
+        guard !uniqueQueryKeys.isEmpty else {
             return [:]
         }
 
-        let targetQueryKeys = queryKeys
+        let targetQueryKeys = uniqueQueryKeys
         let descriptor = FetchDescriptor<KeywordDailyMetric>(
             predicate: #Predicate { metrics in
                 targetQueryKeys.contains(metrics.queryKey)
@@ -51,6 +58,28 @@ final class KeywordMetricsService: Sendable {
         return Dictionary(uniqueKeysWithValues: metrics.map { ($0.queryKey, $0) })
     }
 
+    private func freshnessMetricsMap(
+        for queryKeys: [String],
+        in modelContext: ModelContext
+    ) -> [String: KeywordDailyMetric] {
+        let uniqueQueryKeys = Array(Set(queryKeys))
+        guard !uniqueQueryKeys.isEmpty else { return [:] }
+
+        freshnessFetchObserver(uniqueQueryKeys.count)
+        do {
+            try bulkFreshnessFetchHook()
+            return try metricsMap(for: uniqueQueryKeys, in: modelContext)
+        } catch {
+            var metricsByQueryKey: [String: KeywordDailyMetric] = [:]
+            for queryKey in uniqueQueryKeys {
+                if let metric = try? Self.fetchMetrics(queryKey: queryKey, in: modelContext) {
+                    metricsByQueryKey[queryKey] = metric
+                }
+            }
+            return metricsByQueryKey
+        }
+    }
+
     @MainActor
     func refreshMetrics(
         for trackedApp: TrackedApp,
@@ -58,11 +87,12 @@ final class KeywordMetricsService: Sendable {
         in modelContext: ModelContext
     ) async -> [KeywordMetricsRefreshOutcome] {
         let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
+        let metricsByQueryKey = freshnessMetricsMap(for: Array(uniqueTracks.keys), in: modelContext)
         var outcomes: [KeywordMetricsRefreshOutcome] = []
         var tracksNeedingPopularity: [TrackedAppKeyword] = []
 
         for track in uniqueTracks.values {
-            guard Self.shouldRefreshMetrics(metricsTTL: metricsTTL, for: track.queryKey, in: modelContext) else {
+            guard Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey]) else {
                 outcomes.append(KeywordMetricsRefreshOutcome(trackID: track.persistentModelID, errorMessage: nil))
                 continue
             }
@@ -128,17 +158,17 @@ final class KeywordMetricsService: Sendable {
             )
             let tracks = try modelContext.fetch(descriptor)
             let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
+            let metricsByQueryKey = self.freshnessMetricsMap(
+                for: Array(uniqueTracks.keys),
+                in: modelContext
+            )
             return uniqueTracks.values.map { track in
                 KeywordMetricsRefreshCandidate(
                     trackID: track.persistentModelID,
                     trackIdentityKey: track.identityKey,
                     term: track.term,
                     storefront: track.storefront,
-                    shouldRefresh: Self.shouldRefreshMetrics(
-                        metricsTTL: metricsTTL,
-                        for: track.queryKey,
-                        in: modelContext
-                    )
+                    shouldRefresh: Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey])
                 )
             }
         }
@@ -265,13 +295,13 @@ final class KeywordMetricsService: Sendable {
             let descriptor = FetchDescriptor<TrackedAppKeyword>()
             let tracks = try modelContext.fetch(descriptor)
             let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
+            let metricsByQueryKey = self.freshnessMetricsMap(
+                for: Array(uniqueTracks.keys),
+                in: modelContext
+            )
             return uniqueTracks.values
                 .filter { track in
-                    Self.shouldRefreshMetrics(
-                        metricsTTL: metricsTTL,
-                        for: track.queryKey,
-                        in: modelContext
-                    )
+                    Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey])
                 }
                 .map(\.identityKey)
         }
@@ -344,12 +374,12 @@ final class KeywordMetricsService: Sendable {
         }
     }
 
-    private static func shouldRefreshMetrics(metricsTTL: TimeInterval, for queryKey: String, in modelContext: ModelContext) -> Bool {
-        guard let metrics = try? fetchMetrics(queryKey: queryKey, in: modelContext) else {
+    private static func shouldRefreshMetrics(metricsTTL: TimeInterval, metric: KeywordDailyMetric?) -> Bool {
+        guard let metric else {
             return true
         }
 
-        return metrics.popularityScore == nil || Date.now.timeIntervalSince(metrics.updatedAt) >= metricsTTL
+        return metric.popularityScore == nil || Date.now.timeIntervalSince(metric.updatedAt) >= metricsTTL
     }
 
     private static func fetchMetrics(queryKey: String, in modelContext: ModelContext) throws -> KeywordDailyMetric? {
