@@ -537,6 +537,148 @@ struct OpenASOMCPServerTests {
         #expect(message.contains("port 0"))
         #expect(message.contains("supported port range"))
     }
+
+    @Test
+    func appServicesMCPProviderUsesConfiguredAppleAdsPopularity() async throws {
+        var requestCount = 0
+        let context = try AppServicesMCPTestContext(
+            httpClient: MockHTTPClient { request in
+                requestCount += 1
+                #expect(request.url?.host == "app-ads.apple.com")
+                return (
+                    appleAdsPopularityPayload(keyword: "focus timer", popularity: 73),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                )
+            }
+        )
+        try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
+        try context.configureAppleAds(contextAppStoreID: 987)
+
+        let result = try await refreshKeywordMetrics(
+            using: context.services.mcpServerProvider,
+            appStoreID: 123
+        )
+
+        #expect(requestCount == 1)
+        #expect(result.summary.refreshed == 1)
+        #expect(result.summary.failed == 0)
+        #expect(result.outcomes.first?.track.popularityScore == 73)
+        #expect(result.outcomes.first?.error == nil)
+    }
+
+    @Test
+    func appServicesMCPProviderSkipsHTTPWhenAppleAdsConfigurationIsMissing() async throws {
+        var requestCount = 0
+        let context = try AppServicesMCPTestContext(
+            httpClient: MockHTTPClient { request in
+                requestCount += 1
+                throw OpenASOError.providerUnavailable(
+                    "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+                )
+            }
+        )
+        try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
+
+        let result = try await refreshKeywordMetrics(
+            using: context.services.mcpServerProvider,
+            appStoreID: 123
+        )
+
+        #expect(requestCount == 0)
+        #expect(result.summary.refreshed == 0)
+        #expect(result.summary.failed == 1)
+        #expect(result.outcomes.first?.track.popularityScore == nil)
+        #expect(result.outcomes.first?.error?.code == "keyword_popularity_unavailable")
+    }
+
+    @Test
+    func appServicesMCPProviderUsesRequestGateRetryPipeline() async throws {
+        var requestCount = 0
+        let retryPolicy = ProviderRequestPolicy(
+            minimumIntervalNanoseconds: 0,
+            maximumAttempts: 2,
+            baseBackoffNanoseconds: 0,
+            maximumBackoffNanoseconds: 0,
+            maximumElapsedNanoseconds: 1_000_000_000,
+            jitterFraction: 0
+        )
+        let context = try AppServicesMCPTestContext(
+            httpClient: MockHTTPClient { request in
+                requestCount += 1
+                if requestCount == 1 {
+                    return (
+                        Data(),
+                        makeHTTPURLResponse(url: try #require(request.url), statusCode: 503)
+                    )
+                }
+                return (
+                    appleAdsPopularityPayload(keyword: "focus timer", popularity: 61),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                )
+            },
+            providerRequestGateMode: .enabled(
+                ProviderRequestPolicies(default: retryPolicy)
+            )
+        )
+        try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
+        try context.configureAppleAds(contextAppStoreID: 987)
+
+        let result = try await refreshKeywordMetrics(
+            using: context.services.mcpServerProvider,
+            appStoreID: 123
+        )
+
+        #expect(requestCount == 2)
+        #expect(result.summary.refreshed == 1)
+        #expect(result.summary.failed == 0)
+        #expect(result.outcomes.first?.track.popularityScore == 61)
+    }
+
+    @Test
+    func mcpRuntimeRunsAppServicesProviderDetachedWithInMemoryTransport() async throws {
+        let context = try AppServicesMCPTestContext(
+            httpClient: MockHTTPClient { request in
+                throw OpenASOError.providerUnavailable(
+                    "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+                )
+            }
+        )
+        try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
+        let serverProvider = context.services.mcpServerProvider
+        let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
+        let runtimeTask = Task.detached {
+            try await OpenASOMCPRuntime.run(
+                serverProvider: serverProvider,
+                transport: transports.server
+            )
+        }
+        let client = Client(name: "OpenASO Detached Runtime Test Client", version: "1.0")
+
+        do {
+            let initialize = try await client.connect(transport: transports.client)
+            #expect(initialize.serverInfo.name == "OpenASO")
+
+            let toolResult = try await client.callTool(
+                name: "list_apps",
+                arguments: ["limit": 10]
+            )
+            let toolJSON = try #require(toolResult.content.first?.textValue)
+            let apps = try JSONDecoder.openASOMCP.decode(
+                OpenASOMCPPage<OpenASOMCPAppSummary>.self,
+                from: Data(toolJSON.utf8)
+            )
+            #expect(apps.items.map(\.appStoreID) == ["123"])
+
+            await client.disconnect()
+            try await runtimeTask.value
+        } catch {
+            await client.disconnect()
+            runtimeTask.cancel()
+            _ = try? await runtimeTask.value
+            throw error
+        }
+    }
 }
 
 @MainActor
@@ -790,6 +932,114 @@ private struct ServerHistoryFixtures {
     let rankingSnapshotKeys: [String]
     let rankingCrawlKey: String
     let ratingIdentityKey: String
+}
+
+@MainActor
+private struct AppServicesMCPTestContext {
+    let container: ModelContainer
+    let modelContext: ModelContext
+    let services: AppServices
+
+    init(
+        httpClient: any HTTPClient,
+        providerRequestGateMode: ProviderRequestGateMode = .disabled
+    ) throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let defaultsSuiteName = "com.thirdtech.openaso.mcp-tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuiteName) ?? .standard
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        self.container = container
+        self.modelContext = ModelContext(container)
+        self.services = AppServices(
+            httpClient: httpClient,
+            defaults: defaults,
+            keychain: InMemoryKeychainService(),
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false,
+            backgroundModelStore: BackgroundModelStore(modelContainer: container),
+            providerRequestGateMode: providerRequestGateMode
+        )
+    }
+
+    func insertTrackedKeyword(appStoreID: Int64, keyword: String) throws {
+        let storeApp = StoreApp(
+            appStoreID: appStoreID,
+            bundleID: "com.example.\(appStoreID)",
+            name: "Focus Timer",
+            sellerName: "Example Seller",
+            iconURLString: nil,
+            defaultPlatform: .iphone
+        )
+        let trackedApp = TrackedApp(appStoreID: appStoreID, storeApp: storeApp)
+        let query = KeywordQuery(term: keyword, storefront: "us", platform: .iphone)
+        let track = TrackedAppKeyword(
+            term: keyword,
+            storefront: "us",
+            platform: .iphone,
+            trackedApp: trackedApp,
+            query: query
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(storeApp)
+        modelContext.insert(trackedApp)
+        modelContext.insert(query)
+        modelContext.insert(track)
+        try modelContext.save()
+    }
+
+    func configureAppleAds(contextAppStoreID: Int64) throws {
+        services.settingsStore.savePopularityContextAppStoreID(contextAppStoreID)
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+                xsrfToken: "token",
+                updatedAt: .now
+            )
+        )
+    }
+}
+
+@MainActor
+private func refreshKeywordMetrics(
+    using serverProvider: OpenASOMCPServerProvider,
+    appStoreID: Int64
+) async throws -> OpenASOMCPKeywordRefreshResult {
+    let server = try await serverProvider.makeServer()
+    let client = Client(name: "OpenASO Dependency Test Client", version: "1.0")
+    let transports = await InMemoryTransport.createConnectedPair()
+    try await server.start(transport: transports.server)
+
+    do {
+        _ = try await client.connect(transport: transports.client)
+        let toolResult = try await client.callTool(
+            name: "refresh_keyword_metrics",
+            arguments: [
+                "appStoreID": .int(Int(appStoreID)),
+                "storefronts": .array([.string("us")]),
+                "platform": .string("iphone")
+            ]
+        )
+        let toolJSON = try #require(toolResult.content.first?.textValue)
+        let result = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPKeywordRefreshResult.self,
+            from: Data(toolJSON.utf8)
+        )
+        await client.disconnect()
+        await server.stop()
+        return result
+    } catch {
+        await client.disconnect()
+        await server.stop()
+        throw error
+    }
+}
+
+private func appleAdsPopularityPayload(keyword: String, popularity: Int) -> Data {
+    Data(
+        """
+        {"status":"success","data":[{"name":"\(keyword)","popularity":\(popularity)}]}
+        """.utf8
+    )
 }
 
 private struct ServerStubAppResolver: AppResolver {

@@ -40,6 +40,7 @@ final class AppServices {
     let refreshCoordinator: RankingRefreshCoordinator
     let appDetailRefreshService: AppDetailRefreshService?
     let refreshProgressStore: AppRefreshProgressStore
+    let mcpServerProvider: OpenASOMCPServerProvider
     let mcpServerController: OpenASOMCPServerController
     let keywordResearchProjectStore: KeywordResearchProjectStore?
     let keywordResearchProjectCopyService: KeywordResearchProjectCopyService?
@@ -383,9 +384,7 @@ final class AppServices {
         self.keywordResearchProjectCopyService = keywordResearchProjectCopyService
         self.keywordResearchRankingWorkflow = keywordResearchRankingWorkflow
         self.keywordResearchMetricsWorkflow = keywordResearchMetricsWorkflow
-        self.mcpServerController = OpenASOMCPServerController(portProvider: {
-            settingsStore.mcpServerPort
-        }) {
+        let mcpServerProvider = OpenASOMCPServerProvider {
             guard let backgroundModelStore, let keywordResearchProjectStore else {
                 throw OpenASOError.providerUnavailable("OpenASO MCP needs an initialized workspace store.")
             }
@@ -416,6 +415,12 @@ final class AppServices {
                 service: mcpService,
                 configuration: OpenASOMCPServerConfiguration(version: "1.5.0")
             ).makeServer()
+        }
+        self.mcpServerProvider = mcpServerProvider
+        self.mcpServerController = OpenASOMCPServerController(portProvider: {
+            settingsStore.mcpServerPort
+        }) {
+            try await mcpServerProvider.makeServer()
         }
         self.backgroundModelStore = backgroundModelStore
         self.backgroundModelStoreRevision = backgroundModelStore == nil ? 0 : 1

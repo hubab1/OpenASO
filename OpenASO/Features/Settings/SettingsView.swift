@@ -194,7 +194,7 @@ struct SettingsView: View {
         } header: {
             Text("MCP Server")
         } footer: {
-            Text("Starts a local loopback MCP HTTP server for agents that can connect to an already-running app. Stop the server before changing the port. Stdio MCP clients should still launch the OpenASOMCP command-line target directly.")
+            Text("Starts a local loopback MCP HTTP server for agents that can connect to an already-running app. Stop the server before changing the port. Stdio MCP clients should launch the OpenASO app executable with --mcp-stdio; both transports use the same workspace and configured providers.")
         }
     }
 

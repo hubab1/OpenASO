@@ -10,11 +10,17 @@ struct OpenASOApp: App {
     private let startupState: OpenASOStartupState
 
     init() {
+        let startupState = Self.makeStartupState()
         if Self.shouldRunMCPStdio {
-            Self.runMCPStdioAndExit()
+            switch startupState {
+            case .ready(_, let services):
+                Self.runMCPStdioAndExit(serverProvider: services.mcpServerProvider)
+            case .storeUnavailable(let error):
+                Self.exitMCPStdio(with: error.diagnosticReport)
+            }
         }
 
-        startupState = Self.makeStartupState()
+        self.startupState = startupState
         _launchAlert = State(initialValue: nil)
     }
 
@@ -36,13 +42,13 @@ struct OpenASOApp: App {
         ProcessInfo.processInfo.arguments.contains("--mcp-stdio")
     }
 
-    private static func runMCPStdioAndExit() -> Never {
+    private static func runMCPStdioAndExit(
+        serverProvider: OpenASOMCPServerProvider
+    ) -> Never {
         Task.detached {
             let exitCode: Int32
             do {
-                try await OpenASOMCPRuntime.runStdio(
-                    configuration: OpenASOMCPServerConfiguration(version: "1.5.0")
-                )
+                try await OpenASOMCPRuntime.runStdio(serverProvider: serverProvider)
                 exitCode = 0
             } catch {
                 let description = (error as? PersistentStoreError)?.diagnosticReport
@@ -54,6 +60,11 @@ struct OpenASOApp: App {
         }
 
         dispatchMain()
+    }
+
+    private static func exitMCPStdio(with diagnostic: String) -> Never {
+        FileHandle.standardError.write(Data("OpenASO MCP server failed: \(diagnostic)\n".utf8))
+        Foundation.exit(1)
     }
 
     var body: some Scene {
