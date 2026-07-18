@@ -8,55 +8,57 @@ final class ITunesSearchFallbackProvider: SearchRankingProvider {
     }
 
     func search(keyword: String, storefrontCode: String, platform: AppPlatform, limit: Int) async throws -> SearchRankingPage {
-        let trimmedKeyword = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKeyword.isEmpty else {
-            throw OpenASOError.emptyQuery
-        }
-        let cappedLimit = min(max(1, limit), SearchRankingCrawl.fullKeywordRankingLimit)
+        let validatedRequest = try SearchRankingRequestValidator.validate(
+            keyword: keyword,
+            storefrontCode: storefrontCode,
+            platform: platform,
+            limit: limit
+        )
 
         var components = URLComponents(string: "https://itunes.apple.com/search")!
         components.queryItems = [
-            URLQueryItem(name: "term", value: trimmedKeyword),
-            URLQueryItem(name: "entity", value: "software"),
-            URLQueryItem(name: "country", value: storefrontCode.lowercased()),
-            URLQueryItem(name: "limit", value: String(cappedLimit))
+            URLQueryItem(name: "term", value: validatedRequest.keyword),
+            URLQueryItem(
+                name: "entity",
+                value: ITunesRankingSupport.entity(for: validatedRequest.platform)
+            ),
+            URLQueryItem(name: "country", value: validatedRequest.storefrontCode),
+            URLQueryItem(name: "limit", value: String(validatedRequest.limit))
         ]
 
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 20
 
         let data = try await validatedData(for: request, using: httpClient)
-        guard let response = try? Self.decoder.decode(ITunesRankingResponse.self, from: data) else {
+        guard let payloads = try? ITunesRankingSupport.decode(data) else {
             throw OpenASOError.decodingFailed
         }
 
-        let items = response.results.enumerated().map { index, payload in
-            SearchRankingItem(
+        let items = payloads.enumerated().map { index, payload in
+            payload.searchRankingItem(
                 position: index + 1,
-                appStoreID: payload.trackId,
-                bundleID: payload.bundleId,
-                name: payload.trackName,
-                subtitle: payload.subtitle,
-                sellerName: payload.sellerName,
-                iconURLString: payload.artworkUrl100,
-                releaseDate: payload.releaseDate,
-                currentVersionReleaseDate: payload.currentVersionReleaseDate,
-                version: payload.version,
-                primaryGenreID: payload.primaryGenreId,
-                primaryGenreName: payload.primaryGenreName,
-                descriptionText: payload.description,
-                releaseNotes: payload.releaseNotes,
-                supportedLanguageCodes: payload.languageCodesISO2A ?? [],
-                screenshotURLs: payload.screenshotUrls ?? [],
-                ipadScreenshotURLs: payload.ipadScreenshotUrls ?? [],
-                appletvScreenshotURLs: payload.appletvScreenshotUrls ?? [],
-                ratingCount: payload.userRatingCount,
-                averageRating: payload.averageUserRating,
-                platform: platform
+                platform: validatedRequest.platform
             )
         }
 
         return SearchRankingPage(items: items, source: .iTunesFallback)
+    }
+}
+
+enum ITunesRankingSupport {
+    static func entity(for platform: AppPlatform) -> String {
+        switch platform {
+        case .iphone:
+            "software"
+        case .ipad:
+            "iPadSoftware"
+        case .mac:
+            "macSoftware"
+        }
+    }
+
+    static func decode(_ data: Data) throws -> [ITunesRankingPayload] {
+        try decoder.decode(ITunesRankingResponse.self, from: data).results
     }
 
     private static let decoder: JSONDecoder = {
@@ -70,7 +72,7 @@ private struct ITunesRankingResponse: Decodable {
     let results: [ITunesRankingPayload]
 }
 
-private struct ITunesRankingPayload: Decodable {
+struct ITunesRankingPayload: Decodable {
     let trackId: Int64
     let bundleId: String?
     let trackName: String
@@ -90,4 +92,33 @@ private struct ITunesRankingPayload: Decodable {
     let appletvScreenshotUrls: [String]?
     let userRatingCount: Int?
     let averageUserRating: Double?
+
+    func searchRankingItem(
+        position: Int,
+        platform: AppPlatform
+    ) -> SearchRankingItem {
+        SearchRankingItem(
+            position: position,
+            appStoreID: trackId,
+            bundleID: bundleId,
+            name: trackName,
+            subtitle: subtitle,
+            sellerName: sellerName,
+            iconURLString: artworkUrl100,
+            releaseDate: releaseDate,
+            currentVersionReleaseDate: currentVersionReleaseDate,
+            version: version,
+            primaryGenreID: primaryGenreId,
+            primaryGenreName: primaryGenreName,
+            descriptionText: description,
+            releaseNotes: releaseNotes,
+            supportedLanguageCodes: languageCodesISO2A ?? [],
+            screenshotURLs: screenshotUrls ?? [],
+            ipadScreenshotURLs: ipadScreenshotUrls ?? [],
+            appletvScreenshotURLs: appletvScreenshotUrls ?? [],
+            ratingCount: userRatingCount,
+            averageRating: averageUserRating,
+            platform: platform
+        )
+    }
 }
