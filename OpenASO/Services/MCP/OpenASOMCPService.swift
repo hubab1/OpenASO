@@ -1,5 +1,132 @@
+import CryptoKit
 import Foundation
 import SwiftData
+
+private enum OpenASOMCPHistoryKind: String, Codable, Equatable, Sendable {
+  case trackedRankings
+  case rankingResults
+  case ratings
+}
+
+private struct OpenASOMCPHistoryScope: Codable, Sendable {
+  let appStoreID: Int64
+  let storefronts: [String]
+  let platform: String?
+  let keyword: String?
+  let trackIdentityKey: String?
+  let queryKey: String?
+  let dateFromBits: UInt64?
+  let dateToBits: UInt64?
+  let resultLimit: Int?
+
+  init(
+    appStoreID: Int64,
+    storefronts: Set<String>,
+    platform: AppPlatform?,
+    keyword: String?,
+    trackIdentityKey: String?,
+    queryKey: String?,
+    dateFrom: Date?,
+    dateTo: Date?,
+    resultLimit: Int?
+  ) {
+    self.appStoreID = appStoreID
+    self.storefronts = storefronts.sorted()
+    self.platform = platform?.rawValue
+    self.keyword = keyword?.lowercased()
+    self.trackIdentityKey = trackIdentityKey
+    self.queryKey = queryKey
+    self.dateFromBits = dateFrom?.timeIntervalSinceReferenceDate.bitPattern
+    self.dateToBits = dateTo?.timeIntervalSinceReferenceDate.bitPattern
+    self.resultLimit = resultLimit
+  }
+}
+
+private struct OpenASOMCPHistoryCursor: Codable, Sendable {
+  let version: Int
+  let kind: OpenASOMCPHistoryKind
+  let scopeDigest: String
+  let timestampBits: UInt64
+  let tieKey: String
+
+  var timestamp: Date {
+    Date(timeIntervalSinceReferenceDate: Double(bitPattern: timestampBits))
+  }
+}
+
+private enum OpenASOMCPHistoryCursorCodec {
+  private static let version = 2
+  private static let maximumEncodedCursorLength = 4_096
+
+  private static func scopeDigest(_ scope: OpenASOMCPHistoryScope) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let encodedScope = try encoder.encode(scope)
+    return SHA256.hash(data: encodedScope)
+      .map { String(format: "%02x", Int($0)) }
+      .joined()
+  }
+
+  static func decode(
+    _ value: String?,
+    expectedKind: OpenASOMCPHistoryKind,
+    expectedScope: OpenASOMCPHistoryScope
+  ) throws -> OpenASOMCPHistoryCursor? {
+    guard let value else { return nil }
+    guard !value.isEmpty, value.utf8.count <= maximumEncodedCursorLength else {
+      throw OpenASOError.providerUnavailable(
+        "History cursor is empty or exceeds the maximum encoded length."
+      )
+    }
+    var base64 = value.replacingOccurrences(of: "-", with: "+")
+      .replacingOccurrences(of: "_", with: "/")
+    let paddingCount = (4 - (base64.count % 4)) % 4
+    base64.append(String(repeating: "=", count: paddingCount))
+    let expectedScopeDigest = try scopeDigest(expectedScope)
+    guard
+      let data = Data(base64Encoded: base64),
+      let cursor = try? JSONDecoder().decode(OpenASOMCPHistoryCursor.self, from: data),
+      cursor.version == version,
+      cursor.kind == expectedKind,
+      cursor.scopeDigest == expectedScopeDigest,
+      cursor.scopeDigest.count == 64,
+      !cursor.tieKey.isEmpty,
+      cursor.timestamp.timeIntervalSinceReferenceDate.isFinite
+    else {
+      throw OpenASOError.providerUnavailable(
+        "History cursor is invalid or does not match this tool and filter scope."
+      )
+    }
+    return cursor
+  }
+
+  static func encode(
+    kind: OpenASOMCPHistoryKind,
+    scope: OpenASOMCPHistoryScope,
+    timestamp: Date,
+    tieKey: String
+  ) throws -> String {
+    let cursor = OpenASOMCPHistoryCursor(
+      version: version,
+      kind: kind,
+      scopeDigest: try scopeDigest(scope),
+      timestampBits: timestamp.timeIntervalSinceReferenceDate.bitPattern,
+      tieKey: tieKey
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let value = try encoder.encode(cursor).base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-")
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+    guard value.utf8.count <= maximumEncodedCursorLength else {
+      throw OpenASOError.providerUnavailable(
+        "History cursor exceeds the maximum encoded length."
+      )
+    }
+    return value
+  }
+}
 
 final class OpenASOMCPService: Sendable {
   private enum ResponseLimits {
@@ -15,6 +142,11 @@ final class OpenASOMCPService: Sendable {
     static let maximumLandscapeKeywordLimit = 50
     static let defaultRankingAppLimit = 25
     static let maximumRankingAppLimit = 50
+    static let defaultHistoryResultLimit = 25
+    static let maximumHistoryResultLimit = 100
+    static let maximumHistoryParentRows = 50
+    static let maximumHistoryRankedAppRows = 500
+    static let maximumHistoryStoredRankedAppScanRows = 10_000
     static let defaultKeywordRefreshTrackLimit = 20
     static let maximumKeywordRefreshTrackLimit = 25
     static let keywordVerificationSearchBudget = 16
@@ -79,6 +211,116 @@ final class OpenASOMCPService: Sendable {
     self.popularityContextAppStoreIDProvider = popularityContextAppStoreIDProvider
     self.appleAdsWebSessionProvider = appleAdsWebSessionProvider
     self.now = now
+  }
+
+  private static func historyPageFromLookahead<Row>(
+    rowsWithLookahead: [Row],
+    kind: OpenASOMCPHistoryKind,
+    scope: OpenASOMCPHistoryScope,
+    page: OpenASOMCPPageRequest,
+    timestamp: (Row) -> Date,
+    tieKey: (Row) -> String
+  ) throws -> (rows: [Row], nextCursor: String?) {
+    let pageRows = Array(rowsWithLookahead.prefix(page.limit))
+    let nextCursor: String?
+    if rowsWithLookahead.count > page.limit, let last = pageRows.last {
+      nextCursor = try OpenASOMCPHistoryCursorCodec.encode(
+        kind: kind,
+        scope: scope,
+        timestamp: timestamp(last),
+        tieKey: tieKey(last)
+      )
+    } else {
+      nextCursor = nil
+    }
+    return (pageRows, nextCursor)
+  }
+
+  private static func boundedHistoryPage(
+    _ page: OpenASOMCPPageRequest,
+    resultLimit: Int
+  ) -> OpenASOMCPPageRequest {
+    let maximumParentRows = min(
+      ResponseLimits.maximumHistoryParentRows,
+      max(1, ResponseLimits.maximumHistoryRankedAppRows / resultLimit)
+    )
+    return OpenASOMCPPageRequest(
+      limit: min(page.limit, maximumParentRows),
+      cursor: page.cursor
+    )
+  }
+
+  private struct BoundedHistoryRankedApps {
+    var items: [OpenASOMCPStoredRankedApp] = []
+    var total = 0
+  }
+
+  private static func trackedRankedApps(
+    snapshotKeys: [String],
+    limit: Int,
+    in modelContext: ModelContext
+  ) throws -> [String: BoundedHistoryRankedApps] {
+    guard !snapshotKeys.isEmpty else { return [:] }
+    var descriptor = FetchDescriptor<TrackedKeywordRankedResult>(
+      predicate: #Predicate { result in
+        snapshotKeys.contains(result.snapshotKey)
+      },
+      sortBy: [
+        SortDescriptor(\.snapshotKey, comparator: .lexical, order: .forward),
+        SortDescriptor(\.position, order: .forward),
+        SortDescriptor(\.appStoreID, order: .forward),
+        SortDescriptor(\.name, comparator: .lexical, order: .forward),
+      ]
+    )
+    descriptor.fetchLimit = ResponseLimits.maximumHistoryStoredRankedAppScanRows + 1
+    let results = try modelContext.fetch(descriptor)
+    guard results.count <= ResponseLimits.maximumHistoryStoredRankedAppScanRows else {
+      throw OpenASOError.providerUnavailable(
+        "Stored ranking history is too large for one response. Narrow the filters or page size."
+      )
+    }
+    return results.reduce(into: [:]) { grouped, result in
+      var rankedApps = grouped[result.snapshotKey] ?? BoundedHistoryRankedApps()
+      rankedApps.total += 1
+      if rankedApps.items.count < limit {
+        rankedApps.items.append(Self.storedRankedApp(result))
+      }
+      grouped[result.snapshotKey] = rankedApps
+    }
+  }
+
+  private static func crawlRankedApps(
+    crawlKeys: [String],
+    limit: Int,
+    in modelContext: ModelContext
+  ) throws -> [String: BoundedHistoryRankedApps] {
+    guard !crawlKeys.isEmpty else { return [:] }
+    var descriptor = FetchDescriptor<KeywordAppRanking>(
+      predicate: #Predicate { result in
+        crawlKeys.contains(result.crawlKey)
+      },
+      sortBy: [
+        SortDescriptor(\.crawlKey, comparator: .lexical, order: .forward),
+        SortDescriptor(\.position, order: .forward),
+        SortDescriptor(\.appStoreID, order: .forward),
+        SortDescriptor(\.itemKey, comparator: .lexical, order: .forward),
+      ]
+    )
+    descriptor.fetchLimit = ResponseLimits.maximumHistoryStoredRankedAppScanRows + 1
+    let results = try modelContext.fetch(descriptor)
+    guard results.count <= ResponseLimits.maximumHistoryStoredRankedAppScanRows else {
+      throw OpenASOError.providerUnavailable(
+        "Stored ranking results are too large for one response. Narrow the filters or page size."
+      )
+    }
+    return results.reduce(into: [:]) { grouped, result in
+      var rankedApps = grouped[result.crawlKey] ?? BoundedHistoryRankedApps()
+      rankedApps.total += 1
+      if rankedApps.items.count < limit {
+        rankedApps.items.append(Self.storedRankedApp(result))
+      }
+      grouped[result.crawlKey] = rankedApps
+    }
   }
 
   func listApps(
@@ -379,6 +621,350 @@ final class OpenASOMCPService: Sendable {
           returnedCount: items.count,
           totalCount: total
         ),
+        total: total
+      )
+    }
+  }
+
+  func listKeywordRankingHistory(
+    appStoreID: Int64,
+    storefronts: [String]? = nil,
+    platform: String? = nil,
+    keyword: String? = nil,
+    trackIdentityKey: String? = nil,
+    queryKey: String? = nil,
+    dateFrom: Date? = nil,
+    dateTo: Date? = nil,
+    resultLimit: Int? = nil,
+    page: OpenASOMCPPageRequest = OpenASOMCPPageRequest(limit: nil, cursor: nil)
+  ) async throws -> OpenASOMCPPage<OpenASOMCPTrackedRankingSnapshot> {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
+    let platform = try platform.map(OpenASOMCPValidation.platform)
+    let keyword = try keyword.map {
+      try OpenASOMCPValidation.nonEmpty(
+        $0,
+        fieldName: "keyword",
+        maximumLength: OpenASOMCPValidation.maximumHistoryKeywordLength
+      )
+    }
+    let trackIdentityKey = try trackIdentityKey.map {
+      try OpenASOMCPValidation.nonEmpty($0, fieldName: "track_identity_key").lowercased()
+    }
+    let queryKey = try queryKey.map {
+      try OpenASOMCPValidation.nonEmpty($0, fieldName: "query_key").lowercased()
+    }
+    try OpenASOMCPValidation.dateRange(from: dateFrom, to: dateTo)
+    let resultLimit = OpenASOMCPValidation.cappedLimit(
+      resultLimit,
+      default: ResponseLimits.defaultHistoryResultLimit,
+      maximum: ResponseLimits.maximumHistoryResultLimit
+    )
+    let page = Self.boundedHistoryPage(page, resultLimit: resultLimit)
+    let scope = OpenASOMCPHistoryScope(
+      appStoreID: appStoreID,
+      storefronts: storefronts,
+      platform: platform,
+      keyword: keyword,
+      trackIdentityKey: trackIdentityKey,
+      queryKey: queryKey,
+      dateFrom: dateFrom,
+      dateTo: dateTo,
+      resultLimit: resultLimit
+    )
+    let historyCursor = try OpenASOMCPHistoryCursorCodec.decode(
+      page.cursor,
+      expectedKind: .trackedRankings,
+      expectedScope: scope
+    )
+
+    return try await backgroundModelStore.read { modelContext in
+      let trackDescriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.appStoreID == appStoreID
+        }
+      )
+      let tracks = try modelContext.fetch(trackDescriptor).filter { track in
+        if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return false }
+        if let platform, track.platform != platform { return false }
+        if let keyword, track.term.lowercased() != keyword.lowercased() {
+          return false
+        }
+        if let trackIdentityKey, track.identityKey.lowercased() != trackIdentityKey { return false }
+        if let queryKey, track.queryKey.lowercased() != queryKey { return false }
+        return true
+      }
+      let tracksByIdentityKey = Dictionary(uniqueKeysWithValues: tracks.map { ($0.identityKey, $0) })
+      let trackIdentityKeys = Array(tracksByIdentityKey.keys)
+      guard !trackIdentityKeys.isEmpty else {
+        return OpenASOMCPPage(items: [], nextCursor: nil, total: 0)
+      }
+
+      let minimumDate = dateFrom ?? .distantPast
+      let maximumDate = dateTo ?? .distantFuture
+      let countPredicate = #Predicate<TrackedKeywordDailyRanking> { snapshot in
+        trackIdentityKeys.contains(snapshot.trackIdentityKey)
+          && snapshot.searchedAt >= minimumDate
+          && snapshot.searchedAt <= maximumDate
+      }
+      let total = try modelContext.fetchCount(
+        FetchDescriptor<TrackedKeywordDailyRanking>(predicate: countPredicate)
+      )
+      let hasCursor = historyCursor != nil
+      let cursorTimestamp = historyCursor?.timestamp ?? .distantFuture
+      let cursorTieKey = historyCursor?.tieKey ?? ""
+      var snapshotDescriptor = FetchDescriptor<TrackedKeywordDailyRanking>(
+        predicate: #Predicate { snapshot in
+          trackIdentityKeys.contains(snapshot.trackIdentityKey)
+            && snapshot.searchedAt >= minimumDate
+            && snapshot.searchedAt <= maximumDate
+            && (!hasCursor
+              || snapshot.searchedAt < cursorTimestamp
+              || (snapshot.searchedAt == cursorTimestamp && snapshot.snapshotKey > cursorTieKey))
+        },
+        sortBy: [
+          SortDescriptor(\.searchedAt, order: .reverse),
+          SortDescriptor(\.snapshotKey, comparator: .lexical, order: .forward),
+        ]
+      )
+      snapshotDescriptor.fetchLimit = page.limit + 1
+      let snapshotsWithLookahead = try modelContext.fetch(snapshotDescriptor)
+      let pageSlice = try Self.historyPageFromLookahead(
+        rowsWithLookahead: snapshotsWithLookahead,
+        kind: .trackedRankings,
+        scope: scope,
+        page: page,
+        timestamp: \.searchedAt,
+        tieKey: \.snapshotKey
+      )
+      let rankedAppsBySnapshotKey = try Self.trackedRankedApps(
+        snapshotKeys: pageSlice.rows.map(\.snapshotKey),
+        limit: resultLimit,
+        in: modelContext
+      )
+      let items = pageSlice.rows.map { snapshot in
+        let rankedApps = rankedAppsBySnapshotKey[snapshot.snapshotKey]
+          ?? BoundedHistoryRankedApps()
+        return Self.trackedRankingSnapshot(
+          snapshot,
+          track: tracksByIdentityKey[snapshot.trackIdentityKey] ?? snapshot.keywordTrack,
+          rankedApps: rankedApps.items,
+          rankedAppsAvailableCount: rankedApps.total
+        )
+      }
+      return OpenASOMCPPage(
+        items: items,
+        nextCursor: pageSlice.nextCursor,
+        total: total
+      )
+    }
+  }
+
+  func listKeywordRankingResults(
+    appStoreID: Int64,
+    storefronts: [String]? = nil,
+    platform: String? = nil,
+    keyword: String? = nil,
+    trackIdentityKey: String? = nil,
+    queryKey: String? = nil,
+    dateFrom: Date? = nil,
+    dateTo: Date? = nil,
+    resultLimit: Int? = nil,
+    page: OpenASOMCPPageRequest = OpenASOMCPPageRequest(limit: nil, cursor: nil)
+  ) async throws -> OpenASOMCPPage<OpenASOMCPRankingCrawlSnapshot> {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
+    let platform = try platform.map(OpenASOMCPValidation.platform)
+    let keyword = try keyword.map {
+      try OpenASOMCPValidation.nonEmpty(
+        $0,
+        fieldName: "keyword",
+        maximumLength: OpenASOMCPValidation.maximumHistoryKeywordLength
+      )
+    }
+    let trackIdentityKey = try trackIdentityKey.map {
+      try OpenASOMCPValidation.nonEmpty($0, fieldName: "track_identity_key").lowercased()
+    }
+    let queryKey = try queryKey.map {
+      try OpenASOMCPValidation.nonEmpty($0, fieldName: "query_key").lowercased()
+    }
+    try OpenASOMCPValidation.dateRange(from: dateFrom, to: dateTo)
+    let resultLimit = OpenASOMCPValidation.cappedLimit(
+      resultLimit,
+      default: ResponseLimits.defaultHistoryResultLimit,
+      maximum: ResponseLimits.maximumHistoryResultLimit
+    )
+    let page = Self.boundedHistoryPage(page, resultLimit: resultLimit)
+    let scope = OpenASOMCPHistoryScope(
+      appStoreID: appStoreID,
+      storefronts: storefronts,
+      platform: platform,
+      keyword: keyword,
+      trackIdentityKey: trackIdentityKey,
+      queryKey: queryKey,
+      dateFrom: dateFrom,
+      dateTo: dateTo,
+      resultLimit: resultLimit
+    )
+    let historyCursor = try OpenASOMCPHistoryCursorCodec.decode(
+      page.cursor,
+      expectedKind: .rankingResults,
+      expectedScope: scope
+    )
+
+    return try await backgroundModelStore.read { modelContext in
+      let trackDescriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.appStoreID == appStoreID
+        }
+      )
+      let tracks = try modelContext.fetch(trackDescriptor).filter { track in
+        if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return false }
+        if let platform, track.platform != platform { return false }
+        if let keyword, track.term.lowercased() != keyword.lowercased() {
+          return false
+        }
+        if let trackIdentityKey, track.identityKey.lowercased() != trackIdentityKey { return false }
+        if let queryKey, track.queryKey.lowercased() != queryKey { return false }
+        return true
+      }
+      let queryKeys = Array(Set(tracks.map(\.queryKey)))
+      guard !queryKeys.isEmpty else {
+        return OpenASOMCPPage(items: [], nextCursor: nil, total: 0)
+      }
+
+      let minimumDate = dateFrom ?? .distantPast
+      let maximumDate = dateTo ?? .distantFuture
+      let countPredicate = #Predicate<KeywordRankingCrawl> { crawl in
+        queryKeys.contains(crawl.queryKey)
+          && crawl.observedAt >= minimumDate
+          && crawl.observedAt <= maximumDate
+      }
+      let total = try modelContext.fetchCount(
+        FetchDescriptor<KeywordRankingCrawl>(predicate: countPredicate)
+      )
+      let hasCursor = historyCursor != nil
+      let cursorTimestamp = historyCursor?.timestamp ?? .distantFuture
+      let cursorTieKey = historyCursor?.tieKey ?? ""
+      var crawlDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+        predicate: #Predicate { crawl in
+          queryKeys.contains(crawl.queryKey)
+            && crawl.observedAt >= minimumDate
+            && crawl.observedAt <= maximumDate
+            && (!hasCursor
+              || crawl.observedAt < cursorTimestamp
+              || (crawl.observedAt == cursorTimestamp && crawl.observationKey > cursorTieKey))
+        },
+        sortBy: [
+          SortDescriptor(\.observedAt, order: .reverse),
+          SortDescriptor(\.observationKey, comparator: .lexical, order: .forward),
+        ]
+      )
+      crawlDescriptor.fetchLimit = page.limit + 1
+      let crawlsWithLookahead = try modelContext.fetch(crawlDescriptor)
+      let pageSlice = try Self.historyPageFromLookahead(
+        rowsWithLookahead: crawlsWithLookahead,
+        kind: .rankingResults,
+        scope: scope,
+        page: page,
+        timestamp: \.observedAt,
+        tieKey: \.observationKey
+      )
+      let rankedAppsByCrawlKey = try Self.crawlRankedApps(
+        crawlKeys: pageSlice.rows.map(\.observationKey),
+        limit: resultLimit,
+        in: modelContext
+      )
+      let items = pageSlice.rows.map { crawl in
+        let rankedApps = rankedAppsByCrawlKey[crawl.observationKey]
+          ?? BoundedHistoryRankedApps()
+        return Self.rankingCrawlSnapshot(
+          crawl,
+          rankedApps: rankedApps.items,
+          rankedAppsAvailableCount: rankedApps.total
+        )
+      }
+      return OpenASOMCPPage(
+        items: items,
+        nextCursor: pageSlice.nextCursor,
+        total: total
+      )
+    }
+  }
+
+  func listRatingHistory(
+    appStoreID: Int64,
+    storefronts: [String]? = nil,
+    dateFrom: Date? = nil,
+    dateTo: Date? = nil,
+    page: OpenASOMCPPageRequest = OpenASOMCPPageRequest(limit: nil, cursor: nil)
+  ) async throws -> OpenASOMCPPage<OpenASOMCPRatingSnapshot> {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
+    try OpenASOMCPValidation.dateRange(from: dateFrom, to: dateTo)
+    let scope = OpenASOMCPHistoryScope(
+      appStoreID: appStoreID,
+      storefronts: storefronts,
+      platform: nil,
+      keyword: nil,
+      trackIdentityKey: nil,
+      queryKey: nil,
+      dateFrom: dateFrom,
+      dateTo: dateTo,
+      resultLimit: nil
+    )
+    let historyCursor = try OpenASOMCPHistoryCursorCodec.decode(
+      page.cursor,
+      expectedKind: .ratings,
+      expectedScope: scope
+    )
+
+    return try await backgroundModelStore.read { modelContext in
+      let minimumDate = dateFrom ?? .distantPast
+      let maximumDate = dateTo ?? .distantFuture
+      let storefrontValues = Array(storefronts)
+      let filtersStorefront = !storefrontValues.isEmpty
+      let countPredicate = #Predicate<AppDailyRating> { rating in
+        rating.appStoreID == appStoreID
+          && (!filtersStorefront || storefrontValues.contains(rating.storefront))
+          && rating.observedAt >= minimumDate
+          && rating.observedAt <= maximumDate
+      }
+      let total = try modelContext.fetchCount(
+        FetchDescriptor<AppDailyRating>(predicate: countPredicate)
+      )
+      let hasCursor = historyCursor != nil
+      let cursorTimestamp = historyCursor?.timestamp ?? .distantFuture
+      let cursorTieKey = historyCursor?.tieKey ?? ""
+      var descriptor = FetchDescriptor<AppDailyRating>(
+        predicate: #Predicate { rating in
+          rating.appStoreID == appStoreID
+            && (!filtersStorefront || storefrontValues.contains(rating.storefront))
+            && rating.observedAt >= minimumDate
+            && rating.observedAt <= maximumDate
+            && (!hasCursor
+              || rating.observedAt < cursorTimestamp
+              || (rating.observedAt == cursorTimestamp && rating.identityKey > cursorTieKey))
+        },
+        sortBy: [
+          SortDescriptor(\.observedAt, order: .reverse),
+          SortDescriptor(\.identityKey, comparator: .lexical, order: .forward),
+        ]
+      )
+      descriptor.fetchLimit = page.limit + 1
+      let ratingsWithLookahead = try modelContext.fetch(descriptor)
+      let pageSlice = try Self.historyPageFromLookahead(
+        rowsWithLookahead: ratingsWithLookahead,
+        kind: .ratings,
+        scope: scope,
+        page: page,
+        timestamp: \.observedAt,
+        tieKey: \.identityKey
+      )
+      let items = pageSlice.rows.map(Self.ratingSnapshot)
+      return OpenASOMCPPage(
+        items: items,
+        nextCursor: pageSlice.nextCursor,
         total: total
       )
     }
@@ -2664,6 +3250,107 @@ extension OpenASOMCPService {
       assumedLanguageCode: review.assumedLanguageCode,
       developerResponseBody: review.developerResponseBody,
       developerResponseState: review.developerResponseState
+    )
+  }
+
+  fileprivate static func storedRankedApp(
+    _ result: TrackedKeywordRankedResult
+  ) -> OpenASOMCPStoredRankedApp {
+    OpenASOMCPStoredRankedApp(
+      id: [result.snapshotKey, String(result.appStoreID)].joined(separator: "::"),
+      position: result.position,
+      appStoreID: String(result.appStoreID),
+      bundleID: result.bundleID,
+      name: result.name,
+      subtitle: result.subtitle,
+      sellerName: result.sellerName
+    )
+  }
+
+  fileprivate static func storedRankedApp(
+    _ result: KeywordAppRanking
+  ) -> OpenASOMCPStoredRankedApp {
+    OpenASOMCPStoredRankedApp(
+      id: result.itemKey,
+      position: result.position,
+      appStoreID: String(result.appStoreID),
+      bundleID: result.bundleID,
+      name: result.name,
+      subtitle: result.subtitle,
+      sellerName: result.sellerName
+    )
+  }
+
+  fileprivate static func trackedRankingSnapshot(
+    _ snapshot: TrackedKeywordDailyRanking,
+    track: TrackedAppKeyword,
+    rankedApps: [OpenASOMCPStoredRankedApp],
+    rankedAppsAvailableCount: Int
+  ) -> OpenASOMCPTrackedRankingSnapshot {
+    return OpenASOMCPTrackedRankingSnapshot(
+      id: snapshot.snapshotKey,
+      snapshotKey: snapshot.snapshotKey,
+      trackIdentityKey: snapshot.trackIdentityKey,
+      appStoreID: String(track.appStoreID),
+      keyword: track.term,
+      queryKey: track.queryKey,
+      storefront: track.storefront,
+      platform: track.platformRaw,
+      rank: snapshot.rank,
+      searchedAt: snapshot.searchedAt,
+      source: snapshot.sourceRaw,
+      resultCount: snapshot.resultCount,
+      errorMessage: snapshot.errorMessage,
+      rankedAppsAvailableCount: rankedAppsAvailableCount,
+      rankedAppsTruncated: rankedAppsAvailableCount > rankedApps.count,
+      rankedApps: rankedApps
+    )
+  }
+
+  fileprivate static func rankingCrawlSnapshot(
+    _ crawl: KeywordRankingCrawl,
+    rankedApps: [OpenASOMCPStoredRankedApp],
+    rankedAppsAvailableCount: Int
+  ) -> OpenASOMCPRankingCrawlSnapshot {
+    return OpenASOMCPRankingCrawlSnapshot(
+      id: crawl.observationKey,
+      observationKey: crawl.observationKey,
+      queryKey: crawl.queryKey,
+      keyword: crawl.keyword,
+      storefront: crawl.storefront,
+      platform: crawl.platformRaw,
+      observedAt: crawl.observedAt,
+      observedHour: crawl.observedHour,
+      source: crawl.sourceRaw,
+      resultCount: crawl.resultCount,
+      submissionCount: crawl.submissionCount,
+      winningCount: crawl.winningCount,
+      confidence: crawl.confidenceRaw,
+      rankedAppsAvailableCount: rankedAppsAvailableCount,
+      rankedAppsTruncated: rankedAppsAvailableCount > rankedApps.count,
+      rankedApps: rankedApps
+    )
+  }
+
+  fileprivate static func ratingSnapshot(_ rating: AppDailyRating) -> OpenASOMCPRatingSnapshot {
+    OpenASOMCPRatingSnapshot(
+      id: rating.identityKey,
+      identityKey: rating.identityKey,
+      appStoreID: String(rating.appStoreID),
+      storefront: rating.storefront,
+      ratingDate: rating.ratingDate,
+      ratingCount: rating.ratingCount,
+      averageRating: rating.averageRating,
+      oneStarRatingCount: rating.oneStarRatingCount,
+      twoStarRatingCount: rating.twoStarRatingCount,
+      threeStarRatingCount: rating.threeStarRatingCount,
+      fourStarRatingCount: rating.fourStarRatingCount,
+      fiveStarRatingCount: rating.fiveStarRatingCount,
+      observedAt: rating.observedAt,
+      submissionCount: rating.submissionCount,
+      winningCount: rating.winningCount,
+      confidence: rating.confidenceRaw,
+      source: rating.sourceRaw
     )
   }
 

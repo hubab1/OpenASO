@@ -290,6 +290,55 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "list_keyword_ranking_history":
+            let result = try await service.listKeywordRankingHistory(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                storefronts: try arguments.optionalStringArray("storefronts"),
+                platform: try arguments.optionalString("platform"),
+                keyword: try arguments.optionalString("keyword"),
+                trackIdentityKey: try arguments.optionalString("track_identity_key"),
+                queryKey: try arguments.optionalString("query_key"),
+                dateFrom: try arguments.date("date_from"),
+                dateTo: try arguments.date("date_to"),
+                resultLimit: try arguments.optionalInt("result_limit"),
+                page: .init(
+                    limit: try arguments.optionalInt("limit"),
+                    cursor: try arguments.optionalString("cursor")
+                )
+            )
+            return try Self.toolResult(result)
+
+        case "list_keyword_ranking_results":
+            let result = try await service.listKeywordRankingResults(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                storefronts: try arguments.optionalStringArray("storefronts"),
+                platform: try arguments.optionalString("platform"),
+                keyword: try arguments.optionalString("keyword"),
+                trackIdentityKey: try arguments.optionalString("track_identity_key"),
+                queryKey: try arguments.optionalString("query_key"),
+                dateFrom: try arguments.date("date_from"),
+                dateTo: try arguments.date("date_to"),
+                resultLimit: try arguments.optionalInt("result_limit"),
+                page: .init(
+                    limit: try arguments.optionalInt("limit"),
+                    cursor: try arguments.optionalString("cursor")
+                )
+            )
+            return try Self.toolResult(result)
+
+        case "list_rating_history":
+            let result = try await service.listRatingHistory(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                storefronts: try arguments.optionalStringArray("storefronts"),
+                dateFrom: try arguments.date("date_from"),
+                dateTo: try arguments.date("date_to"),
+                page: .init(
+                    limit: try arguments.optionalInt("limit"),
+                    cursor: try arguments.optionalString("cursor")
+                )
+            )
+            return try Self.toolResult(result)
+
         case "refresh_keyword_metrics":
             let result = try await service.refreshKeywordMetrics(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
@@ -491,6 +540,43 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer]) { current, _ in current }
             ), readOnly: false, destructive: false, idempotent: false, openWorld: true),
+            tool("list_keyword_ranking_history", "List stored daily per-app keyword rank snapshots, including failed or not-ranked observations and bounded top results.", schema(
+                required: ["appStoreID"],
+                optional: commonAppFilters.merging([
+                    "keyword": .string,
+                    "track_identity_key": .string,
+                    "query_key": .string,
+                    "date_from": .string,
+                    "date_to": .string,
+                    "result_limit": .integer,
+                    "limit": .integer,
+                    "cursor": .string
+                ]) { current, _ in current }
+            ), readOnly: true),
+            tool("list_keyword_ranking_results", "List stored shared ranking crawls only for queries currently tracked by the requested app, with bounded ranked-app rows.", schema(
+                required: ["appStoreID"],
+                optional: commonAppFilters.merging([
+                    "keyword": .string,
+                    "track_identity_key": .string,
+                    "query_key": .string,
+                    "date_from": .string,
+                    "date_to": .string,
+                    "result_limit": .integer,
+                    "limit": .integer,
+                    "cursor": .string
+                ]) { current, _ in current }
+            ), readOnly: true),
+            tool("list_rating_history", "List stored daily rating snapshots for an app, including star distributions and source consensus.", schema(
+                required: ["appStoreID"],
+                optional: [
+                    "appStoreID": .integer,
+                    "storefronts": .stringArray,
+                    "date_from": .string,
+                    "date_to": .string,
+                    "limit": .integer,
+                    "cursor": .string
+                ]
+            ), readOnly: true),
             tool("refresh_keyword_metrics", "Refresh keyword popularity metrics when Apple Ads is configured; otherwise return actionable setup status per keyword.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters
@@ -798,9 +884,25 @@ private extension Dictionary where Key == String, Value == MCP.Value {
         return value
     }
 
+    func optionalString(_ key: String) throws -> String? {
+        guard let rawValue = self[key] else { return nil }
+        guard let value = rawValue.stringValue else {
+            throw MCPError.invalidParams("Argument must be a string: \(key)")
+        }
+        return value
+    }
+
     func int(_ key: String) -> Int? {
         guard let value = self[key] else { return nil }
         return Int(value)
+    }
+
+    func optionalInt(_ key: String) throws -> Int? {
+        guard let rawValue = self[key] else { return nil }
+        guard let value = Int(rawValue) else {
+            throw MCPError.invalidParams("Argument must be an integer: \(key)")
+        }
+        return value
     }
 
     func requiredInt64(_ key: String) throws -> Int64 {
@@ -819,6 +921,19 @@ private extension Dictionary where Key == String, Value == MCP.Value {
         self[key]?.arrayValue?.compactMap(\.stringValue)
     }
 
+    func optionalStringArray(_ key: String) throws -> [String]? {
+        guard let rawValue = self[key] else { return nil }
+        guard let rawValues = rawValue.arrayValue else {
+            throw MCPError.invalidParams("Argument must be an array of strings: \(key)")
+        }
+        return try rawValues.map { value in
+            guard let stringValue = value.stringValue else {
+                throw MCPError.invalidParams("Argument must contain only strings: \(key)")
+            }
+            return stringValue
+        }
+    }
+
     func requiredStringArray(_ key: String) throws -> [String] {
         guard let values = stringArray(key), !values.isEmpty else {
             throw MCPError.invalidParams("Missing required string array argument: \(key)")
@@ -827,7 +942,10 @@ private extension Dictionary where Key == String, Value == MCP.Value {
     }
 
     func date(_ key: String) throws -> Date? {
-        guard let stringValue = string(key) else { return nil }
+        guard let stringValue = try optionalString(key) else { return nil }
+        guard stringValue.utf8.count <= 64 else {
+            throw MCPError.invalidParams("ISO-8601 date argument is too long: \(key)")
+        }
         guard let date = ISO8601DateFormatter.openASOMCPDate(from: stringValue) else {
             throw MCPError.invalidParams("Invalid ISO-8601 date argument: \(key)")
         }
