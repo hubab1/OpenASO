@@ -6,6 +6,7 @@ enum OpenASOLog {
 
     static let appDetail = Logger(subsystem: subsystem, category: "app-detail")
     static let ratings = Logger(subsystem: subsystem, category: "ratings")
+    static let refresh = Logger(subsystem: subsystem, category: "refresh-observability")
 }
 
 enum OpenASOError: LocalizedError, Equatable, Sendable {
