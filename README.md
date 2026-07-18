@@ -15,6 +15,8 @@ OpenASO is a native macOS app for App Store Optimization research. It helps trac
 
 ## Documentation
 
+For project development, see [Contributing to OpenASO](CONTRIBUTING.md).
+
 The hosted docs are the canonical guide for using OpenASO:
 
 - [Quickstart](https://openaso.thirdtechapps.com/docs/getting-started/quickstart/)
