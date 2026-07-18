@@ -321,8 +321,10 @@ struct OpenASOMCPServerTests {
         let context = try ServerTestContext()
         try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer")
         let port = try availableLoopbackPort()
+        let factoryRecorder = MCPServerFactoryRecorder()
         let controller = OpenASOMCPServerController(portProvider: { port }) {
-            await OpenASOMCPServerFactory(service: context.service).makeServer()
+            factoryRecorder.recordInvocation()
+            return await OpenASOMCPServerFactory(service: context.service).makeServer()
         }
 
         controller.start()
@@ -345,6 +347,7 @@ struct OpenASOMCPServerTests {
         let httpResponse = try #require(response as? HTTPURLResponse)
         #expect(httpResponse.statusCode == 200)
         let sessionID = try #require(httpResponse.value(forHTTPHeaderField: "MCP-Session-Id"))
+        #expect(factoryRecorder.invocationCount == 1)
 
         let json = try jsonRPCObject(from: data)
         let result = try #require(json["result"] as? [String: Any])
@@ -359,6 +362,7 @@ struct OpenASOMCPServerTests {
         let secondInitializeHTTPResponse = try #require(secondInitializeResponse as? HTTPURLResponse)
         #expect(secondInitializeHTTPResponse.statusCode == 200)
         #expect(secondInitializeHTTPResponse.value(forHTTPHeaderField: "MCP-Session-Id") != sessionID)
+        #expect(factoryRecorder.invocationCount == 2)
 
         let secondInitializeJSON = try jsonRPCObject(from: secondInitializeData)
         #expect(secondInitializeJSON["error"] == nil)
@@ -381,6 +385,60 @@ struct OpenASOMCPServerTests {
         let structuredContent = try #require(toolResult["structuredContent"] as? [String: Any])
         let items = try #require(structuredContent["items"] as? [[String: Any]])
         #expect(items.first?["lastMetadataRefreshAt"] as? String == "2026-05-01T00:00:00Z")
+        #expect(factoryRecorder.invocationCount == 2)
+    }
+
+    @Test
+    func controllerRejectsRequestsOutsideExactMCPPathWithoutCreatingServer() async throws {
+        let context = try ServerTestContext()
+        let port = try availableLoopbackPort()
+        let factoryRecorder = MCPServerFactoryRecorder()
+        let controller = OpenASOMCPServerController(portProvider: { port }) {
+            factoryRecorder.recordInvocation()
+            return await OpenASOMCPServerFactory(service: context.service).makeServer()
+        }
+
+        controller.start()
+        defer {
+            controller.stop()
+        }
+
+        let endpointURL = try await waitForEndpointURL(controller)
+        let initializeBody = Data("""
+        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rejected-route-test","version":"1.0"}}}
+        """.utf8)
+        let rejectedTargets: [(method: String, path: String, percentEncodedQuery: String?, body: Data?)] = [
+            ("POST", "/", nil, initializeBody),
+            ("GET", "/.well-known/oauth-protected-resource", nil, nil),
+            ("GET", "/.well-known/oauth-protected-resource/mcp", nil, nil),
+            ("GET", "/.well-known/oauth-authorization-server", nil, nil),
+            ("POST", "/mcp/", nil, initializeBody),
+            ("POST", "/mcp", "probe=1", initializeBody),
+        ]
+
+        for target in rejectedTargets {
+            var components = try #require(URLComponents(url: endpointURL, resolvingAgainstBaseURL: false))
+            components.path = target.path
+            components.percentEncodedQuery = target.percentEncodedQuery
+            let requestURL = try #require(components.url)
+
+            var request = URLRequest(url: requestURL)
+            request.httpMethod = target.method
+            request.httpBody = target.body
+            if target.body != nil {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+            }
+
+            let (_, response) = try await URLSession.shared.data(for: request)
+            let httpResponse = try #require(response as? HTTPURLResponse)
+            #expect(
+                httpResponse.statusCode == 404,
+                "Expected exact-path routing to reject \(requestURL.absoluteString)"
+            )
+            #expect(httpResponse.value(forHTTPHeaderField: "MCP-Session-Id") == nil)
+            #expect(factoryRecorder.invocationCount == 0)
+        }
     }
 
     @Test
@@ -395,6 +453,15 @@ struct OpenASOMCPServerTests {
         let message = try await waitForFailureMessage(controller)
         #expect(message.contains("port 0"))
         #expect(message.contains("supported port range"))
+    }
+}
+
+@MainActor
+private final class MCPServerFactoryRecorder {
+    private(set) var invocationCount = 0
+
+    func recordInvocation() {
+        invocationCount += 1
     }
 }
 
