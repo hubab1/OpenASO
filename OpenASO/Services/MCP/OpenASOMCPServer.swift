@@ -536,7 +536,7 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "website_markdown": .string]) { current, _ in current }
             ), readOnly: true, openWorld: true),
-            tool("refresh_keyword_rankings", "Refresh and persist rankings for tracked keywords so keyword and competitor tools share the same evidence. The limit defaults to 20 and is clamped to 1...25 tracks. Never-scheduled tracks are selected first, then by least-recent activity using the later of each track's latest successful and scheduled refresh times; in-memory attempt rotation is shared across MCP connections and resets when OpenASO relaunches.", schema(
+            tool("refresh_keyword_rankings", "Refresh and persist rankings for tracked keywords so keyword and competitor tools share the same evidence. The limit defaults to 20 and is clamped to 1...25 tracks. Never-attempted tracks are selected first, then by least-recent activity using successful and durable attempt times; attempt rotation survives OpenASO relaunches and in-flight reservations are shared across MCP connections.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer]) { current, _ in current }
             ), readOnly: false, destructive: false, idempotent: false, openWorld: true),

@@ -10,6 +10,7 @@ enum ReleasedV1FixtureSentinel {
     static let fixtureDate = ISO8601DateFormatter().date(from: "2026-05-01T12:34:56Z")!
     static let priorDate = ISO8601DateFormatter().date(from: "2026-04-30T10:20:30Z")!
     static let releaseDate = ISO8601DateFormatter().date(from: "2024-03-02T01:02:03Z")!
+    static let refreshAttemptDate = ISO8601DateFormatter().date(from: "2026-05-02T08:09:10Z")!
     static let ratingDate = "2026-05-01"
     static let dailyRatingDate = "2026-04-30"
 

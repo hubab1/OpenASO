@@ -128,11 +128,23 @@ private enum OpenASOMCPHistoryCursorCodec {
   }
 }
 
-/// Coordinates process-local ranking refresh attempts without changing persisted success freshness.
+/// Coordinates in-flight reservations and process-local ranking refresh attempts
+/// without changing persisted success freshness.
 actor OpenASOMCPRankingRefreshScheduler {
   struct Candidate: Sendable {
     let request: RankingRefreshRequest
     let lastSuccessfulRefreshAt: Date?
+    let lastDurableAttemptAt: Date?
+
+    init(
+      request: RankingRefreshRequest,
+      lastSuccessfulRefreshAt: Date?,
+      lastDurableAttemptAt: Date? = nil
+    ) {
+      self.request = request
+      self.lastSuccessfulRefreshAt = lastSuccessfulRefreshAt
+      self.lastDurableAttemptAt = lastDurableAttemptAt
+    }
   }
 
   struct Reservation: Sendable {
@@ -166,6 +178,7 @@ actor OpenASOMCPRankingRefreshScheduler {
   private var nextGlobalSweepToken: UInt64 = 0
   private var dueGlobalSweepToken: UInt64?
   private var claimedGlobalSweepToken: UInt64?
+  private var hasCompletedInitialGlobalSweep = false
 
   init(globalSweepInterval: UInt64 = 256) {
     self.globalSweepInterval = max(1, globalSweepInterval)
@@ -223,7 +236,7 @@ actor OpenASOMCPRankingRefreshScheduler {
   func makeReconciliationPlan() -> ReconciliationPlan {
     if dueGlobalSweepToken == nil {
       reconciliationRequestCount += 1
-      if reconciliationRequestCount >= globalSweepInterval {
+      if !hasCompletedInitialGlobalSweep || reconciliationRequestCount >= globalSweepInterval {
         nextGlobalSweepToken &+= 1
         dueGlobalSweepToken = nextGlobalSweepToken
       }
@@ -276,6 +289,7 @@ actor OpenASOMCPRankingRefreshScheduler {
       dueGlobalSweepToken = nil
       claimedGlobalSweepToken = nil
       reconciliationRequestCount = 0
+      hasCompletedInitialGlobalSweep = true
     }
   }
 
@@ -331,17 +345,26 @@ actor OpenASOMCPRankingRefreshScheduler {
     date: Date, sequence: UInt64?, identityKey: String
   )? {
     let attempt = attemptsByIdentityKey[candidate.request.identityKey]
-    switch (candidate.lastSuccessfulRefreshAt, attempt) {
+    let persistedRecency = [
+      candidate.lastSuccessfulRefreshAt,
+      candidate.lastDurableAttemptAt,
+    ].compactMap { $0 }.max()
+
+    switch (persistedRecency, attempt) {
     case (nil, nil):
       return nil
-    case let (successfulAt?, nil):
-      return (successfulAt, nil, candidate.request.identityKey)
+    case let (persistedAt?, nil):
+      return (persistedAt, nil, candidate.request.identityKey)
     case let (nil, attempt?):
       return (attempt.attemptedAt, attempt.sequence, candidate.request.identityKey)
-    case let (successfulAt?, attempt?):
-      if successfulAt > attempt.attemptedAt {
-        return (successfulAt, nil, candidate.request.identityKey)
+    case let (persistedAt?, attempt?):
+      if persistedAt > attempt.attemptedAt {
+        return (persistedAt, nil, candidate.request.identityKey)
       }
+      // Prefer the process sequence when timestamps tie. It preserves the
+      // deterministic rotation for clocks that return the same instant more
+      // than once while still keeping the durable timestamp authoritative
+      // across relaunches.
       return (attempt.attemptedAt, attempt.sequence, candidate.request.identityKey)
     }
   }
@@ -375,6 +398,12 @@ actor OpenASOMCPRankingRefreshScheduler {
 }
 
 final class OpenASOMCPService: Sendable {
+  typealias RankingRefreshAttemptsPersistence = @Sendable (
+    _ requests: [RankingRefreshRequest],
+    _ appStoreID: Int64,
+    _ attemptedAt: Date
+  ) async throws -> Void
+
   private enum ResponseLimits {
     static let overviewStorefrontMetadata = 8
     static let overviewRatings = 25
@@ -427,6 +456,7 @@ final class OpenASOMCPService: Sendable {
   private let rankingProvider: (any SearchRankingProvider)?
   private let rankingRefreshCoordinator: RankingRefreshCoordinator?
   private let rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler
+  private let persistRankingRefreshAttempts: RankingRefreshAttemptsPersistence
   private let reviewService: AppStorefrontReviewService?
   private let keywordMetricsService: KeywordMetricsService?
   private let popularityContextAppStoreIDProvider: @MainActor @Sendable () -> Int64?
@@ -442,6 +472,7 @@ final class OpenASOMCPService: Sendable {
     rankingProvider: (any SearchRankingProvider)? = nil,
     rankingRefreshCoordinator: RankingRefreshCoordinator? = nil,
     rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler(),
+    persistRankingRefreshAttempts: RankingRefreshAttemptsPersistence? = nil,
     reviewService: AppStorefrontReviewService? = nil,
     keywordMetricsService: KeywordMetricsService? = nil,
     popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
@@ -456,6 +487,19 @@ final class OpenASOMCPService: Sendable {
     self.rankingProvider = rankingProvider
     self.rankingRefreshCoordinator = rankingRefreshCoordinator
     self.rankingRefreshScheduler = rankingRefreshScheduler
+    self.persistRankingRefreshAttempts = persistRankingRefreshAttempts ?? {
+      [backgroundModelStore] requests, appStoreID, attemptedAt in
+      try await backgroundModelStore.write { modelContext in
+        for request in requests {
+          try Self.upsertRankingRefreshAttempt(
+            request: request,
+            appStoreID: appStoreID,
+            attemptedAt: attemptedAt,
+            in: modelContext
+          )
+        }
+      }
+    }
     self.reviewService = reviewService
     self.keywordMetricsService = keywordMetricsService
     self.popularityContextAppStoreIDProvider = popularityContextAppStoreIDProvider
@@ -1649,37 +1693,71 @@ final class OpenASOMCPService: Sendable {
       activeGlobalIdentityKeys: Set<String>?
     )
     do {
-      candidateBatch = try await backgroundModelStore.read { modelContext in
+      candidateBatch = try await backgroundModelStore.write { modelContext in
         let descriptor = FetchDescriptor<TrackedAppKeyword>(
           predicate: #Predicate { track in
             track.appStoreID == appStoreID
           }
         )
         let appTracks = try modelContext.fetch(descriptor)
+        let activeAppIdentityKeys = Set(appTracks.map(\.identityKey))
         let matches = appTracks.filter { track in
           if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return false }
           if let platform, track.platform != platform { return false }
           return true
         }
+
         let activeGlobalIdentityKeys: Set<String>?
+        let attemptsForApp: [TrackedAppKeywordRefreshAttempt]
         if reconciliationPlan.includesGlobalSweep {
           var activeIdentityDescriptor = FetchDescriptor<TrackedAppKeyword>()
           activeIdentityDescriptor.propertiesToFetch = [\.identityKey]
-          activeGlobalIdentityKeys = Set(
+          let globalIdentityKeys = Set(
             try modelContext.fetch(activeIdentityDescriptor).map(\.identityKey)
           )
+          activeGlobalIdentityKeys = globalIdentityKeys
+
+          let allAttempts = try modelContext.fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+          )
+          for attempt in allAttempts where !globalIdentityKeys.contains(attempt.trackIdentityKey) {
+            modelContext.delete(attempt)
+          }
+          attemptsForApp = allAttempts.filter {
+            $0.appStoreID == appStoreID
+              && activeAppIdentityKeys.contains($0.trackIdentityKey)
+          }
         } else {
           activeGlobalIdentityKeys = nil
+          let attemptDescriptor = FetchDescriptor<TrackedAppKeywordRefreshAttempt>(
+            predicate: #Predicate { attempt in
+              attempt.appStoreID == appStoreID
+            }
+          )
+          let appAttempts = try modelContext.fetch(attemptDescriptor)
+          for attempt in appAttempts where !activeAppIdentityKeys.contains(attempt.trackIdentityKey) {
+            modelContext.delete(attempt)
+          }
+          attemptsForApp = appAttempts.filter {
+            activeAppIdentityKeys.contains($0.trackIdentityKey)
+          }
         }
+
+        let durableAttemptDateByIdentityKey = Dictionary(
+          uniqueKeysWithValues: attemptsForApp.map {
+            ($0.trackIdentityKey, $0.lastRankingRefreshAttemptAt)
+          }
+        )
         return (
           candidates: matches.map {
             OpenASOMCPRankingRefreshScheduler.Candidate(
               request: RankingRefreshRequest(track: $0),
-              lastSuccessfulRefreshAt: $0.lastRefreshAt
+              lastSuccessfulRefreshAt: $0.lastRefreshAt,
+              lastDurableAttemptAt: durableAttemptDateByIdentityKey[$0.identityKey]
             )
           },
           totalCount: matches.count,
-          activeAppIdentityKeys: Set(appTracks.map(\.identityKey)),
+          activeAppIdentityKeys: activeAppIdentityKeys,
           activeGlobalIdentityKeys: activeGlobalIdentityKeys
         )
       }
@@ -1703,15 +1781,34 @@ final class OpenASOMCPService: Sendable {
       limit: trackLimit
     )
 
+    if !reservation.requests.isEmpty {
+      do {
+        try Task.checkCancellation()
+        let attemptedAt = now()
+        // Commit the whole reservation before the first external call so a
+        // failed attempt-state transaction leaves the provider untouched.
+        try await persistRankingRefreshAttempts(
+          reservation.requests,
+          appStoreID,
+          attemptedAt
+        )
+        for request in reservation.requests {
+          try await rankingRefreshScheduler.markAttemptStarted(
+            request,
+            in: reservation,
+            attemptedAt: attemptedAt
+          )
+        }
+      } catch {
+        await rankingRefreshScheduler.release(reservation)
+        throw error
+      }
+    }
+
     var fetched: [(RankingRefreshRequest, SearchRankingPage?, OpenASOError?)] = []
     do {
       for request in reservation.requests {
         try Task.checkCancellation()
-        try await rankingRefreshScheduler.markAttemptStarted(
-          request,
-          in: reservation,
-          attemptedAt: now()
-        )
         do {
           let page = try await Self.withRankingSearchTimeout {
             try await provider.search(
@@ -2514,13 +2611,44 @@ final class OpenASOMCPService: Sendable {
     return rankingProvider
   }
 
+  private static func upsertRankingRefreshAttempt(
+    request: RankingRefreshRequest,
+    appStoreID: Int64,
+    attemptedAt: Date,
+    in modelContext: ModelContext
+  ) throws {
+    let trackIdentityKey = request.identityKey
+    var descriptor = FetchDescriptor<TrackedAppKeywordRefreshAttempt>(
+      predicate: #Predicate { attempt in
+        attempt.trackIdentityKey == trackIdentityKey
+      }
+    )
+    descriptor.fetchLimit = 1
+
+    if let existing = try modelContext.fetch(descriptor).first {
+      existing.appStoreID = appStoreID
+      existing.lastRankingRefreshAttemptAt = max(
+        existing.lastRankingRefreshAttemptAt,
+        attemptedAt
+      )
+      return
+    }
+
+    modelContext.insert(TrackedAppKeywordRefreshAttempt(
+      trackIdentityKey: trackIdentityKey,
+      appStoreID: appStoreID,
+      lastRankingRefreshAttemptAt: attemptedAt
+    ))
+  }
+
   private static func keywordRankingRefreshNotes(
     requestedLimit: Int?,
     appliedLimit: Int
   ) -> [String] {
     var notes = [
-      "Candidates with neither a successful nor scheduled refresh are selected first, then by least-recent activity using the later of each track's latest successful and scheduled refresh times, with stable identity-key ties.",
-      "Attempt rotation and in-flight reservations are kept in memory across MCP connections until OpenASO relaunches; lastRefreshAt remains the time of the latest successful refresh.",
+      "Candidates with neither a successful nor attempted refresh are selected first, then by least-recent activity using the latest successful, durable-attempt, and process-attempt times, with stable identity-key ties.",
+      "Attempt recency persists across OpenASO relaunches, while in-flight reservations are shared across MCP connections for the current process; lastRefreshAt remains the time of the latest successful refresh.",
+      "Separate OpenASO processes do not share in-flight reservations, so simultaneous stdio processes can make duplicate attempts even though later calls observe the durable attempt recency.",
     ]
     if let requestedLimit, requestedLimit != appliedLimit {
       notes.append(

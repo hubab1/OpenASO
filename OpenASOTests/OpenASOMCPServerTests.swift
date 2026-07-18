@@ -39,7 +39,7 @@ struct OpenASOMCPServerTests {
         let rankingRefreshDescription = try #require(rankingRefreshTool.description)
         #expect(rankingRefreshDescription.contains("defaults to 20"))
         #expect(rankingRefreshDescription.contains("1...25"))
-        #expect(rankingRefreshDescription.contains("resets when OpenASO relaunches"))
+        #expect(rankingRefreshDescription.contains("survives OpenASO relaunches"))
 
         let toolResult = try await client.callTool(
             name: "list_apps",
