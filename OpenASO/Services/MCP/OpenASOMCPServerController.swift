@@ -278,6 +278,10 @@ private actor OpenASOMCPLocalHTTPServer {
     }
 
     private func handle(request: HTTPRequest) async -> HTTPResponse {
+        guard request.path == "/mcp" else {
+            return .error(statusCode: 404, .invalidRequest("Not Found"))
+        }
+
         do {
             let normalizedRequest = Self.normalizedAcceptHeaderRequest(request)
 
