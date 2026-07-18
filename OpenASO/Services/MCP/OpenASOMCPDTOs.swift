@@ -504,8 +504,41 @@ struct OpenASOMCPKeywordRefreshOutcome: Codable, Sendable {
 }
 
 struct OpenASOMCPKeywordRefreshResult: Codable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case summary
+        case outcomes
+        case notes
+    }
+
     let summary: OpenASOMCPMutationSummary
     let outcomes: [OpenASOMCPKeywordRefreshOutcome]
+    let notes: [String]
+
+    init(
+        summary: OpenASOMCPMutationSummary,
+        outcomes: [OpenASOMCPKeywordRefreshOutcome],
+        notes: [String] = []
+    ) {
+        self.summary = summary
+        self.outcomes = outcomes
+        self.notes = notes
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try container.decode(OpenASOMCPMutationSummary.self, forKey: .summary)
+        outcomes = try container.decode([OpenASOMCPKeywordRefreshOutcome].self, forKey: .outcomes)
+        notes = try container.decodeIfPresent([String].self, forKey: .notes) ?? []
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(summary, forKey: .summary)
+        try container.encode(outcomes, forKey: .outcomes)
+        if !notes.isEmpty {
+            try container.encode(notes, forKey: .notes)
+        }
+    }
 }
 
 struct OpenASOMCPCompetitorReviewRefreshResult: Codable, Sendable {

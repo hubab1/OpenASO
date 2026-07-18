@@ -911,6 +911,487 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func refreshKeywordRankingsOrdersMissingThenOldestWithStableTies() async throws {
+        let rankingProvider = StubMCPRankingProvider(pages: [:])
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["gamma", "zeta", "beta", "alpha"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let tracks = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        let tracksByTerm = Dictionary(uniqueKeysWithValues: tracks.map { ($0.term, $0) })
+        tracksByTerm["alpha"]?.lastRefreshAt = isoDate("2026-01-01T00:00:00Z")
+        tracksByTerm["beta"]?.lastRefreshAt = isoDate("2026-01-01T00:00:00Z")
+        tracksByTerm["gamma"]?.lastRefreshAt = isoDate("2026-04-01T00:00:00Z")
+        try context.modelContext.save()
+
+        _ = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 4
+        )
+
+        #expect(await rankingProvider.searchedKeysSnapshot() == [
+            rankingQueryKey("zeta"),
+            rankingQueryKey("alpha"),
+            rankingQueryKey("beta"),
+            rankingQueryKey("gamma"),
+        ])
+    }
+
+    @Test
+    func refreshKeywordRankingsRotatesFailedAttemptsWithoutChangingSuccessfulFreshness() async throws {
+        let terms = ["alpha", "beta", "gamma"]
+        let failures = Dictionary(
+            uniqueKeysWithValues: terms.map { (rankingQueryKey($0), OpenASOError.networkUnavailable) }
+        )
+        let rankingProvider = StubMCPRankingProvider(pages: [:], failures: failures)
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: terms,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        for _ in terms {
+            let result = try await context.service.refreshKeywordRankings(
+                appStoreID: 123,
+                storefronts: ["us"],
+                platform: "iphone",
+                limit: 1
+            )
+            #expect(result.summary.failed == 1)
+        }
+
+        #expect(await rankingProvider.searchedKeysSnapshot() == terms.map(rankingQueryKey))
+        let tracks = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        #expect(tracks.allSatisfy { $0.lastRefreshAt == nil })
+        #expect(tracks.allSatisfy { $0.statusMessage?.contains("Ranking failed") == true })
+    }
+
+    @Test
+    func failedRankingRefreshPreservesPriorSuccessfulRefreshDate() async throws {
+        let rankingProvider = StubMCPRankingProvider(
+            pages: [:],
+            failures: [rankingQueryKey("alpha"): .networkUnavailable]
+        )
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+        let track = try #require(context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>()).first)
+        let successfulRefreshAt = isoDate("2026-01-01T00:00:00Z")
+        track.lastRefreshAt = successfulRefreshAt
+        try context.modelContext.save()
+
+        let result = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        #expect(result.summary.failed == 1)
+        let failedTrack = try #require(ModelContext(context.container).fetch(
+            FetchDescriptor<TrackedAppKeyword>()
+        ).first)
+        #expect(failedTrack.lastRefreshAt == successfulRefreshAt)
+        #expect(failedTrack.statusMessage?.contains("Ranking failed") == true)
+
+        await rankingProvider.clearFailure(for: rankingQueryKey("alpha"))
+        let retry = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+        #expect(retry.summary.refreshed == 1)
+        let recoveredTrack = try #require(ModelContext(context.container).fetch(
+            FetchDescriptor<TrackedAppKeyword>()
+        ).first)
+        #expect(recoveredTrack.lastRefreshAt == isoDate("2026-05-07T12:00:00Z"))
+        #expect(recoveredTrack.statusMessage == nil)
+    }
+
+    @Test
+    func refreshKeywordRankingsClampsLimitsAndCoversMoreThanTwentyFiveFailedTracks() async throws {
+        let terms = (0..<30).map { String(format: "keyword-%02d", $0) }
+        let failures = Dictionary(
+            uniqueKeysWithValues: terms.map { (rankingQueryKey($0), OpenASOError.networkUnavailable) }
+        )
+        let rankingProvider = StubMCPRankingProvider(pages: [:], failures: failures)
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: terms,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let capped = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 999
+        )
+        #expect(capped.outcomes.count == 25)
+        #expect(capped.summary.skipped == 5)
+        #expect(capped.notes.contains { $0.contains("clamped to 25") })
+
+        let defaulted = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+        #expect(defaulted.outcomes.count == 20)
+        #expect(defaulted.summary.skipped == 10)
+        #expect(defaulted.notes.contains { $0.contains("default track limit of 20") })
+
+        let searchedAfterTwoCalls = await rankingProvider.searchedKeysSnapshot()
+        #expect(searchedAfterTwoCalls.count == 45)
+        #expect(Set(searchedAfterTwoCalls) == Set(terms.map(rankingQueryKey)))
+
+        let minimum = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 0
+        )
+        #expect(minimum.outcomes.count == 1)
+        #expect(minimum.notes.contains { $0.contains("clamped to 1") })
+    }
+
+    @Test
+    func sharedRankingRefreshSchedulerReservesDistinctConcurrentCandidates() async throws {
+        let scheduler = OpenASOMCPRankingRefreshScheduler()
+        let rankingProvider = GatedMCPRankingProvider()
+        let firstContext = try MCPTestContext(
+            rankingProvider: rankingProvider,
+            rankingRefreshScheduler: scheduler
+        )
+        let secondContext = try MCPTestContext(
+            rankingProvider: rankingProvider,
+            rankingRefreshScheduler: scheduler
+        )
+        for context in [firstContext, secondContext] {
+            try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+            _ = try await context.service.addKeywords(
+                appStoreID: 123,
+                keywords: ["alpha", "beta"],
+                storefronts: ["us"],
+                platform: "iphone"
+            )
+        }
+
+        let firstRefresh = Task {
+            try await firstContext.service.refreshKeywordRankings(
+                appStoreID: 123,
+                storefronts: ["us"],
+                platform: "iphone",
+                limit: 1
+            )
+        }
+        await rankingProvider.waitForSearchCount(1)
+        let secondRefresh = Task {
+            try await secondContext.service.refreshKeywordRankings(
+                appStoreID: 123,
+                storefronts: ["us"],
+                platform: "iphone",
+                limit: 1
+            )
+        }
+        await rankingProvider.waitForSearchCount(2)
+
+        let searchedKeys = await rankingProvider.searchedKeysSnapshot()
+        #expect(searchedKeys.count == 2)
+        #expect(Set(searchedKeys).count == 2)
+        await rankingProvider.releaseAll()
+        _ = try await firstRefresh.value
+        _ = try await secondRefresh.value
+    }
+
+    @Test
+    func rankingRefreshSchedulerKeepsCandidateExclusiveUntilReservationRelease() async throws {
+        let scheduler = OpenASOMCPRankingRefreshScheduler()
+        let request = RankingRefreshRequest(
+            identityKey: "123::alpha::us::iphone",
+            queryKey: rankingQueryKey("alpha"),
+            term: "alpha",
+            storefront: "us",
+            platform: .iphone
+        )
+        let candidates = [
+            OpenASOMCPRankingRefreshScheduler.Candidate(
+                request: request,
+                lastSuccessfulRefreshAt: nil
+            )
+        ]
+
+        let first = await scheduler.reserve(appStoreID: 123, candidates: candidates, limit: 1)
+        let blocked = await scheduler.reserve(appStoreID: 123, candidates: candidates, limit: 1)
+        #expect(first.requests.map(\.identityKey) == [request.identityKey])
+        #expect(blocked.requests.isEmpty)
+
+        await scheduler.release(first)
+        let afterRelease = await scheduler.reserve(
+            appStoreID: 123,
+            candidates: candidates,
+            limit: 1
+        )
+        #expect(afterRelease.requests.map(\.identityKey) == [request.identityKey])
+        await scheduler.release(afterRelease)
+    }
+
+    @Test
+    func rankingRefreshSchedulerReclaimsAttemptsForDeletedTracks() async throws {
+        let scheduler = OpenASOMCPRankingRefreshScheduler()
+        let requests = ["alpha", "beta"].map { term in
+            RankingRefreshRequest(
+                identityKey: "123::\(term)::us::iphone",
+                queryKey: rankingQueryKey(term),
+                term: term,
+                storefront: "us",
+                platform: .iphone
+            )
+        }
+        let candidates = requests.map {
+            OpenASOMCPRankingRefreshScheduler.Candidate(
+                request: $0,
+                lastSuccessfulRefreshAt: nil
+            )
+        }
+        let reservation = await scheduler.reserve(
+            appStoreID: 123,
+            candidates: candidates,
+            limit: 2
+        )
+        for request in reservation.requests {
+            try await scheduler.markAttemptStarted(
+                request,
+                in: reservation,
+                attemptedAt: isoDate("2026-01-01T00:00:00Z")
+            )
+        }
+        await scheduler.release(reservation)
+        #expect(await scheduler.attemptCount() == 2)
+
+        let plan = await scheduler.makeReconciliationPlan()
+        await scheduler.reconcile(
+            appStoreID: 123,
+            activeAppIdentityKeys: [requests[1].identityKey],
+            activeGlobalIdentityKeys: nil,
+            globalSweepToken: plan.globalSweepToken,
+            attemptsBefore: plan.attemptsBefore
+        )
+        #expect(await scheduler.attemptCount() == 1)
+    }
+
+    @Test
+    func rankingRefreshReconciliationKeepsAttemptsNewerThanSnapshot() async throws {
+        let scheduler = OpenASOMCPRankingRefreshScheduler()
+        let request = RankingRefreshRequest(
+            identityKey: "123::alpha::us::iphone",
+            queryKey: rankingQueryKey("alpha"),
+            term: "alpha",
+            storefront: "us",
+            platform: .iphone
+        )
+        let candidate = OpenASOMCPRankingRefreshScheduler.Candidate(
+            request: request,
+            lastSuccessfulRefreshAt: nil
+        )
+        let stalePlan = await scheduler.makeReconciliationPlan()
+        let reservation = await scheduler.reserve(
+            appStoreID: 123,
+            candidates: [candidate],
+            limit: 1
+        )
+        try await scheduler.markAttemptStarted(
+            request,
+            in: reservation,
+            attemptedAt: isoDate("2026-01-01T00:00:00Z")
+        )
+        await scheduler.release(reservation)
+
+        await scheduler.reconcile(
+            appStoreID: 123,
+            activeAppIdentityKeys: [],
+            activeGlobalIdentityKeys: nil,
+            globalSweepToken: stalePlan.globalSweepToken,
+            attemptsBefore: stalePlan.attemptsBefore
+        )
+        #expect(await scheduler.attemptCount() == 1)
+
+        let freshPlan = await scheduler.makeReconciliationPlan()
+        await scheduler.reconcile(
+            appStoreID: 123,
+            activeAppIdentityKeys: [],
+            activeGlobalIdentityKeys: nil,
+            globalSweepToken: freshPlan.globalSweepToken,
+            attemptsBefore: freshPlan.attemptsBefore
+        )
+        #expect(await scheduler.attemptCount() == 0)
+    }
+
+    @Test
+    func rankingRefreshReconciliationKeepsActiveReservationsUntilRelease() async throws {
+        let scheduler = OpenASOMCPRankingRefreshScheduler()
+        let request = RankingRefreshRequest(
+            identityKey: "123::alpha::us::iphone",
+            queryKey: rankingQueryKey("alpha"),
+            term: "alpha",
+            storefront: "us",
+            platform: .iphone
+        )
+        let reservation = await scheduler.reserve(
+            appStoreID: 123,
+            candidates: [
+                OpenASOMCPRankingRefreshScheduler.Candidate(
+                    request: request,
+                    lastSuccessfulRefreshAt: nil
+                )
+            ],
+            limit: 1
+        )
+        try await scheduler.markAttemptStarted(
+            request,
+            in: reservation,
+            attemptedAt: isoDate("2026-01-01T00:00:00Z")
+        )
+        let plan = await scheduler.makeReconciliationPlan()
+
+        await scheduler.reconcile(
+            appStoreID: 123,
+            activeAppIdentityKeys: [],
+            activeGlobalIdentityKeys: nil,
+            globalSweepToken: plan.globalSweepToken,
+            attemptsBefore: plan.attemptsBefore
+        )
+        #expect(await scheduler.attemptCount() == 1)
+
+        await scheduler.release(reservation)
+        await scheduler.reconcile(
+            appStoreID: 123,
+            activeAppIdentityKeys: [],
+            activeGlobalIdentityKeys: nil,
+            globalSweepToken: plan.globalSweepToken,
+            attemptsBefore: plan.attemptsBefore
+        )
+        #expect(await scheduler.attemptCount() == 0)
+    }
+
+    @Test
+    func rankingRefreshGlobalSweepRemainsDueUntilReconciliationCompletes() async {
+        let scheduler = OpenASOMCPRankingRefreshScheduler(globalSweepInterval: 2)
+
+        let firstPlan = await scheduler.makeReconciliationPlan()
+        #expect(!firstPlan.includesGlobalSweep)
+        let abandonedDuePlan = await scheduler.makeReconciliationPlan()
+        #expect(abandonedDuePlan.includesGlobalSweep)
+        let concurrentPlan = await scheduler.makeReconciliationPlan()
+        #expect(!concurrentPlan.includesGlobalSweep)
+
+        await scheduler.abandonGlobalSweep(abandonedDuePlan.globalSweepToken)
+        let retriedDuePlan = await scheduler.makeReconciliationPlan()
+        #expect(retriedDuePlan.includesGlobalSweep)
+        #expect(retriedDuePlan.globalSweepToken == abandonedDuePlan.globalSweepToken)
+
+        await scheduler.reconcile(
+            appStoreID: 123,
+            activeAppIdentityKeys: [],
+            activeGlobalIdentityKeys: [],
+            globalSweepToken: retriedDuePlan.globalSweepToken,
+            attemptsBefore: retriedDuePlan.attemptsBefore
+        )
+        let afterCompletion = await scheduler.makeReconciliationPlan()
+        #expect(!afterCompletion.includesGlobalSweep)
+
+        let secondGeneration = await scheduler.makeReconciliationPlan()
+        #expect(secondGeneration.includesGlobalSweep)
+        #expect(secondGeneration.globalSweepToken != retriedDuePlan.globalSweepToken)
+        await scheduler.reconcile(
+            appStoreID: 123,
+            activeAppIdentityKeys: [],
+            activeGlobalIdentityKeys: [],
+            globalSweepToken: retriedDuePlan.globalSweepToken,
+            attemptsBefore: retriedDuePlan.attemptsBefore
+        )
+        await scheduler.abandonGlobalSweep(secondGeneration.globalSweepToken)
+        let secondGenerationRetry = await scheduler.makeReconciliationPlan()
+        #expect(secondGenerationRetry.globalSweepToken == secondGeneration.globalSweepToken)
+    }
+
+    @Test
+    func cancelledRankingRefreshKeepsAttemptRotationAndDoesNotPersistFailure() async throws {
+        let rankingProvider = CancellationAwareMCPRankingProvider()
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha", "beta", "gamma"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let cancelledRefresh = Task {
+            try await context.service.refreshKeywordRankings(
+                appStoreID: 123,
+                storefronts: ["us"],
+                platform: "iphone",
+                limit: 2
+            )
+        }
+        await rankingProvider.waitUntilFirstSearchStarts()
+        cancelledRefresh.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await cancelledRefresh.value
+        }
+
+        let tracksAfterCancellation = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        #expect(tracksAfterCancellation.allSatisfy { $0.lastRefreshAt == nil })
+        #expect(tracksAfterCancellation.allSatisfy { $0.statusMessage == nil })
+
+        let retry = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 1
+        )
+        #expect(retry.summary.refreshed == 1)
+        #expect(await rankingProvider.searchedKeysSnapshot() == [
+            rankingQueryKey("alpha"),
+            rankingQueryKey("beta"),
+        ])
+    }
+
+    @Test
+    func keywordRefreshResultDecodesLegacyPayloadAndOmitsEmptyNotes() throws {
+        let legacyPayload = Data("""
+        {
+          "summary": {"inserted":0,"updated":0,"skipped":0,"refreshed":0,"failed":0},
+          "outcomes": []
+        }
+        """.utf8)
+
+        let decoded = try JSONDecoder().decode(OpenASOMCPKeywordRefreshResult.self, from: legacyPayload)
+        #expect(decoded.notes.isEmpty)
+
+        let reencoded = try JSONEncoder().encode(decoded)
+        let object = try #require(JSONSerialization.jsonObject(with: reencoded) as? [String: Any])
+        #expect(object["notes"] == nil)
+    }
+
+    @Test
     func refreshKeywordRankingsIsIdempotentAndPrunesStaleTopResults() async throws {
         let rankingProvider = StubMCPRankingProvider(pages: [
             "calorie tracker::us::iphone": SearchRankingPage(items: [
@@ -1963,8 +2444,9 @@ private struct MCPTestContext {
     @MainActor
     init(
         resolver: StubMCPAppResolver = StubMCPAppResolver(),
-        rankingProvider: StubMCPRankingProvider? = nil,
+        rankingProvider: (any SearchRankingProvider)? = nil,
         useRankingRefreshCoordinator: Bool = false,
+        rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler(),
         includeReviewService: Bool = false,
         includeKeywordMetricsService: Bool = false,
         popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
@@ -1993,6 +2475,7 @@ private struct MCPTestContext {
             screenshotDownloadService: screenshotDataProvider.map(ScreenshotDownloadService.init(dataProvider:)) ?? ScreenshotDownloadService(),
             rankingProvider: rankingProvider,
             rankingRefreshCoordinator: rankingRefreshCoordinator,
+            rankingRefreshScheduler: rankingRefreshScheduler,
             reviewService: includeReviewService ? AppStorefrontReviewService(httpClient: httpClient) : nil,
             keywordMetricsService: includeKeywordMetricsService
                 ? KeywordMetricsService(
@@ -2446,6 +2929,10 @@ private actor StubMCPRankingProvider: SearchRankingProvider {
         pages[key] = page
     }
 
+    func clearFailure(for key: String) {
+        failures.removeValue(forKey: key)
+    }
+
     func searchedKeysSnapshot() -> [String] {
         searchedKeys
     }
@@ -2464,6 +2951,90 @@ private actor StubMCPRankingProvider: SearchRankingProvider {
             return SearchRankingPage(items: [], source: .iTunesFallback)
         }
         return SearchRankingPage(items: Array(page.items.prefix(limit)), source: page.source)
+    }
+}
+
+private actor GatedMCPRankingProvider: SearchRankingProvider {
+    private var searchedKeys: [String] = []
+    private var searchCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func searchedKeysSnapshot() -> [String] {
+        searchedKeys
+    }
+
+    func waitForSearchCount(_ count: Int) async {
+        guard searchedKeys.count < count else { return }
+        await withCheckedContinuation { continuation in
+            searchCountWaiters.append((count, continuation))
+        }
+    }
+
+    func releaseAll() {
+        let continuations = releaseContinuations
+        releaseContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    func search(
+        keyword: String,
+        storefrontCode: String,
+        platform: AppPlatform,
+        limit: Int
+    ) async throws -> SearchRankingPage {
+        searchedKeys.append(
+            TrackedAppKeyword.makeQueryKey(
+                term: keyword,
+                storefront: storefrontCode,
+                platform: platform
+            )
+        )
+        let readyWaiters = searchCountWaiters.filter { searchedKeys.count >= $0.count }
+        searchCountWaiters.removeAll { searchedKeys.count >= $0.count }
+        readyWaiters.forEach { $0.continuation.resume() }
+        await withCheckedContinuation { continuation in
+            releaseContinuations.append(continuation)
+        }
+        try Task.checkCancellation()
+        return SearchRankingPage(items: [], source: .iTunesFallback)
+    }
+}
+
+private actor CancellationAwareMCPRankingProvider: SearchRankingProvider {
+    private var searchedKeys: [String] = []
+    private var firstSearchWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func searchedKeysSnapshot() -> [String] {
+        searchedKeys
+    }
+
+    func waitUntilFirstSearchStarts() async {
+        guard searchedKeys.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            firstSearchWaiters.append(continuation)
+        }
+    }
+
+    func search(
+        keyword: String,
+        storefrontCode: String,
+        platform: AppPlatform,
+        limit: Int
+    ) async throws -> SearchRankingPage {
+        searchedKeys.append(
+            TrackedAppKeyword.makeQueryKey(
+                term: keyword,
+                storefront: storefrontCode,
+                platform: platform
+            )
+        )
+        let waiters = firstSearchWaiters
+        firstSearchWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if searchedKeys.count == 1 {
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+        }
+        return SearchRankingPage(items: [], source: .iTunesFallback)
     }
 }
 
@@ -2549,6 +3120,10 @@ private func makeRankingItem(
         averageRating: 4.7,
         platform: .iphone
     )
+}
+
+private func rankingQueryKey(_ term: String) -> String {
+    TrackedAppKeyword.makeQueryKey(term: term, storefront: "us", platform: .iphone)
 }
 
 private func isoDate(_ value: String) -> Date {

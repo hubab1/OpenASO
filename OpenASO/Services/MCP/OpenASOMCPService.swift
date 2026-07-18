@@ -128,6 +128,252 @@ private enum OpenASOMCPHistoryCursorCodec {
   }
 }
 
+/// Coordinates process-local ranking refresh attempts without changing persisted success freshness.
+actor OpenASOMCPRankingRefreshScheduler {
+  struct Candidate: Sendable {
+    let request: RankingRefreshRequest
+    let lastSuccessfulRefreshAt: Date?
+  }
+
+  struct Reservation: Sendable {
+    let id: UUID
+    let appStoreID: Int64
+    let requests: [RankingRefreshRequest]
+  }
+
+  struct ReconciliationPlan: Sendable {
+    let attemptsBefore: UInt64
+    let globalSweepToken: UInt64?
+
+    var includesGlobalSweep: Bool {
+      globalSweepToken != nil
+    }
+  }
+
+  private struct Attempt: Sendable {
+    let appStoreID: Int64
+    let attemptedAt: Date
+    let sequence: UInt64
+  }
+
+  private let globalSweepInterval: UInt64
+  private var attemptsByIdentityKey: [String: Attempt] = [:]
+  private var attemptedIdentityKeysByAppStoreID: [Int64: Set<String>] = [:]
+  private var reservedIdentityKeys: Set<String> = []
+  private var identityKeysByReservationID: [UUID: Set<String>] = [:]
+  private var nextAttemptSequence: UInt64 = 0
+  private var reconciliationRequestCount: UInt64 = 0
+  private var nextGlobalSweepToken: UInt64 = 0
+  private var dueGlobalSweepToken: UInt64?
+  private var claimedGlobalSweepToken: UInt64?
+
+  init(globalSweepInterval: UInt64 = 256) {
+    self.globalSweepInterval = max(1, globalSweepInterval)
+  }
+
+  func reserve(
+    appStoreID: Int64,
+    candidates: [Candidate],
+    limit: Int
+  ) -> Reservation {
+    let ordered = candidates
+      .filter { !reservedIdentityKeys.contains($0.request.identityKey) }
+      .sorted { isHigherPriority($0, $1) }
+    let selected = Array(ordered.prefix(max(0, limit)))
+    let reservationID = UUID()
+    let identityKeys = Set(selected.map(\.request.identityKey))
+
+    if !identityKeys.isEmpty {
+      reservedIdentityKeys.formUnion(identityKeys)
+      identityKeysByReservationID[reservationID] = identityKeys
+    }
+
+    return Reservation(
+      id: reservationID,
+      appStoreID: appStoreID,
+      requests: selected.map(\.request)
+    )
+  }
+
+  func markAttemptStarted(
+    _ request: RankingRefreshRequest,
+    in reservation: Reservation,
+    attemptedAt: Date
+  ) throws {
+    try Task.checkCancellation()
+    guard identityKeysByReservationID[reservation.id]?.contains(request.identityKey) == true else {
+      return
+    }
+    attemptsByIdentityKey[request.identityKey] = Attempt(
+      appStoreID: reservation.appStoreID,
+      attemptedAt: attemptedAt,
+      sequence: takeNextAttemptSequence()
+    )
+    attemptedIdentityKeysByAppStoreID[reservation.appStoreID, default: []].insert(
+      request.identityKey
+    )
+  }
+
+  func release(_ reservation: Reservation) {
+    guard let identityKeys = identityKeysByReservationID.removeValue(forKey: reservation.id)
+    else { return }
+    reservedIdentityKeys.subtract(identityKeys)
+  }
+
+  func makeReconciliationPlan() -> ReconciliationPlan {
+    if dueGlobalSweepToken == nil {
+      reconciliationRequestCount += 1
+      if reconciliationRequestCount >= globalSweepInterval {
+        nextGlobalSweepToken &+= 1
+        dueGlobalSweepToken = nextGlobalSweepToken
+      }
+    }
+    let globalSweepToken: UInt64?
+    if claimedGlobalSweepToken == nil, let dueGlobalSweepToken {
+      claimedGlobalSweepToken = dueGlobalSweepToken
+      globalSweepToken = dueGlobalSweepToken
+    } else {
+      globalSweepToken = nil
+    }
+    return ReconciliationPlan(
+      attemptsBefore: nextAttemptSequence,
+      globalSweepToken: globalSweepToken
+    )
+  }
+
+  func reconcile(
+    appStoreID: Int64,
+    activeAppIdentityKeys: Set<String>,
+    activeGlobalIdentityKeys: Set<String>?,
+    globalSweepToken: UInt64?,
+    attemptsBefore boundary: UInt64
+  ) {
+    removeAttempts(
+      attemptedIdentityKeysByAppStoreID[appStoreID, default: []].filter { identityKey in
+        guard let attempt = attemptsByIdentityKey[identityKey] else { return true }
+        return !activeAppIdentityKeys.contains(identityKey)
+          && !reservedIdentityKeys.contains(identityKey)
+          && attempt.sequence < boundary
+      }
+    )
+
+    if let activeGlobalIdentityKeys,
+       let globalSweepToken,
+       globalSweepToken == dueGlobalSweepToken,
+       globalSweepToken == claimedGlobalSweepToken
+    {
+      removeAttempts(
+        attemptsByIdentityKey.compactMap { identityKey, attempt in
+          guard !activeGlobalIdentityKeys.contains(identityKey),
+                !reservedIdentityKeys.contains(identityKey),
+                attempt.sequence < boundary
+          else {
+            return nil
+          }
+          return identityKey
+        }
+      )
+      dueGlobalSweepToken = nil
+      claimedGlobalSweepToken = nil
+      reconciliationRequestCount = 0
+    }
+  }
+
+  func abandonGlobalSweep(_ token: UInt64?) {
+    guard let token, token == claimedGlobalSweepToken else { return }
+    claimedGlobalSweepToken = nil
+  }
+
+  func attemptCount() -> Int {
+    attemptsByIdentityKey.count
+  }
+
+  private func removeAttempts<S: Sequence>(_ identityKeys: S) where S.Element == String {
+    for identityKey in identityKeys {
+      guard let attempt = attemptsByIdentityKey.removeValue(forKey: identityKey) else { continue }
+      attemptedIdentityKeysByAppStoreID[attempt.appStoreID]?.remove(identityKey)
+      if attemptedIdentityKeysByAppStoreID[attempt.appStoreID]?.isEmpty == true {
+        attemptedIdentityKeysByAppStoreID.removeValue(forKey: attempt.appStoreID)
+      }
+    }
+  }
+
+  private func isHigherPriority(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
+    let lhsRecency = schedulingRecency(for: lhs)
+    let rhsRecency = schedulingRecency(for: rhs)
+
+    switch (lhsRecency, rhsRecency) {
+    case (nil, nil):
+      return lhs.request.identityKey < rhs.request.identityKey
+    case (nil, _):
+      return true
+    case (_, nil):
+      return false
+    case let (lhs?, rhs?):
+      if lhs.date != rhs.date {
+        return lhs.date < rhs.date
+      }
+      if lhs.sequence != rhs.sequence {
+        switch (lhs.sequence, rhs.sequence) {
+        case (nil, _):
+          return true
+        case (_, nil):
+          return false
+        case let (lhsSequence?, rhsSequence?):
+          return lhsSequence < rhsSequence
+        }
+      }
+      return lhs.identityKey < rhs.identityKey
+    }
+  }
+
+  private func schedulingRecency(for candidate: Candidate) -> (
+    date: Date, sequence: UInt64?, identityKey: String
+  )? {
+    let attempt = attemptsByIdentityKey[candidate.request.identityKey]
+    switch (candidate.lastSuccessfulRefreshAt, attempt) {
+    case (nil, nil):
+      return nil
+    case let (successfulAt?, nil):
+      return (successfulAt, nil, candidate.request.identityKey)
+    case let (nil, attempt?):
+      return (attempt.attemptedAt, attempt.sequence, candidate.request.identityKey)
+    case let (successfulAt?, attempt?):
+      if successfulAt > attempt.attemptedAt {
+        return (successfulAt, nil, candidate.request.identityKey)
+      }
+      return (attempt.attemptedAt, attempt.sequence, candidate.request.identityKey)
+    }
+  }
+
+  private func takeNextAttemptSequence() -> UInt64 {
+    if nextAttemptSequence == .max {
+      compactAttemptSequences()
+    }
+    let sequence = nextAttemptSequence
+    nextAttemptSequence += 1
+    return sequence
+  }
+
+  private func compactAttemptSequences() {
+    let orderedIdentityKeys = attemptsByIdentityKey.sorted { lhs, rhs in
+      if lhs.value.sequence == rhs.value.sequence {
+        return lhs.key < rhs.key
+      }
+      return lhs.value.sequence < rhs.value.sequence
+    }.map(\.key)
+    for (index, identityKey) in orderedIdentityKeys.enumerated() {
+      guard let attempt = attemptsByIdentityKey[identityKey] else { continue }
+      attemptsByIdentityKey[identityKey] = Attempt(
+        appStoreID: attempt.appStoreID,
+        attemptedAt: attempt.attemptedAt,
+        sequence: UInt64(index)
+      )
+    }
+    nextAttemptSequence = UInt64(orderedIdentityKeys.count)
+  }
+}
+
 final class OpenASOMCPService: Sendable {
   private enum ResponseLimits {
     static let overviewStorefrontMetadata = 8
@@ -150,7 +396,8 @@ final class OpenASOMCPService: Sendable {
     static let defaultKeywordRefreshTrackLimit = 20
     static let maximumKeywordRefreshTrackLimit = 25
     static let keywordVerificationSearchBudget = 16
-    static let rankingSearchTimeoutNanoseconds: UInt64 = 20_000_000_000
+    static let rankingSearchTimeoutSeconds: UInt64 = 20
+    static let rankingSearchTimeoutNanoseconds = rankingSearchTimeoutSeconds * 1_000_000_000
     static let bigAppRatingThreshold = 10_000
     static let maximumReviewsPerLandscapeApp = 500
     static let maximumScreenshotsPerLandscapeApp = 12
@@ -179,6 +426,7 @@ final class OpenASOMCPService: Sendable {
   private let screenshotDownloadService: ScreenshotDownloadService
   private let rankingProvider: (any SearchRankingProvider)?
   private let rankingRefreshCoordinator: RankingRefreshCoordinator?
+  private let rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler
   private let reviewService: AppStorefrontReviewService?
   private let keywordMetricsService: KeywordMetricsService?
   private let popularityContextAppStoreIDProvider: @MainActor @Sendable () -> Int64?
@@ -193,6 +441,7 @@ final class OpenASOMCPService: Sendable {
     screenshotDownloadService: ScreenshotDownloadService = ScreenshotDownloadService(),
     rankingProvider: (any SearchRankingProvider)? = nil,
     rankingRefreshCoordinator: RankingRefreshCoordinator? = nil,
+    rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler(),
     reviewService: AppStorefrontReviewService? = nil,
     keywordMetricsService: KeywordMetricsService? = nil,
     popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
@@ -206,6 +455,7 @@ final class OpenASOMCPService: Sendable {
     self.screenshotDownloadService = screenshotDownloadService
     self.rankingProvider = rankingProvider
     self.rankingRefreshCoordinator = rankingRefreshCoordinator
+    self.rankingRefreshScheduler = rankingRefreshScheduler
     self.reviewService = reviewService
     self.keywordMetricsService = keywordMetricsService
     self.popularityContextAppStoreIDProvider = popularityContextAppStoreIDProvider
@@ -1378,118 +1628,183 @@ final class OpenASOMCPService: Sendable {
     platform: String? = nil,
     limit: Int? = nil
   ) async throws -> OpenASOMCPKeywordRefreshResult {
+    try Task.checkCancellation()
     let provider = try requireRankingProvider()
     let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
     let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
     let platform = try platform.map(OpenASOMCPValidation.platform)
+    let requestedLimit = limit
     let trackLimit = OpenASOMCPValidation.cappedLimit(
-      limit,
+      requestedLimit,
       default: ResponseLimits.defaultKeywordRefreshTrackLimit,
       maximum: ResponseLimits.maximumKeywordRefreshTrackLimit
     )
     let resultLimit = ResponseLimits.defaultRankingAppLimit
 
-    let requestBatch = try await backgroundModelStore.read { modelContext in
-      let descriptor = FetchDescriptor<TrackedAppKeyword>(
-        predicate: #Predicate { track in
-          track.appStoreID == appStoreID
+    let reconciliationPlan = await rankingRefreshScheduler.makeReconciliationPlan()
+    let candidateBatch: (
+      candidates: [OpenASOMCPRankingRefreshScheduler.Candidate],
+      totalCount: Int,
+      activeAppIdentityKeys: Set<String>,
+      activeGlobalIdentityKeys: Set<String>?
+    )
+    do {
+      candidateBatch = try await backgroundModelStore.read { modelContext in
+        let descriptor = FetchDescriptor<TrackedAppKeyword>(
+          predicate: #Predicate { track in
+            track.appStoreID == appStoreID
+          }
+        )
+        let appTracks = try modelContext.fetch(descriptor)
+        let matches = appTracks.filter { track in
+          if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return false }
+          if let platform, track.platform != platform { return false }
+          return true
         }
-      )
-      let matches = try modelContext.fetch(descriptor).filter { track in
-        if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return false }
-        if let platform, track.platform != platform { return false }
-        return true
+        let activeGlobalIdentityKeys: Set<String>?
+        if reconciliationPlan.includesGlobalSweep {
+          var activeIdentityDescriptor = FetchDescriptor<TrackedAppKeyword>()
+          activeIdentityDescriptor.propertiesToFetch = [\.identityKey]
+          activeGlobalIdentityKeys = Set(
+            try modelContext.fetch(activeIdentityDescriptor).map(\.identityKey)
+          )
+        } else {
+          activeGlobalIdentityKeys = nil
+        }
+        return (
+          candidates: matches.map {
+            OpenASOMCPRankingRefreshScheduler.Candidate(
+              request: RankingRefreshRequest(track: $0),
+              lastSuccessfulRefreshAt: $0.lastRefreshAt
+            )
+          },
+          totalCount: matches.count,
+          activeAppIdentityKeys: Set(appTracks.map(\.identityKey)),
+          activeGlobalIdentityKeys: activeGlobalIdentityKeys
+        )
       }
-      let sorted = matches.sorted { lhs, rhs in
-        lhs.identityKey < rhs.identityKey
-      }
-      return (
-        requests: Array(sorted.prefix(trackLimit)).map { RankingRefreshRequest(track: $0) },
-        totalCount: matches.count
-      )
+      try Task.checkCancellation()
+    } catch {
+      await rankingRefreshScheduler.abandonGlobalSweep(reconciliationPlan.globalSweepToken)
+      throw error
     }
+
+    await rankingRefreshScheduler.reconcile(
+      appStoreID: appStoreID,
+      activeAppIdentityKeys: candidateBatch.activeAppIdentityKeys,
+      activeGlobalIdentityKeys: candidateBatch.activeGlobalIdentityKeys,
+      globalSweepToken: reconciliationPlan.globalSweepToken,
+      attemptsBefore: reconciliationPlan.attemptsBefore
+    )
+    try Task.checkCancellation()
+    let reservation = await rankingRefreshScheduler.reserve(
+      appStoreID: appStoreID,
+      candidates: candidateBatch.candidates,
+      limit: trackLimit
+    )
 
     var fetched: [(RankingRefreshRequest, SearchRankingPage?, OpenASOError?)] = []
-    for request in requestBatch.requests {
-      do {
-        let page = try await Self.withRankingSearchTimeout {
-          try await provider.search(
-            keyword: request.term,
-            storefrontCode: request.storefront,
-            platform: request.platform,
-            limit: resultLimit
-          )
-        }
-        fetched.append((request, page, nil))
-      } catch {
-        fetched.append((request, nil, OpenASOError.map(error)))
-      }
-    }
-
-    let fetchedResults = fetched
-    return try await backgroundModelStore.write { modelContext in
-      var outcomes: [OpenASOMCPKeywordRefreshOutcome] = []
-      for item in fetchedResults {
-        if let page = item.1 {
-          let observedAt = now()
-          let track: TrackedAppKeyword
-          if let rankingRefreshCoordinator {
-            let pageResult = RankingRefreshPageResult(
-              request: item.0,
-              page: page,
-              searchedAt: observedAt,
-              observedHour: nil,
-              submissionCount: 0,
-              winningCount: 0,
-              confidence: nil
-            )
-            track = try rankingRefreshCoordinator.persistRankingPage(
-              pageResult,
-              in: modelContext,
-              rebuildDerivedStats: true,
-              saveChanges: false,
-              scheduleMetadataEnrichment: true
-            ).keywordTrack
-          } else {
-            track = try Self.persistRankingPage(
-              page,
-              request: item.0,
-              appStoreID: appStoreID,
-              observedAt: observedAt,
-              appCatalogService: appCatalogService,
-              in: modelContext
+    do {
+      for request in reservation.requests {
+        try Task.checkCancellation()
+        try await rankingRefreshScheduler.markAttemptStarted(
+          request,
+          in: reservation,
+          attemptedAt: now()
+        )
+        do {
+          let page = try await Self.withRankingSearchTimeout {
+            try await provider.search(
+              keyword: request.term,
+              storefrontCode: request.storefront,
+              platform: request.platform,
+              limit: resultLimit
             )
           }
-          let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
-          outcomes.append(
-            OpenASOMCPKeywordRefreshOutcome(
-              track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
-              error: nil
-            ))
-        } else if let error = item.2,
-          let track = try Self.fetchTrackedKeyword(
-            identityKey: item.0.identityKey, in: modelContext)
-        {
-          track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
-          let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
-          outcomes.append(
-            OpenASOMCPKeywordRefreshOutcome(
-              track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
-              error: OpenASOMCPErrorDTO(error)
-            ))
+          fetched.append((request, page, nil))
+        } catch is CancellationError {
+          throw CancellationError()
+        } catch {
+          try Task.checkCancellation()
+          fetched.append((request, nil, OpenASOError.map(error)))
         }
       }
-      let failures = outcomes.filter { $0.error != nil }.count
-      return OpenASOMCPKeywordRefreshResult(
-        summary: OpenASOMCPMutationSummary(
-          inserted: 0,
-          updated: 0,
-          skipped: max(0, requestBatch.totalCount - requestBatch.requests.count),
-          refreshed: outcomes.count - failures,
-          failed: failures
-        ),
-        outcomes: outcomes
-      )
+      try Task.checkCancellation()
+
+      let fetchedResults = fetched
+      let result = try await backgroundModelStore.write { modelContext in
+        var outcomes: [OpenASOMCPKeywordRefreshOutcome] = []
+        for item in fetchedResults {
+          if let page = item.1 {
+            let observedAt = now()
+            let track: TrackedAppKeyword
+            if let rankingRefreshCoordinator {
+              let pageResult = RankingRefreshPageResult(
+                request: item.0,
+                page: page,
+                searchedAt: observedAt,
+                observedHour: nil,
+                submissionCount: 0,
+                winningCount: 0,
+                confidence: nil
+              )
+              track = try rankingRefreshCoordinator.persistRankingPage(
+                pageResult,
+                in: modelContext,
+                rebuildDerivedStats: true,
+                saveChanges: false,
+                scheduleMetadataEnrichment: true
+              ).keywordTrack
+            } else {
+              track = try Self.persistRankingPage(
+                page,
+                request: item.0,
+                appStoreID: appStoreID,
+                observedAt: observedAt,
+                appCatalogService: appCatalogService,
+                in: modelContext
+              )
+            }
+            let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
+            outcomes.append(
+              OpenASOMCPKeywordRefreshOutcome(
+                track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+                error: nil
+              ))
+          } else if let error = item.2,
+            let track = try Self.fetchTrackedKeyword(
+              identityKey: item.0.identityKey, in: modelContext)
+          {
+            track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
+            let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
+            outcomes.append(
+              OpenASOMCPKeywordRefreshOutcome(
+                track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+                error: OpenASOMCPErrorDTO(error)
+              ))
+          }
+        }
+        let failures = outcomes.filter { $0.error != nil }.count
+        return OpenASOMCPKeywordRefreshResult(
+          summary: OpenASOMCPMutationSummary(
+            inserted: 0,
+            updated: 0,
+            skipped: max(0, candidateBatch.totalCount - reservation.requests.count),
+            refreshed: outcomes.count - failures,
+            failed: failures
+          ),
+          outcomes: outcomes,
+          notes: Self.keywordRankingRefreshNotes(
+            requestedLimit: requestedLimit,
+            appliedLimit: trackLimit
+          )
+        )
+      }
+      await rankingRefreshScheduler.release(reservation)
+      return result
+    } catch {
+      await rankingRefreshScheduler.release(reservation)
+      throw error
     }
   }
 
@@ -2199,6 +2514,26 @@ final class OpenASOMCPService: Sendable {
     return rankingProvider
   }
 
+  private static func keywordRankingRefreshNotes(
+    requestedLimit: Int?,
+    appliedLimit: Int
+  ) -> [String] {
+    var notes = [
+      "Candidates with neither a successful nor scheduled refresh are selected first, then by least-recent activity using the later of each track's latest successful and scheduled refresh times, with stable identity-key ties.",
+      "Attempt rotation and in-flight reservations are kept in memory across MCP connections until OpenASO relaunches; lastRefreshAt remains the time of the latest successful refresh.",
+    ]
+    if let requestedLimit, requestedLimit != appliedLimit {
+      notes.append(
+        "The requested track limit of \(requestedLimit) was clamped to \(appliedLimit); the supported range is 1...\(ResponseLimits.maximumKeywordRefreshTrackLimit)."
+      )
+    } else if requestedLimit == nil {
+      notes.append("Applied the default track limit of \(appliedLimit).")
+    } else {
+      notes.append("Applied the requested track limit of \(appliedLimit).")
+    }
+    return notes
+  }
+
   static func withRankingSearchTimeout<T: Sendable>(
     operation: @escaping @Sendable () async throws -> T
   ) async throws -> T {
@@ -2209,7 +2544,7 @@ final class OpenASOMCPService: Sendable {
       group.addTask {
         try await Task.sleep(nanoseconds: ResponseLimits.rankingSearchTimeoutNanoseconds)
         throw OpenASOError.providerUnavailable(
-          "Ranking search timed out after 5 seconds. Reduce the keyword/storefront batch size and retry."
+          "Ranking search timed out after \(ResponseLimits.rankingSearchTimeoutSeconds) seconds. Reduce the keyword/storefront batch size and retry."
         )
       }
 
