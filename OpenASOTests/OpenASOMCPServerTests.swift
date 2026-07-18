@@ -35,6 +35,11 @@ struct OpenASOMCPServerTests {
         #expect(tools.map(\.name).contains("list_competitors"))
         #expect(tools.map(\.name).contains("score_keywords"))
         #expect(tools.map(\.name).contains("get_localization_research_context"))
+        let rankingRefreshTool = try #require(tools.first { $0.name == "refresh_keyword_rankings" })
+        let rankingRefreshDescription = try #require(rankingRefreshTool.description)
+        #expect(rankingRefreshDescription.contains("defaults to 20"))
+        #expect(rankingRefreshDescription.contains("1...25"))
+        #expect(rankingRefreshDescription.contains("resets when OpenASO relaunches"))
 
         let toolResult = try await client.callTool(
             name: "list_apps",

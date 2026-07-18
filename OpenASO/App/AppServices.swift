@@ -111,6 +111,7 @@ final class AppServices {
         )
         let keywordInsightsService = KeywordInsightsService()
         let rankingProvider = ITunesSearchFallbackProvider(httpClient: httpClient)
+        let mcpRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler()
         let refreshProgressStore = AppRefreshProgressStore()
         let storefrontCatalog = StorefrontCatalog()
         let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?
@@ -275,6 +276,7 @@ final class AppServices {
                 screenshotDownloadService: screenshotDownloadService,
                 rankingProvider: rankingProvider,
                 rankingRefreshCoordinator: refreshCoordinator,
+                rankingRefreshScheduler: mcpRankingRefreshScheduler,
                 reviewService: appStorefrontReviewService,
                 keywordMetricsService: keywordMetricsService,
                 popularityContextAppStoreIDProvider: {
