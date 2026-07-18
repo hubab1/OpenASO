@@ -4,29 +4,31 @@ import SwiftUI
 
 @main
 struct OpenASOApp: App {
-    @State private var services: AppServices
     @State private var updaterController = SparkleUpdaterController()
     @State private var launchAlert: AppLaunchAlertContext?
 
-    private let modelContainer: ModelContainer
+    private let startupState: OpenASOStartupState
 
     init() {
         if Self.shouldRunMCPStdio {
             Self.runMCPStdioAndExit()
         }
 
-        let modelContainer = Self.makeModelContainer()
-        let services = AppServices.appLaunch(modelContainer: modelContainer)
-        self.modelContainer = modelContainer
-        _services = State(initialValue: services)
+        startupState = Self.makeStartupState()
         _launchAlert = State(initialValue: nil)
     }
 
-    private static func makeModelContainer() -> ModelContainer {
+    private static func makeStartupState() -> OpenASOStartupState {
         do {
-            return try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: false)
+            let modelContainer = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: false)
+            let services = AppServices.appLaunch(modelContainer: modelContainer)
+            return .ready(modelContainer: modelContainer, services: services)
+        } catch let error as PersistentStoreError {
+            return .storeUnavailable(error)
         } catch {
-            fatalError("Failed to create model container: \(error.localizedDescription)")
+            return .storeUnavailable(.unexpected(
+                diagnosticDescription: String(reflecting: error)
+            ))
         }
     }
 
@@ -43,7 +45,9 @@ struct OpenASOApp: App {
                 )
                 exitCode = 0
             } catch {
-                FileHandle.standardError.write(Data("OpenASO MCP server failed: \(error)\n".utf8))
+                let description = (error as? PersistentStoreError)?.diagnosticReport
+                    ?? String(reflecting: error)
+                FileHandle.standardError.write(Data("OpenASO MCP server failed: \(description)\n".utf8))
                 exitCode = 1
             }
             Foundation.exit(exitCode)
@@ -54,28 +58,40 @@ struct OpenASOApp: App {
 
     var body: some Scene {
         WindowGroup("OpenASO") {
-            RootView()
-                .environment(services)
-                .frame(minWidth: 1000, minHeight: 760)
-                .task {
-                    services.analyticsService.capture(.appLaunched())
-                    await services.prepareBackgroundModelStore()
-                    launchAlert = await Self.seedStorefrontCatalogIfNeeded(using: services)
-                }
-                .alert(item: $launchAlert) { alert in
-                    Alert(
-                        title: Text(alert.title),
-                        message: Text(alert.message),
-                        dismissButton: .default(Text("OK"))
-                    )
-                }
+            switch startupState {
+            case .ready(let modelContainer, let services):
+                RootView()
+                    .environment(services)
+                    .modelContainer(modelContainer)
+                    .frame(minWidth: 1000, minHeight: 760)
+                    .task {
+                        services.analyticsService.capture(.appLaunched())
+                        await services.prepareBackgroundModelStore()
+                        launchAlert = await Self.seedStorefrontCatalogIfNeeded(using: services)
+                    }
+                    .alert(item: $launchAlert) { alert in
+                        Alert(
+                            title: Text(alert.title),
+                            message: Text(alert.message),
+                            dismissButton: .default(Text("OK"))
+                        )
+                    }
+            case .storeUnavailable(let error):
+                PersistentStoreRecoveryView(error: error)
+                    .frame(minWidth: 680, minHeight: 480)
+            }
         }
-        .modelContainer(modelContainer)
 
         Settings {
-            SettingsView()
-                .environment(services)
-                .modelContainer(modelContainer)
+            switch startupState {
+            case .ready(let modelContainer, let services):
+                SettingsView()
+                    .environment(services)
+                    .modelContainer(modelContainer)
+            case .storeUnavailable(let error):
+                PersistentStoreRecoveryView(error: error)
+                    .frame(minWidth: 680, minHeight: 480)
+            }
         }
 
         .commands {
@@ -101,6 +117,11 @@ struct OpenASOApp: App {
             )
         }
     }
+}
+
+private enum OpenASOStartupState {
+    case ready(modelContainer: ModelContainer, services: AppServices)
+    case storeUnavailable(PersistentStoreError)
 }
 
 private struct AppLaunchAlertContext: Identifiable {
