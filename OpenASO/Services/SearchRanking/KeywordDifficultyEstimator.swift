@@ -70,6 +70,8 @@ struct KeywordDifficultyUnavailable: Equatable, Sendable {
 struct KeywordDifficultyResultEvidence: Equatable, Sendable {
     let position: Int
     let appStoreID: Int64
+    let title: String
+    let subtitle: String?
     let ratingCount: Int?
     let ratingAuthorityScore: Int?
     let titleTokenCoveragePercentage: Int?
@@ -182,6 +184,8 @@ enum KeywordDifficultyEstimator {
     private static func normalizedTopResults(
         _ results: [KeywordDifficultyRankedResult]
     ) -> [KeywordDifficultyRankedResult] {
+        // Provider positions are not a unique key. Keep different apps that share
+        // a position ordered by app ID, then deduplicate only repeated app IDs.
         let sortedResults = results
             .filter { (1...maximumResultCount).contains($0.position) }
             .sorted {
@@ -256,6 +260,8 @@ enum KeywordDifficultyEstimator {
             return KeywordDifficultyResultEvidence(
                 position: result.position,
                 appStoreID: result.appStoreID,
+                title: result.title,
+                subtitle: result.subtitle,
                 ratingCount: validRatingCount,
                 ratingAuthorityScore: validRatingCount.map(ratingAuthorityScore),
                 titleTokenCoveragePercentage: keywordTokens.isEmpty ? nil : boundedScore(titleCoverage * 100),

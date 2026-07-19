@@ -345,6 +345,75 @@ struct KeywordDifficultyEstimatorTests {
     }
 
     @Test
+    func differentAppsSharingProviderPositionsRemainOrderedByPositionThenAppID() throws {
+        let results = [
+            makeResult(
+                position: 2,
+                appStoreID: 40,
+                title: "Position Two App Forty",
+                subtitle: nil,
+                ratingCount: 0
+            ),
+            makeResult(
+                position: 1,
+                appStoreID: 20,
+                title: "Position One App Twenty",
+                subtitle: "Twenty subtitle",
+                ratingCount: 0
+            ),
+            makeResult(
+                position: 3,
+                appStoreID: 50,
+                title: "Position Three App Fifty",
+                subtitle: nil,
+                ratingCount: 0
+            ),
+            makeResult(
+                position: 1,
+                appStoreID: 10,
+                title: "Position One App Ten",
+                subtitle: "Ten subtitle",
+                ratingCount: 0
+            ),
+            makeResult(
+                position: 2,
+                appStoreID: 30,
+                title: "Position Two App Thirty",
+                subtitle: "Thirty subtitle",
+                ratingCount: 0
+            )
+        ]
+
+        let forward = KeywordDifficultyEstimator.estimate(
+            keyword: "focus timer",
+            rankedResults: results
+        )
+        let reversed = KeywordDifficultyEstimator.estimate(
+            keyword: "focus timer",
+            rankedResults: Array(results.reversed())
+        )
+        let estimate = try requireEstimate(forward)
+
+        #expect(forward == reversed)
+        #expect(estimate.evidence.resultEvidence.map(\.position) == [1, 1, 2, 2, 3])
+        #expect(estimate.evidence.resultEvidence.map(\.appStoreID) == [10, 20, 30, 40, 50])
+        #expect(estimate.evidence.resultEvidence.map(\.title) == [
+            "Position One App Ten",
+            "Position One App Twenty",
+            "Position Two App Thirty",
+            "Position Two App Forty",
+            "Position Three App Fifty"
+        ])
+        #expect(estimate.evidence.resultEvidence.map(\.subtitle) == [
+            "Ten subtitle",
+            "Twenty subtitle",
+            "Thirty subtitle",
+            nil,
+            nil
+        ])
+    }
+
+    @Test
     func duplicateConflictPrefersValidRatingEvidenceDeterministically() throws {
         let duplicates = [
             makeResult(
@@ -357,9 +426,16 @@ struct KeywordDifficultyEstimatorTests {
             makeResult(
                 position: 1,
                 appStoreID: 1,
-                title: "Z Valid Result",
-                subtitle: "Different subtitle",
+                title: "  Z Valid Result ™  ",
+                subtitle: " Different—subtitle ",
                 ratingCount: 99_999
+            ),
+            makeResult(
+                position: 2,
+                appStoreID: 1,
+                title: "Later Duplicate Rank",
+                subtitle: "Must not be selected",
+                ratingCount: 999_999
             ),
             makeResult(position: 2, appStoreID: 2, ratingCount: 0),
             makeResult(position: 3, appStoreID: 3, ratingCount: 0)
@@ -377,6 +453,10 @@ struct KeywordDifficultyEstimatorTests {
         #expect(forward == reversed)
         let estimate = try requireEstimate(forward)
         #expect(estimate.evidence.ratedResultCount == 3)
+        #expect(estimate.evidence.resultEvidence.map(\.appStoreID) == [1, 2, 3])
+        #expect(estimate.evidence.resultEvidence.first?.position == 1)
+        #expect(estimate.evidence.resultEvidence.first?.title == "  Z Valid Result ™  ")
+        #expect(estimate.evidence.resultEvidence.first?.subtitle == " Different—subtitle ")
         #expect(estimate.evidence.resultEvidence.first?.ratingCount == 99_999)
     }
 
