@@ -217,6 +217,27 @@ final class KeywordResearchProjectsModel {
         mutationState = .idle
     }
 
+    /// Reconciles a snapshot returned by a project-scoped mutation, such as
+    /// adding or removing a keyword. A late detail result cannot replace a
+    /// newer revision or a same-ID project incarnation loaded by this model.
+    @discardableResult
+    func recordAuthoritativeProject(
+        _ project: KeywordResearchProjectSnapshot
+    ) -> Bool {
+        if let existing = projects.first(where: { $0.id == project.id }) {
+            guard existing.generation == project.generation,
+                  existing.updatedAt <= project.updatedAt
+            else { return false }
+        }
+
+        invalidatePendingLoad(
+            markReloadRequired: activeLoadGeneration != nil || !hasLoadedInitialPage
+        )
+        projects = Self.upserting(project, in: projects)
+        loadState = .loaded
+        return true
+    }
+
     func cancelLoading() {
         guard activeLoadGeneration != nil else { return }
         invalidatePendingLoad(markReloadRequired: true)
