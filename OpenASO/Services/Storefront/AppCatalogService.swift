@@ -108,6 +108,9 @@ final class AppCatalogService: Sendable {
     func upsertStoreApp(
         from item: SearchRankingItem,
         storefrontCode: String? = nil,
+        rankingSource: RankingSource,
+        fetchedAt: Date,
+        requestedPlatform: AppPlatform,
         in modelContext: ModelContext
     ) throws -> StoreApp {
         var cache = try makeSearchRankingPageCache(
@@ -118,6 +121,9 @@ final class AppCatalogService: Sendable {
         return try upsertStoreApp(
             from: item,
             storefrontCode: storefrontCode,
+            rankingSource: rankingSource,
+            fetchedAt: fetchedAt,
+            requestedPlatform: requestedPlatform,
             in: modelContext,
             cache: &cache
         )
@@ -147,14 +153,20 @@ final class AppCatalogService: Sendable {
     func upsertStoreApp(
         from item: SearchRankingItem,
         storefrontCode: String? = nil,
+        rankingSource: RankingSource,
+        fetchedAt: Date,
+        requestedPlatform: AppPlatform,
         in modelContext: ModelContext,
         cache: inout SearchRankingPageCache
     ) throws -> StoreApp {
         let normalizedStorefront = normalizedStorefrontCode(storefrontCode)
+        let metadataSource = metadataSource(for: rankingSource)
         let storeApp: StoreApp
+        let isExisting: Bool
         if let existing = try cache.storeAppsByID[item.appStoreID] ?? fetchStoreApp(appStoreID: item.appStoreID, in: modelContext) {
             storeApp = existing
             cache.storeAppsByID[item.appStoreID] = existing
+            isExisting = true
         } else {
             storeApp = StoreApp(
                 appStoreID: item.appStoreID,
@@ -165,39 +177,48 @@ final class AppCatalogService: Sendable {
                 iconURLString: item.iconURLString,
                 defaultStorefront: normalizedStorefront,
                 supportedLanguageCodes: normalizedLanguageCodes(item.supportedLanguageCodes),
-                supportedLanguageCodesSource: .iTunesSearch,
-                supportedLanguageCodesFetchedAt: .now,
+                supportedLanguageCodesSource: metadataSource,
+                supportedLanguageCodesFetchedAt: item.supportedLanguageCodes.isEmpty ? nil : fetchedAt,
                 releaseDate: item.releaseDate,
                 currentVersionReleaseDate: item.currentVersionReleaseDate,
                 version: item.version,
                 primaryGenreID: item.primaryGenreID,
                 primaryGenreName: item.primaryGenreName,
-                defaultPlatform: item.platform
+                defaultPlatform: requestedPlatform,
+                lastMetadataRefreshAt: fetchedAt
             )
             modelContext.insert(storeApp)
             cache.storeAppsByID[item.appStoreID] = storeApp
+            isExisting = false
         }
 
-        update(
-            storeApp,
-            storefront: normalizedStorefront,
-            bundleID: item.bundleID,
-            name: item.name,
-            subtitle: item.subtitle,
-            sellerName: item.sellerName,
-            iconURLString: item.iconURLString,
-            supportedLanguageCodes: item.supportedLanguageCodes,
-            supportedLanguageCodesSource: .iTunesSearch,
-            releaseDate: item.releaseDate,
-            currentVersionReleaseDate: item.currentVersionReleaseDate,
-            version: item.version,
-            primaryGenreID: item.primaryGenreID,
-            primaryGenreName: item.primaryGenreName,
-            defaultPlatform: item.platform
-        )
+        if !isExisting || fetchedAt >= storeApp.lastMetadataRefreshAt {
+            update(
+                storeApp,
+                storefront: normalizedStorefront,
+                bundleID: item.bundleID,
+                name: item.name,
+                subtitle: item.subtitle,
+                sellerName: item.sellerName,
+                iconURLString: item.iconURLString,
+                supportedLanguageCodes: item.supportedLanguageCodes,
+                supportedLanguageCodesSource: metadataSource,
+                supportedLanguageCodesFetchedAt: fetchedAt,
+                releaseDate: item.releaseDate,
+                currentVersionReleaseDate: item.currentVersionReleaseDate,
+                version: item.version,
+                primaryGenreID: item.primaryGenreID,
+                primaryGenreName: item.primaryGenreName,
+                defaultPlatform: isExisting ? nil : requestedPlatform,
+                fetchedAt: fetchedAt
+            )
+        }
         try upsertStorefrontMetadata(
             from: item,
             storefront: normalizedStorefront,
+            source: metadataSource,
+            fetchedAt: fetchedAt,
+            requestedPlatform: requestedPlatform,
             storeApp: storeApp,
             in: modelContext,
             cache: &cache
@@ -212,9 +233,21 @@ final class AppCatalogService: Sendable {
         }
     }
 
-    func upsertStoreApps(from items: [SearchRankingItem], in modelContext: ModelContext) throws {
+    func upsertStoreApps(
+        from items: [SearchRankingItem],
+        rankingSource: RankingSource,
+        fetchedAt: Date,
+        requestedPlatform: AppPlatform,
+        in modelContext: ModelContext
+    ) throws {
         for item in items {
-            _ = try upsertStoreApp(from: item, in: modelContext)
+            _ = try upsertStoreApp(
+                from: item,
+                rankingSource: rankingSource,
+                fetchedAt: fetchedAt,
+                requestedPlatform: requestedPlatform,
+                in: modelContext
+            )
         }
     }
 
@@ -358,7 +391,14 @@ final class AppCatalogService: Sendable {
         }
 
         let metadataIsStale = metadata.lastFetchedAt < freshnessCutoff
-        let hasFreshWebEnrichment = metadata.source == .appStoreWeb && metadata.lastFetchedAt >= freshnessCutoff
+        let isSearchOnlyMetadata = metadata.source == .appStoreWebSearch
+        let hasFreshWebEnrichment = metadata.source == .appStoreWeb
+            && metadata.lastFetchedAt >= freshnessCutoff
+        // A successful App Store page fetch is also the bounded attempt marker
+        // for fields that the page does not expose, such as language codes. Keep
+        // those fields visibly absent, but do not refetch both providers on every
+        // ranking refresh until the detail-page freshness window expires.
+        let languageDataNeedsEnrichment = languageDataIsStale && !hasFreshWebEnrichment
         let desiredPlatform = platform.rawValue
         let hasDesiredPlatformScreenshots = metadata.screenshots.contains {
             $0.platformRaw == desiredPlatform
@@ -367,7 +407,10 @@ final class AppCatalogService: Sendable {
         let isMissingMetadata = nonEmpty(metadata.name) == nil || nonEmpty(metadata.subtitle) == nil
 
         let metadataHasGaps = isMissingMetadata || !hasAnyScreenshots || !hasDesiredPlatformScreenshots
-        return languageDataIsStale || metadataIsStale || (metadataHasGaps && !hasFreshWebEnrichment)
+        return languageDataNeedsEnrichment
+            || metadataIsStale
+            || isSearchOnlyMetadata
+            || (metadataHasGaps && !hasFreshWebEnrichment)
     }
 
     private func fetchStoreApp(appStoreID: Int64, in modelContext: ModelContext) throws -> StoreApp? {
@@ -413,13 +456,15 @@ final class AppCatalogService: Sendable {
         iconURLString: String?,
         supportedLanguageCodes: [String] = [],
         supportedLanguageCodesSource: AppStorefrontMetadataSource? = nil,
+        supportedLanguageCodesFetchedAt: Date? = nil,
         releaseDate: Date?,
         currentVersionReleaseDate: Date?,
         version: String?,
         primaryGenreID: Int?,
         primaryGenreName: String?,
-        defaultPlatform: AppPlatform,
-        allowsNoncanonicalFallback: Bool = true
+        defaultPlatform: AppPlatform?,
+        allowsNoncanonicalFallback: Bool = true,
+        fetchedAt: Date = .now
     ) {
         var changed = false
         let isCanonicalStorefront = isCanonicalStorefront(
@@ -463,12 +508,14 @@ final class AppCatalogService: Sendable {
                 \.supportedLanguageCodesSourceRaw,
                 supportedLanguageCodesSource?.rawValue
             )
-            let fetchedAtChanged = assignIfChanged(
-                storeApp,
-                \.supportedLanguageCodesFetchedAt,
-                Date.now
-            )
-            changed = codesChanged || sourceChanged || fetchedAtChanged || changed
+            let languageEvidenceDate = supportedLanguageCodesFetchedAt ?? fetchedAt
+            if codesChanged
+                || sourceChanged
+                || storeApp.supportedLanguageCodesFetchedAt != languageEvidenceDate
+            {
+                storeApp.supportedLanguageCodesFetchedAt = languageEvidenceDate
+                changed = true
+            }
         }
 
         if isCanonicalStorefront, let releaseDate {
@@ -491,41 +538,20 @@ final class AppCatalogService: Sendable {
             changed = assignIfChanged(storeApp, \.primaryGenreName, primaryGenreName) || changed
         }
 
-        if isCanonicalStorefront {
+        if isCanonicalStorefront, let defaultPlatform {
             changed = assignIfChanged(storeApp, \.defaultPlatformRaw, defaultPlatform.rawValue) || changed
         }
-        if changed {
-            storeApp.lastMetadataRefreshAt = .now
+        if isCanonicalStorefront && (changed || storeApp.lastMetadataRefreshAt != fetchedAt) {
+            storeApp.lastMetadataRefreshAt = fetchedAt
         }
     }
 
     private func upsertStorefrontMetadata(
         from item: SearchRankingItem,
         storefront: String,
-        storeApp: StoreApp,
-        in modelContext: ModelContext
-    ) throws {
-        let identityKey = AppStorefrontMetadata.makeIdentityKey(
-            appStoreID: item.appStoreID,
-            storefront: storefront
-        )
-        var cache = SearchRankingPageCache(
-            storeAppsByID: [storeApp.appStoreID: storeApp],
-            storefrontMetadataByIdentityKey: try fetchStorefrontMetadata(identityKey: identityKey, in: modelContext)
-                .map { [identityKey: $0] } ?? [:]
-        )
-        try upsertStorefrontMetadata(
-            from: item,
-            storefront: storefront,
-            storeApp: storeApp,
-            in: modelContext,
-            cache: &cache
-        )
-    }
-
-    private func upsertStorefrontMetadata(
-        from item: SearchRankingItem,
-        storefront: String,
+        source: AppStorefrontMetadataSource,
+        fetchedAt: Date,
+        requestedPlatform: AppPlatform,
         storeApp: StoreApp,
         in modelContext: ModelContext,
         cache: inout SearchRankingPageCache
@@ -535,15 +561,17 @@ final class AppCatalogService: Sendable {
             storefront: storefront
         )
         let metadata: AppStorefrontMetadata
+        let isNewMetadata: Bool
         if let existing = try cache.storefrontMetadataByIdentityKey[identityKey]
             ?? fetchStorefrontMetadata(identityKey: identityKey, in: modelContext) {
             metadata = existing
             cache.storefrontMetadataByIdentityKey[identityKey] = existing
+            isNewMetadata = false
         } else {
             metadata = AppStorefrontMetadata(
                 appStoreID: item.appStoreID,
                 storefront: storefront,
-                defaultPlatform: item.platform,
+                defaultPlatform: requestedPlatform,
                 name: item.name,
                 subtitle: item.subtitle,
                 sellerName: item.sellerName,
@@ -556,51 +584,66 @@ final class AppCatalogService: Sendable {
                 primaryGenreID: item.primaryGenreID,
                 primaryGenreName: item.primaryGenreName,
                 isAvailable: true,
-                source: .iTunesSearch,
+                source: source,
+                lastFetchedAt: fetchedAt,
                 storeApp: storeApp
             )
             modelContext.insert(metadata)
             storeApp.storefrontMetadata.append(metadata)
             cache.storefrontMetadataByIdentityKey[identityKey] = metadata
+            isNewMetadata = true
         }
 
+        guard fetchedAt >= metadata.lastFetchedAt else { return }
+
+        // App Store Web search rows are intentionally sparse. Once a detail
+        // record exists, keep its aggregate fields and freshness independent of
+        // ranking evidence. Search-only records can still evolve normally.
+        let preservesExistingDetailMetadata = !isNewMetadata
+            && source == .appStoreWebSearch
+            && metadata.source != .appStoreWebSearch
+
         var changed = false
-        changed = assignIfChanged(metadata, \.appStoreID, item.appStoreID) || changed
-        changed = assignIfChanged(metadata, \.storefront, storefront) || changed
-        changed = assignIfChanged(metadata, \.defaultPlatformRaw, item.platform.rawValue) || changed
-        changed = assignIfChanged(metadata, \.name, item.name) || changed
-        if let subtitle = nonEmpty(item.subtitle) {
-            changed = assignIfChanged(metadata, \.subtitle, subtitle) || changed
+        if !preservesExistingDetailMetadata {
+            changed = assignIfChanged(metadata, \.appStoreID, item.appStoreID) || changed
+            changed = assignIfChanged(metadata, \.storefront, storefront) || changed
+            changed = assignIfChanged(metadata, \.name, item.name) || changed
+            if let subtitle = nonEmpty(item.subtitle) {
+                changed = assignIfChanged(metadata, \.subtitle, subtitle) || changed
+            }
+            if let sellerName = nonEmpty(item.sellerName) {
+                changed = assignIfChanged(metadata, \.sellerName, sellerName) || changed
+            }
+            if let descriptionText = nonEmpty(item.descriptionText) {
+                changed = assignIfChanged(metadata, \.descriptionText, descriptionText) || changed
+            }
+            if let releaseNotes = nonEmpty(item.releaseNotes) {
+                changed = assignIfChanged(metadata, \.releaseNotes, releaseNotes) || changed
+            }
+            if let iconURLString = nonEmpty(item.iconURLString) {
+                changed = assignIfChanged(metadata, \.iconURLString, iconURLString) || changed
+            }
+            if let version = nonEmpty(item.version) {
+                changed = assignIfChanged(metadata, \.version, version) || changed
+            }
+            if let releaseDate = item.releaseDate {
+                changed = assignIfChanged(metadata, \.releaseDate, releaseDate) || changed
+            }
+            if let currentVersionReleaseDate = item.currentVersionReleaseDate {
+                changed = assignIfChanged(metadata, \.currentVersionReleaseDate, currentVersionReleaseDate) || changed
+            }
+            if let primaryGenreID = item.primaryGenreID {
+                changed = assignIfChanged(metadata, \.primaryGenreID, primaryGenreID) || changed
+            }
+            if let primaryGenreName = nonEmpty(item.primaryGenreName) {
+                changed = assignIfChanged(metadata, \.primaryGenreName, primaryGenreName) || changed
+            }
+            changed = assignIfChanged(metadata, \.isAvailable, true) || changed
         }
-        if let sellerName = nonEmpty(item.sellerName) {
-            changed = assignIfChanged(metadata, \.sellerName, sellerName) || changed
+        let updatesAggregateFreshness = !preservesExistingDetailMetadata
+        if updatesAggregateFreshness {
+            changed = assignIfChanged(metadata, \.sourceRaw, source.rawValue) || changed
         }
-        if let descriptionText = nonEmpty(item.descriptionText) {
-            changed = assignIfChanged(metadata, \.descriptionText, descriptionText) || changed
-        }
-        if let releaseNotes = nonEmpty(item.releaseNotes) {
-            changed = assignIfChanged(metadata, \.releaseNotes, releaseNotes) || changed
-        }
-        if let iconURLString = nonEmpty(item.iconURLString) {
-            changed = assignIfChanged(metadata, \.iconURLString, iconURLString) || changed
-        }
-        if let version = nonEmpty(item.version) {
-            changed = assignIfChanged(metadata, \.version, version) || changed
-        }
-        if let releaseDate = item.releaseDate {
-            changed = assignIfChanged(metadata, \.releaseDate, releaseDate) || changed
-        }
-        if let currentVersionReleaseDate = item.currentVersionReleaseDate {
-            changed = assignIfChanged(metadata, \.currentVersionReleaseDate, currentVersionReleaseDate) || changed
-        }
-        if let primaryGenreID = item.primaryGenreID {
-            changed = assignIfChanged(metadata, \.primaryGenreID, primaryGenreID) || changed
-        }
-        if let primaryGenreName = nonEmpty(item.primaryGenreName) {
-            changed = assignIfChanged(metadata, \.primaryGenreName, primaryGenreName) || changed
-        }
-        changed = assignIfChanged(metadata, \.isAvailable, true) || changed
-        changed = assignIfChanged(metadata, \.sourceRaw, AppStorefrontMetadataSource.iTunesSearch.rawValue) || changed
         if metadata.storeApp !== storeApp {
             metadata.storeApp = storeApp
             changed = true
@@ -610,10 +653,14 @@ final class AppCatalogService: Sendable {
             for: metadata,
             item: item,
             storefront: storefront,
+            source: source,
+            fetchedAt: fetchedAt,
             in: modelContext
         )
-        if changed || screenshotsChanged {
-            metadata.lastFetchedAt = .now
+        if updatesAggregateFreshness
+            && (changed || screenshotsChanged || metadata.lastFetchedAt != fetchedAt)
+        {
+            metadata.lastFetchedAt = fetchedAt
         }
     }
 
@@ -730,6 +777,8 @@ final class AppCatalogService: Sendable {
         for metadata: AppStorefrontMetadata,
         item: SearchRankingItem,
         storefront: String,
+        source: AppStorefrontMetadataSource,
+        fetchedAt: Date,
         in modelContext: ModelContext
     ) -> Bool {
         replaceScreenshots(
@@ -741,6 +790,9 @@ final class AppCatalogService: Sendable {
                 ("ipad", item.ipadScreenshotURLs),
                 ("tv", item.appletvScreenshotURLs)
             ],
+            source: source,
+            fetchedAt: fetchedAt,
+            preservesUnspecifiedPlatforms: true,
             in: modelContext
         )
     }
@@ -800,6 +852,9 @@ final class AppCatalogService: Sendable {
         appStoreID: Int64,
         storefront: String,
         groups: [(platform: String, urls: [String])],
+        source: AppStorefrontMetadataSource? = nil,
+        fetchedAt: Date = .now,
+        preservesUnspecifiedPlatforms: Bool = false,
         in modelContext: ModelContext
     ) -> Bool {
         let replacements = groups.flatMap { group in
@@ -820,6 +875,9 @@ final class AppCatalogService: Sendable {
             appStoreID: appStoreID,
             storefront: storefront,
             replacements: replacements,
+            source: source,
+            fetchedAt: fetchedAt,
+            preservesUnspecifiedPlatforms: preservesUnspecifiedPlatforms,
             in: modelContext
         )
     }
@@ -830,20 +888,65 @@ final class AppCatalogService: Sendable {
         appStoreID: Int64,
         storefront: String,
         replacements: [ScreenshotReplacementItem],
+        source: AppStorefrontMetadataSource? = nil,
+        fetchedAt: Date = .now,
+        preservesUnspecifiedPlatforms: Bool = false,
         in modelContext: ModelContext
     ) -> Bool {
-        let replacements = replacements.sortedForComparison
+        var replacements = replacements.sortedForComparison
         guard !replacements.isEmpty else { return false }
 
+        let screenshotSource = source ?? metadata.source
         let existing = metadata.screenshots
-        if existing.screenshotReplacementItems == replacements {
-            return false
+        if preservesUnspecifiedPlatforms {
+            let incomingByPlatform = Dictionary(grouping: replacements, by: \.platformRaw)
+            let acceptedPlatforms = Set(incomingByPlatform.compactMap { platform, incoming -> String? in
+                let existingForPlatform = existing.filter { $0.platformRaw == platform }
+                if let newestExistingDate = existingForPlatform.map(\.lastFetchedAt).max(),
+                   fetchedAt < newestExistingDate {
+                    return nil
+                }
+
+                let incomingIsSparse = incoming.allSatisfy {
+                    $0.displayTypeRaw == "default" && $0.width == nil && $0.height == nil
+                }
+                let existingIsRicher = existingForPlatform.contains {
+                    $0.displayTypeRaw != "default" || $0.width != nil || $0.height != nil
+                }
+                if screenshotSource == .appStoreWebSearch && incomingIsSparse && existingIsRicher {
+                    return nil
+                }
+                return platform
+            })
+            replacements.removeAll { !acceptedPlatforms.contains($0.platformRaw) }
+            guard !replacements.isEmpty else { return false }
         }
 
-        for screenshot in existing {
+        let replacementPlatforms = Set(replacements.map(\.platformRaw))
+        let existingToReplace = preservesUnspecifiedPlatforms
+            ? existing.filter { replacementPlatforms.contains($0.platformRaw) }
+            : existing
+        if existingToReplace.screenshotReplacementItems == replacements {
+            var changed = false
+            for screenshot in existingToReplace {
+                if screenshot.source != screenshotSource {
+                    screenshot.source = screenshotSource
+                    changed = true
+                }
+                if screenshot.lastFetchedAt != fetchedAt {
+                    screenshot.lastFetchedAt = fetchedAt
+                    changed = true
+                }
+            }
+            return changed
+        }
+
+        for screenshot in existingToReplace {
             modelContext.delete(screenshot)
         }
-        metadata.screenshots.removeAll()
+        metadata.screenshots.removeAll { screenshot in
+            existingToReplace.contains { $0 === screenshot }
+        }
 
         for replacement in replacements {
             let screenshot = AppStoreScreenshot(
@@ -855,7 +958,8 @@ final class AppCatalogService: Sendable {
                 urlString: replacement.urlString,
                 width: replacement.width,
                 height: replacement.height,
-                source: metadata.source,
+                source: screenshotSource,
+                lastFetchedAt: fetchedAt,
                 metadata: metadata
             )
             metadata.screenshots.append(screenshot)
@@ -871,6 +975,15 @@ final class AppCatalogService: Sendable {
     private func normalizedScreenshotDisplayType(_ value: String) -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized.isEmpty ? "default" : normalized
+    }
+
+    private func metadataSource(for rankingSource: RankingSource) -> AppStorefrontMetadataSource {
+        switch rankingSource {
+        case .appStoreWeb:
+            return .appStoreWebSearch
+        case .iTunesFallback:
+            return .iTunesSearch
+        }
     }
 
     private func fetchStorefrontMetadata(identityKey: String, in modelContext: ModelContext) throws -> AppStorefrontMetadata? {

@@ -147,7 +147,7 @@ final class AppServices {
             webSessionStore: appleAdsWebSessionStore
         )
         let keywordInsightsService = KeywordInsightsService()
-        let rankingProvider = ITunesSearchFallbackProvider(httpClient: httpClient)
+        let rankingProvider = SearchRankingProviderFactory.makeProduction(httpClient: httpClient)
         let mcpRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler()
         let refreshProgressStore = AppRefreshProgressStore()
         let storefrontCatalog = StorefrontCatalog()
