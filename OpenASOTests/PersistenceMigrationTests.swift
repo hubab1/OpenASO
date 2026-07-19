@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct PersistenceMigrationTests {
     @Test
-    func migrationPlanAppendsV2AndV3AndKeepsTheReleasedV1SchemaFrozen() throws {
+    func migrationPlanAppendsThroughV4AndKeepsTheReleasedV1SchemaFrozen() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -15,16 +15,19 @@ struct PersistenceMigrationTests {
         #expect(OpenASOSchemaV2.models.count == 18)
         #expect(OpenASOSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
         #expect(OpenASOSchemaV3.models.count == 19)
-        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(3, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 3)
+        #expect(OpenASOSchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
+        #expect(OpenASOSchemaV4.models.count == 21)
+        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(4, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 4)
         #expect(OpenASOMigrationPlan.schemas[0].versionIdentifier == OpenASOSchemaV1.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[1].versionIdentifier == OpenASOSchemaV2.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[2].versionIdentifier == OpenASOSchemaV3.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas[3].versionIdentifier == OpenASOSchemaV4.versionIdentifier)
         #expect(
             OpenASOMigrationPlan.currentSchema.versionIdentifier
                 == OpenASOMigrationPlan.schemas.last?.versionIdentifier
         )
-        #expect(OpenASOMigrationPlan.stages.count == 2)
+        #expect(OpenASOMigrationPlan.stages.count == 3)
         #expect(container.migrationPlan != nil)
     }
 
@@ -45,6 +48,12 @@ struct PersistenceMigrationTests {
             try assertReleasedV1Sentinels(in: modelContext)
             #expect(try modelContext.fetch(
                 FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+            ).isEmpty)
+            #expect(try modelContext.fetch(
+                FetchDescriptor<EstimatedKeywordDifficultyMetric>()
+            ).isEmpty)
+            #expect(try modelContext.fetch(
+                FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
             ).isEmpty)
             let migratedStatus = try #require(modelContext.fetch(
                 FetchDescriptor<TrackedKeywordRefreshStatus>()
@@ -89,13 +98,19 @@ struct PersistenceMigrationTests {
             #expect(migratedStatus.trackIdentityKey == ReleasedV1FixtureSentinel.trackIdentityKey)
             #expect(migratedStatus.domain == .ranking)
             #expect(migratedStatus.message == "released-status-sentinel")
+            #expect(try reopenedContext.fetch(
+                FetchDescriptor<EstimatedKeywordDifficultyMetric>()
+            ).isEmpty)
+            #expect(try reopenedContext.fetch(
+                FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
+            ).isEmpty)
         }
 
         try fixture.verifyBundledArtifacts()
     }
 
     @Test
-    func v2RefreshAttemptStoreMigratesToV3WithoutLosingAttemptState() throws {
+    func v2RefreshAttemptStoreMigratesToV4WithoutLosingAttemptState() throws {
         let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent(
             "OpenASO-V2-to-V3-\(UUID().uuidString)",
             isDirectory: true
@@ -127,6 +142,62 @@ struct PersistenceMigrationTests {
             #expect(attempt.appStoreID == ReleasedV1FixtureSentinel.appStoreID)
             #expect(attempt.lastRankingRefreshAttemptAt == ReleasedV1FixtureSentinel.refreshAttemptDate)
             #expect(try context.fetch(FetchDescriptor<TrackedKeywordRefreshStatus>()).isEmpty)
+            #expect(try context.fetch(FetchDescriptor<EstimatedKeywordDifficultyMetric>()).isEmpty)
+            #expect(try context.fetch(
+                FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
+            ).isEmpty)
+        }
+    }
+
+    @Test
+    func v3StatusStoreMigratesToV4WithoutBackfillingDifficulty() throws {
+        let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OpenASO-V3-to-V4-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let storeURL = rootURL.appendingPathComponent("default.store", isDirectory: false)
+        let createdAt = Date(timeIntervalSinceReferenceDate: 795_100_000)
+        let updatedAt = createdAt.addingTimeInterval(60)
+
+        try autoreleasepool {
+            let schema = Schema(versionedSchema: OpenASOSchemaV3.self)
+            let configuration = ModelConfiguration(schema: schema, url: storeURL)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(TrackedAppKeywordRefreshAttempt(
+                trackIdentityKey: ReleasedV1FixtureSentinel.trackIdentityKey,
+                appStoreID: ReleasedV1FixtureSentinel.appStoreID,
+                lastRankingRefreshAttemptAt: updatedAt
+            ))
+            context.insert(TrackedKeywordRefreshStatus(
+                trackIdentityKey: ReleasedV1FixtureSentinel.trackIdentityKey,
+                trackCreatedAt: createdAt,
+                appStoreID: ReleasedV1FixtureSentinel.appStoreID,
+                domain: .popularity,
+                message: "Popularity unavailable.",
+                updatedAt: updatedAt
+            ))
+            try context.save()
+        }
+
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: storeURL)
+            let context = ModelContext(container)
+            let attempt = try #require(context.fetch(
+                FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+            ).first)
+            let status = try #require(context.fetch(
+                FetchDescriptor<TrackedKeywordRefreshStatus>()
+            ).first)
+            #expect(attempt.lastRankingRefreshAttemptAt == updatedAt)
+            #expect(status.domain == .popularity)
+            #expect(status.message == "Popularity unavailable.")
+            #expect(try context.fetch(FetchDescriptor<EstimatedKeywordDifficultyMetric>()).isEmpty)
+            #expect(try context.fetch(
+                FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
+            ).isEmpty)
         }
     }
 
