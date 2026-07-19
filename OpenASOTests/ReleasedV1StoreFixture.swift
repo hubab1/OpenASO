@@ -60,6 +60,8 @@ enum ExactV4FixtureSentinel {
     )!
     static let unavailableKeyword = "v4 unavailable difficulty"
     static let unavailableQueryKey = "v4 unavailable difficulty::gb::iphone"
+    static let projectID = UUID(uuidString: "77bc4c30-0000-4000-8000-000000000005")!
+    static let membershipID = UUID(uuidString: "77bc4c30-0000-4000-8000-000000000006")!
 }
 
 struct StoredMigrationFixtureDescriptor: Sendable {

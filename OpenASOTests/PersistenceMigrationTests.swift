@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct PersistenceMigrationTests {
     @Test
-    func migrationPlanAppendsThroughV4AndKeepsTheReleasedV1SchemaFrozen() throws {
+    func migrationPlanAppendsThroughV5AndKeepsPriorSchemasFrozen() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -17,17 +17,20 @@ struct PersistenceMigrationTests {
         #expect(OpenASOSchemaV3.models.count == 19)
         #expect(OpenASOSchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
         #expect(OpenASOSchemaV4.models.count == 21)
-        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(4, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 4)
+        #expect(OpenASOSchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
+        #expect(OpenASOSchemaV5.models.count == 23)
+        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(5, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 5)
         #expect(OpenASOMigrationPlan.schemas[0].versionIdentifier == OpenASOSchemaV1.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[1].versionIdentifier == OpenASOSchemaV2.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[2].versionIdentifier == OpenASOSchemaV3.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[3].versionIdentifier == OpenASOSchemaV4.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas[4].versionIdentifier == OpenASOSchemaV5.versionIdentifier)
         #expect(
             OpenASOMigrationPlan.currentSchema.versionIdentifier
                 == OpenASOMigrationPlan.schemas.last?.versionIdentifier
         )
-        #expect(OpenASOMigrationPlan.stages.count == 3)
+        #expect(OpenASOMigrationPlan.stages.count == 4)
         #expect(container.migrationPlan != nil)
     }
 
@@ -55,6 +58,8 @@ struct PersistenceMigrationTests {
             #expect(try modelContext.fetch(
                 FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
             ).isEmpty)
+            #expect(try modelContext.fetch(FetchDescriptor<KeywordResearchProject>()).isEmpty)
+            #expect(try modelContext.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
             let migratedStatus = try #require(modelContext.fetch(
                 FetchDescriptor<TrackedKeywordRefreshStatus>()
             ).first)
@@ -104,13 +109,15 @@ struct PersistenceMigrationTests {
             #expect(try reopenedContext.fetch(
                 FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
             ).isEmpty)
+            #expect(try reopenedContext.fetch(FetchDescriptor<KeywordResearchProject>()).isEmpty)
+            #expect(try reopenedContext.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
         }
 
         try fixture.verifyBundledArtifacts()
     }
 
     @Test
-    func v2RefreshAttemptStoreMigratesToV4WithoutLosingAttemptState() throws {
+    func v2RefreshAttemptStoreMigratesToV5WithoutLosingAttemptState() throws {
         let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent(
             "OpenASO-V2-to-V3-\(UUID().uuidString)",
             isDirectory: true
@@ -146,11 +153,13 @@ struct PersistenceMigrationTests {
             #expect(try context.fetch(
                 FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
             ).isEmpty)
+            #expect(try context.fetch(FetchDescriptor<KeywordResearchProject>()).isEmpty)
+            #expect(try context.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
         }
     }
 
     @Test
-    func v3StatusStoreMigratesToV4WithoutBackfillingDifficulty() throws {
+    func v3StatusStoreMigratesToV5WithoutBackfillingNewEntities() throws {
         let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent(
             "OpenASO-V3-to-V4-\(UUID().uuidString)",
             isDirectory: true
@@ -198,6 +207,307 @@ struct PersistenceMigrationTests {
             #expect(try context.fetch(
                 FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
             ).isEmpty)
+            #expect(try context.fetch(FetchDescriptor<KeywordResearchProject>()).isEmpty)
+            #expect(try context.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
+        }
+    }
+
+    @Test
+    func exactV4SourceStoreMigratesToV5WritesResearchAndReopensWithoutDataLoss() throws {
+        let fixture = try ExactV4StoreFixture.loadFromTestBundle()
+        let materialized = try fixture.makeTemporaryCopy()
+        defer { try? FileManager.default.removeItem(at: materialized.directoryURL) }
+        let researchCreatedAt = ReleasedV1FixtureSentinel.fixtureDate.addingTimeInterval(600)
+        var projectIncarnationID: UUID?
+        var membershipIncarnationID: UUID?
+
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(
+                at: materialized.storeURL
+            )
+            let modelContext = ModelContext(container)
+            try assertExactV4FixtureSentinels(in: modelContext)
+            #expect(try modelContext.fetch(FetchDescriptor<KeywordResearchProject>()).isEmpty)
+            #expect(try modelContext.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
+
+            let project = KeywordResearchProject(
+                id: ExactV4FixtureSentinel.projectID,
+                name: "Exact V4 migration research",
+                bundleID: "com.thirdtech.openaso.fixture.v4-research",
+                defaultStorefront: ReleasedV1FixtureSentinel.storefront,
+                defaultPlatform: .iphone,
+                notes: "Written only after exact V4 to V5 migration",
+                createdAt: researchCreatedAt
+            )
+            let membership = KeywordResearchKeyword(
+                id: ExactV4FixtureSentinel.membershipID,
+                term: ReleasedV1FixtureSentinel.keyword,
+                storefront: ReleasedV1FixtureSentinel.storefront,
+                platform: .iphone,
+                project: project,
+                notes: "Shared query membership sentinel",
+                createdAt: researchCreatedAt
+            )
+            projectIncarnationID = project.incarnationID
+            membershipIncarnationID = membership.incarnationID
+            project.attachKeyword(membership)
+            modelContext.insert(project)
+            modelContext.insert(membership)
+            try modelContext.save()
+        }
+
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(
+                at: materialized.storeURL
+            )
+            let modelContext = ModelContext(container)
+            try assertExactV4FixtureSentinels(in: modelContext)
+
+            let projects = try modelContext.fetch(FetchDescriptor<KeywordResearchProject>())
+            let memberships = try modelContext.fetch(FetchDescriptor<KeywordResearchKeyword>())
+            #expect(projects.count == 1)
+            #expect(memberships.count == 1)
+            let project = try #require(projects.first)
+            let membership = try #require(memberships.first)
+            let projectIncarnationID = try #require(projectIncarnationID)
+            let membershipIncarnationID = try #require(membershipIncarnationID)
+            #expect(project.id == ExactV4FixtureSentinel.projectID)
+            #expect(project.incarnationID == projectIncarnationID)
+            #expect(project.name == "Exact V4 migration research")
+            #expect(project.createdAt == researchCreatedAt)
+            #expect(project.updatedAt == researchCreatedAt)
+            #expect(project.keywords.map(\.id) == [ExactV4FixtureSentinel.membershipID])
+            #expect(membership.id == ExactV4FixtureSentinel.membershipID)
+            #expect(membership.incarnationID == membershipIncarnationID)
+            #expect(membership.projectID == ExactV4FixtureSentinel.projectID)
+            #expect(membership.queryKey == ReleasedV1FixtureSentinel.queryKey)
+            #expect(membership.project.id == ExactV4FixtureSentinel.projectID)
+        }
+
+        try fixture.verifyBundledArtifacts()
+    }
+
+    @Test
+    func v4StoreMigratesToV5PreservingQueryStatusAndDifficultyBeforeResearchRoundTrip() throws {
+        let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OpenASO-V4-to-V5-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let storeURL = rootURL.appendingPathComponent("default.store", isDirectory: false)
+
+        let keyword = "v4::research migration"
+        let storefront = "gb"
+        let platform = AppPlatform.ipad
+        let queryKey = KeywordQuery.makeQueryKey(
+            term: keyword,
+            storefront: storefront,
+            platform: platform
+        )
+        let trackIdentityKey = "320000032::\(queryKey)"
+        let trackCreatedAt = Date(timeIntervalSinceReferenceDate: 805_800_000)
+        let observedAt = trackCreatedAt.addingTimeInterval(60)
+        let calculationID = UUID(uuidString: "32000000-0000-4000-8000-000000000400")!
+        let projectID = UUID(uuidString: "32000000-0000-4000-8000-000000000401")!
+        let membershipID = UUID(uuidString: "32000000-0000-4000-8000-000000000402")!
+        var projectIncarnationID: UUID?
+        var membershipIncarnationID: UUID?
+
+        try autoreleasepool {
+            let schema = Schema(versionedSchema: OpenASOSchemaV4.self)
+            let configuration = ModelConfiguration(schema: schema, url: storeURL)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            let query = KeywordQuery(
+                term: keyword,
+                storefront: storefront,
+                platform: platform
+            )
+            let crawl = KeywordRankingCrawl(
+                keyword: keyword,
+                storefront: storefront,
+                platform: platform,
+                observedAt: observedAt,
+                source: .appStoreWeb,
+                resultCount: 1,
+                query: query
+            )
+            let crawlItem = KeywordAppRanking(
+                position: 1,
+                appStoreID: 320_000_499,
+                bundleID: "com.example.v4-result",
+                name: "V4 Result",
+                subtitle: "Migration evidence",
+                sellerName: "Example",
+                observation: crawl
+            )
+            let metrics = KeywordDailyMetric(
+                queryKey: queryKey,
+                keyword: keyword,
+                storefront: storefront,
+                platform: platform,
+                popularityScore: 64,
+                difficultyScore: nil,
+                source: .appleAdsPopularity,
+                popularityDate: "2026-07-19",
+                updatedAt: observedAt,
+                notes: "V4 metric sentinel"
+            )
+            let attempt = TrackedAppKeywordRefreshAttempt(
+                trackIdentityKey: trackIdentityKey,
+                appStoreID: 320_000_032,
+                lastRankingRefreshAttemptAt: observedAt
+            )
+            let status = TrackedKeywordRefreshStatus(
+                trackIdentityKey: trackIdentityKey,
+                trackCreatedAt: trackCreatedAt,
+                appStoreID: 320_000_032,
+                domain: .popularity,
+                message: "V4 status sentinel",
+                updatedAt: observedAt
+            )
+            let difficultyPayload = EstimatedKeywordDifficultyPersistencePayload(
+                queryKey: queryKey,
+                calculationID: calculationID,
+                keyword: keyword,
+                storefront: storefront,
+                platform: platform,
+                result: .estimated(score: 62, confidenceScore: 86, confidence: .high),
+                algorithmIdentifier: "openaso.keyword-difficulty.top-results",
+                algorithmVersion: 1,
+                requestedResultLimit: 100,
+                providerResultCount: 3,
+                evidence: EstimatedKeywordDifficultyEvidence(
+                    consideredResultCount: 3,
+                    ratedResultCount: 3,
+                    weightedRatingCoveragePercentage: 100,
+                    maximumRatingCount: 5_000,
+                    medianRatingCount: 2_500,
+                    ratingAuthorityScore: 72,
+                    metadataSaturationScore: 55,
+                    resultEvidence: [
+                        EstimatedKeywordDifficultyResultEvidence(
+                            position: 1,
+                            appStoreID: crawlItem.appStoreID,
+                            title: crawlItem.name,
+                            subtitle: crawlItem.subtitle,
+                            ratingCount: 5_000,
+                            ratingAuthorityScore: 72,
+                            titleTokenCoveragePercentage: 100,
+                            combinedTokenCoveragePercentage: 100,
+                            metadataMatchScore: 82,
+                            exactTitlePhraseMatch: true,
+                            exactSubtitlePhraseMatch: false
+                        ),
+                        EstimatedKeywordDifficultyResultEvidence(
+                            position: 2,
+                            appStoreID: 320_000_500,
+                            title: "V4 Result Two",
+                            ratingCount: 2_500,
+                            ratingAuthorityScore: 64,
+                            titleTokenCoveragePercentage: 50,
+                            combinedTokenCoveragePercentage: 75,
+                            metadataMatchScore: 58,
+                            exactTitlePhraseMatch: false,
+                            exactSubtitlePhraseMatch: false
+                        ),
+                        EstimatedKeywordDifficultyResultEvidence(
+                            position: 3,
+                            appStoreID: 320_000_501,
+                            title: "V4 Result Three",
+                            ratingCount: 1_000,
+                            ratingAuthorityScore: 50,
+                            titleTokenCoveragePercentage: 25,
+                            combinedTokenCoveragePercentage: 50,
+                            metadataMatchScore: 39,
+                            exactTitlePhraseMatch: false,
+                            exactSubtitlePhraseMatch: false
+                        ),
+                    ]
+                ),
+                rankingSource: .appStoreWeb,
+                rankingFetchedAt: observedAt,
+                computedAt: observedAt.addingTimeInterval(1),
+                notes: ["V4 difficulty sentinel"]
+            )
+
+            query.observations.append(crawl)
+            crawl.items.append(crawlItem)
+            context.insert(query)
+            context.insert(crawl)
+            context.insert(crawlItem)
+            context.insert(metrics)
+            context.insert(attempt)
+            context.insert(status)
+            #expect(try EstimatedKeywordDifficultyStore.upsert(
+                difficultyPayload,
+                in: context
+            ) == .inserted)
+            try context.save()
+        }
+
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: storeURL)
+            let context = ModelContext(container)
+            try assertV4ResearchPredecessorSentinels(
+                in: context,
+                queryKey: queryKey,
+                calculationID: calculationID,
+                observedAt: observedAt
+            )
+            #expect(try context.fetch(FetchDescriptor<KeywordResearchProject>()).isEmpty)
+            #expect(try context.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
+
+            let project = KeywordResearchProject(
+                id: projectID,
+                name: "Migrated research project",
+                defaultStorefront: storefront,
+                defaultPlatform: platform,
+                createdAt: observedAt.addingTimeInterval(10)
+            )
+            let membership = KeywordResearchKeyword(
+                id: membershipID,
+                term: keyword,
+                storefront: storefront,
+                platform: platform,
+                project: project,
+                createdAt: observedAt.addingTimeInterval(10)
+            )
+            projectIncarnationID = project.incarnationID
+            membershipIncarnationID = membership.incarnationID
+            project.attachKeyword(membership)
+            context.insert(project)
+            context.insert(membership)
+            try context.save()
+        }
+
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: storeURL)
+            let context = ModelContext(container)
+            try assertV4ResearchPredecessorSentinels(
+                in: context,
+                queryKey: queryKey,
+                calculationID: calculationID,
+                observedAt: observedAt
+            )
+            let project = try #require(
+                context.fetch(FetchDescriptor<KeywordResearchProject>()).first
+            )
+            let membership = try #require(
+                context.fetch(FetchDescriptor<KeywordResearchKeyword>()).first
+            )
+            let projectIncarnationID = try #require(projectIncarnationID)
+            let membershipIncarnationID = try #require(membershipIncarnationID)
+            #expect(project.id == projectID)
+            #expect(project.incarnationID == projectIncarnationID)
+            #expect(project.createdAt == observedAt.addingTimeInterval(10))
+            #expect(project.keywords.map(\.id) == [membershipID])
+            #expect(membership.id == membershipID)
+            #expect(membership.incarnationID == membershipIncarnationID)
+            #expect(membership.projectID == projectID)
+            #expect(membership.queryKey == queryKey)
+            #expect(membership.project.id == projectID)
         }
     }
 
@@ -540,6 +850,61 @@ struct PersistenceMigrationTests {
         #expect(storefront.flagEmoji == "🇬🇧")
         #expect(storefront.languageCode == "en-GB")
         #expect(storefront.title == "🇬🇧 United Kingdom")
+    }
+
+    private func assertV4ResearchPredecessorSentinels(
+        in modelContext: ModelContext,
+        queryKey: String,
+        calculationID: UUID,
+        observedAt: Date
+    ) throws {
+        let query = try #require(modelContext.fetch(FetchDescriptor<KeywordQuery>()).first)
+        let crawl = try #require(modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>()).first)
+        let crawlItem = try #require(modelContext.fetch(FetchDescriptor<KeywordAppRanking>()).first)
+        let metrics = try #require(modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
+        let attempt = try #require(
+            modelContext.fetch(FetchDescriptor<TrackedAppKeywordRefreshAttempt>()).first
+        )
+        let status = try #require(
+            modelContext.fetch(FetchDescriptor<TrackedKeywordRefreshStatus>()).first
+        )
+        let difficulty = try #require(
+            modelContext.fetch(FetchDescriptor<EstimatedKeywordDifficultyMetric>()).first
+        )
+        let evidence = try modelContext.fetch(
+            FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
+        ).sorted { $0.position < $1.position }
+
+        #expect(query.queryKey == queryKey)
+        #expect(query.observations.map(\.observationKey) == [crawl.observationKey])
+        #expect(crawl.queryKey == queryKey)
+        #expect(crawl.observedAt == observedAt)
+        #expect(crawl.items.map(\.itemKey) == [crawlItem.itemKey])
+        #expect(crawlItem.queryKey == queryKey)
+        #expect(crawlItem.name == "V4 Result")
+        #expect(metrics.queryKey == queryKey)
+        #expect(metrics.popularityScore == 64)
+        #expect(metrics.notes == "V4 metric sentinel")
+        #expect(attempt.lastRankingRefreshAttemptAt == observedAt)
+        #expect(status.domain == .popularity)
+        #expect(status.message == "V4 status sentinel")
+        #expect(difficulty.queryKey == queryKey)
+        #expect(difficulty.calculationID == calculationID)
+        #expect(difficulty.score == 62)
+        #expect(difficulty.confidenceScore == 86)
+        #expect(difficulty.confidence == .high)
+        #expect(difficulty.consideredResultCount == 3)
+        #expect(difficulty.ratedResultCount == 3)
+        #expect(difficulty.notes == ["V4 difficulty sentinel"])
+        #expect(evidence.map(\.queryKey) == [queryKey, queryKey, queryKey])
+        #expect(evidence.map(\.calculationID) == [
+            calculationID,
+            calculationID,
+            calculationID,
+        ])
+        #expect(evidence.map(\.position) == [1, 2, 3])
+        #expect(evidence.map(\.title) == ["V4 Result", "V4 Result Two", "V4 Result Three"])
+        #expect(evidence.map(\.ratingCount) == [5_000, 2_500, 1_000])
     }
 }
 
