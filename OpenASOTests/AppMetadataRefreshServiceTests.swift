@@ -703,6 +703,46 @@ struct AppMetadataRefreshServiceTests {
     }
 
     @Test
+    func providerURLCancellationIsRecordedWithoutCancellingTheMetadataBatch() async throws {
+        let store = StubMetadataRefreshStore(scope: AppMetadataRefreshStoredScope(
+            defaultStorefront: "us",
+            trackedStorefronts: ["de"]
+        ))
+        let service = AppMetadataRefreshService(
+            appResolver: ClosureMetadataAppResolver { _, _ in
+                throw URLError(.cancelled)
+            },
+            webMetadataProvider: ClosureMetadataWebProvider { appStoreID, storefront in
+                makeMetadataWebResponse(
+                    appStoreID: appStoreID,
+                    storefront: storefront
+                )
+            },
+            store: store,
+            iconInvalidator: RecordingMetadataIconInvalidator()
+        )
+
+        let result = try await service.refresh(
+            AppMetadataRefreshRequest(appStoreID: appStoreID)
+        )
+
+        #expect(result.status == .partial)
+        #expect(result.storefronts.map(\.storefront) == ["us", "de"])
+        #expect(result.storefronts.allSatisfy { outcome in
+            if case .failed = outcome.iTunesLookup {
+                return true
+            }
+            return false
+        })
+        #expect(result.storefronts.allSatisfy { outcome in
+            if case .succeeded = outcome.appStoreWeb {
+                return true
+            }
+            return false
+        })
+    }
+
+    @Test
     func backgroundWritesRollbackFailedMutationsBeforeTheNextSave() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let backgroundStore = BackgroundModelStore(modelContainer: container)

@@ -57,11 +57,11 @@ struct SettingsView: View {
                             services.settingsStore.saveRefreshTime(from: newValue)
                         }
 
-                    if let lastRefreshTriggeredAt = services.settingsStore.lastRefreshTriggeredAt {
-                        Text("Last triggered \(lastRefreshTriggeredAt.formatted(date: .abbreviated, time: .shortened))")
+                    if let lastClaimedAt = services.settingsStore.lastAutomaticRefreshClaimedAt {
+                        Text("Last automatic attempt \(lastClaimedAt.formatted(date: .abbreviated, time: .shortened))")
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("No daily refresh has run yet.")
+                        Text("No automatic refresh has been attempted yet.")
                             .foregroundStyle(.secondary)
                     }
                 } header: {
