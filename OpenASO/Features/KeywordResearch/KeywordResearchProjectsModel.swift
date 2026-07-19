@@ -31,6 +31,7 @@ final class KeywordResearchProjectsModel {
     @ObservationIgnored private let pageSize: Int
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var activeLoadGeneration: Int?
+    @ObservationIgnored private var hasLoadedInitialPage = false
 
     init(
         pageSize: Int = 50,
@@ -41,7 +42,7 @@ final class KeywordResearchProjectsModel {
         self.dependencies = dependencies
     }
 
-    var hasMoreProjects: Bool { nextOffset != nil }
+    var hasMoreProjects: Bool { !requiresReload && nextOffset != nil }
 
     func reload() async {
         guard activeLoadGeneration == nil else { return }
@@ -63,13 +64,18 @@ final class KeywordResearchProjectsModel {
 
             projects = Self.deduplicated(page.projects)
             nextOffset = page.nextOffset
+            hasLoadedInitialPage = true
             requiresReload = false
             loadState = .loaded
         } catch is CancellationError {
             guard generation == loadGeneration else { return }
             loadState = projects.isEmpty ? .idle : .loaded
         } catch {
-            guard generation == loadGeneration, !Task.isCancelled else { return }
+            guard generation == loadGeneration else { return }
+            guard !Task.isCancelled else {
+                loadState = projects.isEmpty ? .idle : .loaded
+                return
+            }
             loadState = .failed(.presenting(error))
         }
     }
@@ -102,7 +108,11 @@ final class KeywordResearchProjectsModel {
             guard generation == loadGeneration else { return }
             loadState = projects.isEmpty ? .idle : .loaded
         } catch {
-            guard generation == loadGeneration, !Task.isCancelled else { return }
+            guard generation == loadGeneration else { return }
+            guard !Task.isCancelled else {
+                loadState = projects.isEmpty ? .idle : .loaded
+                return
+            }
             loadState = .failed(.presenting(error))
         }
     }
@@ -120,7 +130,9 @@ final class KeywordResearchProjectsModel {
 
             // Returning from the dependency is the mutation commit point. A
             // cancellation check here could report failure after durable data.
-            invalidatePendingLoad(markReloadRequired: activeLoadGeneration != nil)
+            invalidatePendingLoad(
+                markReloadRequired: activeLoadGeneration != nil || !hasLoadedInitialPage
+            )
             projects = Self.upserting(project, in: projects)
             loadState = .loaded
             mutationState = .succeeded(action)
@@ -149,7 +161,9 @@ final class KeywordResearchProjectsModel {
             let project = try await dependencies.updateProject(revision, draft)
 
             // Always thread the returned revision into the visible snapshot.
-            invalidatePendingLoad(markReloadRequired: activeLoadGeneration != nil)
+            invalidatePendingLoad(
+                markReloadRequired: activeLoadGeneration != nil || !hasLoadedInitialPage
+            )
             projects = Self.upserting(project, in: projects)
             mutationState = .succeeded(action)
             return project
@@ -175,7 +189,9 @@ final class KeywordResearchProjectsModel {
 
             // A successful return means deletion committed. Do not turn a
             // post-commit cancellation into an error or retry the deletion.
-            invalidatePendingLoad(markReloadRequired: activeLoadGeneration != nil)
+            invalidatePendingLoad(
+                markReloadRequired: activeLoadGeneration != nil || !hasLoadedInitialPage
+            )
             let removedLoadedProject = projects.contains {
                 $0.generation == project.generation
             }
