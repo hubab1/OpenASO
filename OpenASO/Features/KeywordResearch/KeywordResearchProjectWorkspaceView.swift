@@ -10,11 +10,16 @@ struct KeywordResearchProjectWorkspaceView: View {
     let resolveAuthoritativeProject: @MainActor (
         KeywordResearchProjectGeneration
     ) async throws -> KeywordResearchProjectSnapshot
+    let makeHistoryModel: @MainActor (
+        KeywordResearchProjectGeneration,
+        KeywordResearchKeywordSnapshot
+    ) -> KeywordResearchHistoryModel
 
     @Binding private var blocksWorkspaceDismissal: Bool
     @State private var model: KeywordResearchProjectDetailModel
     @State private var selectedKeywordGeneration: KeywordResearchKeywordGeneration?
     @State private var editorContext: KeywordEditorContext?
+    @State private var historyContext: KeywordResearchHistoryContext?
     @State private var keywordPendingRemoval: KeywordResearchKeywordSnapshot?
     @State private var removingKeywordGeneration: KeywordResearchKeywordGeneration?
     @State private var operationError: KeywordResearchErrorPresentation?
@@ -27,12 +32,17 @@ struct KeywordResearchProjectWorkspaceView: View {
         reconcileProject: @escaping @MainActor (KeywordResearchProjectSnapshot) -> Bool,
         resolveAuthoritativeProject: @escaping @MainActor (
             KeywordResearchProjectGeneration
-        ) async throws -> KeywordResearchProjectSnapshot
+        ) async throws -> KeywordResearchProjectSnapshot,
+        makeHistoryModel: @escaping @MainActor (
+            KeywordResearchProjectGeneration,
+            KeywordResearchKeywordSnapshot
+        ) -> KeywordResearchHistoryModel
     ) {
         self.project = project
         self.storefronts = storefronts
         self.reconcileProject = reconcileProject
         self.resolveAuthoritativeProject = resolveAuthoritativeProject
+        self.makeHistoryModel = makeHistoryModel
         _blocksWorkspaceDismissal = blocksWorkspaceDismissal
         _model = State(initialValue: model)
     }
@@ -64,6 +74,15 @@ struct KeywordResearchProjectWorkspaceView: View {
                 storefronts: storefronts,
                 save: saveKeyword
             )
+        }
+        .sheet(item: $historyContext) { context in
+            KeywordResearchHistorySheet(
+                model: makeHistoryModel(
+                    context.projectGeneration,
+                    context.keyword
+                )
+            )
+            .id(context.id)
         }
         .confirmationDialog(
             "Remove research keyword?",
@@ -189,6 +208,12 @@ struct KeywordResearchProjectWorkspaceView: View {
                             openSettings: {
                                 services.settingsStore.requestSettingsFocus(.webSession)
                                 openSettings()
+                            },
+                            showHistory: {
+                                historyContext = KeywordResearchHistoryContext(
+                                    projectGeneration: model.project.generation,
+                                    keyword: keyword
+                                )
                             },
                             remove: {
                                 keywordPendingRemoval = keyword
@@ -420,6 +445,7 @@ private struct KeywordResearchKeywordRow: View {
     let refreshSearchEvidence: () -> Void
     let refreshPopularity: (KeywordResearchMetricsRefreshPolicy) -> Void
     let openSettings: () -> Void
+    let showHistory: () -> Void
     let remove: () -> Void
 
     var body: some View {
@@ -462,6 +488,9 @@ private struct KeywordResearchKeywordRow: View {
 
     private var actionsMenu: some View {
         Menu {
+            Button("View Shared Search History", action: showHistory)
+
+            Divider()
             Button("Refresh Search Evidence", action: refreshSearchEvidence)
                 .disabled(rankingState.isRefreshing)
             Button("Refresh Popularity") {
