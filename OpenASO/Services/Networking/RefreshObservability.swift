@@ -265,11 +265,15 @@ actor RefreshMetricsRecorder {
         provider: RefreshObservationProvider,
         endpoint: RefreshObservationEndpoint,
         result: RefreshTransportResult,
-        durationNanoseconds: UInt64
+        durationNanoseconds: UInt64,
+        isRetry: Bool = false
     ) {
         guard var run = activeRuns[runID] else { return }
         var providerSummary = run.providers[provider] ?? RefreshProviderRequestSummary()
         providerSummary.requestCount += 1
+        if isRetry {
+            providerSummary.retryCount += 1
+        }
         providerSummary.totalDurationNanoseconds = providerSummary.totalDurationNanoseconds.addingWithoutOverflow(durationNanoseconds)
         providerSummary.maximumDurationNanoseconds = max(
             providerSummary.maximumDurationNanoseconds,
@@ -287,14 +291,6 @@ actor RefreshMetricsRecorder {
     func recordCancellation(runID: UUID) {
         guard var run = activeRuns[runID] else { return }
         run.observedCancellation = true
-        activeRuns[runID] = run
-    }
-
-    func recordRetry(runID: UUID, provider: RefreshObservationProvider) {
-        guard var run = activeRuns[runID] else { return }
-        var providerSummary = run.providers[provider] ?? RefreshProviderRequestSummary()
-        providerSummary.retryCount += 1
-        run.providers[provider] = providerSummary
         activeRuns[runID] = run
     }
 
@@ -380,7 +376,8 @@ struct ObservedHTTPClient: HTTPClient {
                 provider: classification.provider,
                 endpoint: classification.endpoint,
                 result: RefreshTransportClassifier.classify(output.1),
-                durationNanoseconds: duration
+                durationNanoseconds: duration,
+                isRetry: ProviderRequestObservationScope.isRetryAttempt
             )
             return output
         } catch {
@@ -390,14 +387,15 @@ struct ObservedHTTPClient: HTTPClient {
                 provider: classification.provider,
                 endpoint: classification.endpoint,
                 result: RefreshTransportClassifier.classify(error),
-                durationNanoseconds: duration
+                durationNanoseconds: duration,
+                isRetry: ProviderRequestObservationScope.isRetryAttempt
             )
             throw error
         }
     }
 }
 
-private struct RefreshRequestClassification: Sendable {
+struct RefreshRequestClassification: Sendable {
     let provider: RefreshObservationProvider
     let endpoint: RefreshObservationEndpoint
 

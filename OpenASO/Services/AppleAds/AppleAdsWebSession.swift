@@ -28,6 +28,103 @@ struct AppleAdsWebSession: Codable, Equatable, Sendable {
     }
 }
 
+struct AppleAdsWebSessionExpiredError: LocalizedError, Equatable, Sendable {
+    static let message = "Apple Ads web session expired. Refresh it in Settings."
+
+    var errorDescription: String? {
+        Self.message
+    }
+}
+
+private func appleAdsWebJSONResponse(
+    for request: URLRequest,
+    using client: HTTPClient
+) async throws -> (data: Data, response: HTTPURLResponse) {
+    try Task.checkCancellation()
+    let (data, response) = try await client.data(for: request)
+    try Task.checkCancellation()
+    guard let httpResponse = response as? HTTPURLResponse else {
+        throw OpenASOError.unexpectedResponse
+    }
+
+    if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+        throw AppleAdsWebSessionExpiredError()
+    }
+
+    if let responseURL = httpResponse.url,
+       isAppleAdsSignInURL(responseURL) {
+        throw AppleAdsWebSessionExpiredError()
+    }
+
+    if (300 ..< 400).contains(httpResponse.statusCode),
+       let location = httpResponse.value(forHTTPHeaderField: "Location"),
+       let baseURL = httpResponse.url ?? request.url,
+       let redirectURL = URL(string: location, relativeTo: baseURL)?.absoluteURL,
+       isAppleAdsSignInURL(redirectURL) {
+        throw AppleAdsWebSessionExpiredError()
+    }
+
+    if (200 ..< 300).contains(httpResponse.statusCode),
+       isHTMLResponse(data: data, response: httpResponse) {
+        throw AppleAdsWebSessionExpiredError()
+    }
+
+    return (data, httpResponse)
+}
+
+private func isAppleAdsSignInURL(_ url: URL) -> Bool {
+    let host = url.host?.lowercased() ?? ""
+    if ["account.apple.com", "appleid.apple.com", "idmsa.apple.com"].contains(host) {
+        return true
+    }
+
+    guard host == "app-ads.apple.com" else { return false }
+
+    let location = [url.path, url.query].compactMap(\.self).joined(separator: "?").lowercased()
+    return ["/auth/", "/authenticate", "/login", "/sign-in", "/signin"].contains {
+        location.contains($0)
+    }
+}
+
+private func isHTMLResponse(data: Data, response: HTTPURLResponse) -> Bool {
+    if response.value(forHTTPHeaderField: "Content-Type")?
+        .lowercased()
+        .contains("text/html") == true {
+        return true
+    }
+
+    let prefix = String(decoding: data.prefix(1_024), as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}")))
+        .lowercased()
+    return prefix.hasPrefix("<!doctype html")
+        || prefix.hasPrefix("<html")
+        || prefix.hasPrefix("<head")
+        || prefix.hasPrefix("<body")
+}
+
+private func validatedAppleAdsWebData(
+    for request: URLRequest,
+    using client: HTTPClient
+) async throws -> Data {
+    let result = try await appleAdsWebJSONResponse(for: request, using: client)
+    switch result.response.statusCode {
+    case 200 ..< 300:
+        return result.data
+    case 404:
+        throw OpenASOError.appNotFound
+    case 429:
+        throw OpenASOError.rateLimited
+    default:
+        throw OpenASOError.providerUnavailable("HTTP \(result.response.statusCode)")
+    }
+}
+
+private func shouldStopAppleAdsWebFallback(for error: Error) -> Bool {
+    error is AppleAdsWebSessionExpiredError
+        || error is CancellationError
+        || (error as? URLError)?.code == .cancelled
+}
+
 struct AppleAdsWebLoginCredentials: Codable, Equatable, Sendable {
     var username: String
     var password: String
@@ -48,24 +145,33 @@ struct AppleAdsWebLoginCredentials: Codable, Equatable, Sendable {
 @MainActor
 @Observable
 final class AppleAdsWebSessionStore {
+    private let defaults: UserDefaults
     private let keychainItemPresence: KeychainItemPresenceStore
     private let keychain: any KeychainService
     private let keychainService: String
-    private let sessionAccount = "web-session"
+    private let reconnectRequiredDefaultsKey: String
+    private static let sessionAccount = "web-session"
 
     private(set) var session: AppleAdsWebSession?
+    private(set) var requiresReconnect: Bool
 
     init(
         defaults: UserDefaults = .openASOShared,
         keychain: any KeychainService = SystemKeychainService(),
         namespace: AppNamespace = .current
     ) {
-        self.keychainItemPresence = KeychainItemPresenceStore(defaults: defaults)
+        let keychainItemPresence = KeychainItemPresenceStore(defaults: defaults)
+        let keychainService = namespace.keychainService("apple-ads-web")
+        let reconnectRequiredDefaultsKey = "appleAds.webSession.requiresReconnect.\(namespace.bundleIdentifier)"
+        self.defaults = defaults
+        self.keychainItemPresence = keychainItemPresence
         self.keychain = keychain
-        self.keychainService = namespace.keychainService("apple-ads-web")
-        session = keychainItemPresence.contains(service: keychainService, account: sessionAccount)
-            ? Self.readSession(service: keychainService, account: sessionAccount, keychain: keychain)
+        self.keychainService = keychainService
+        self.reconnectRequiredDefaultsKey = reconnectRequiredDefaultsKey
+        session = keychainItemPresence.contains(service: keychainService, account: Self.sessionAccount)
+            ? Self.readSession(service: keychainService, account: Self.sessionAccount, keychain: keychain)
             : nil
+        requiresReconnect = defaults.bool(forKey: reconnectRequiredDefaultsKey)
     }
 
     var hasSession: Bool {
@@ -75,18 +181,43 @@ final class AppleAdsWebSessionStore {
     func save(_ session: AppleAdsWebSession) throws {
         let data = try JSONEncoder().encode(session)
         do {
-            try keychain.save(data, service: keychainService, account: sessionAccount)
-            keychainItemPresence.markPresent(service: keychainService, account: sessionAccount)
+            try keychain.save(data, service: keychainService, account: Self.sessionAccount)
+            keychainItemPresence.markPresent(service: keychainService, account: Self.sessionAccount)
             self.session = session
+            setReconnectRequired(false)
         } catch {
             throw OpenASOError.providerUnavailable("Could not save Apple Ads web session to Keychain.")
         }
     }
 
+    func requiresReconnect(for session: AppleAdsWebSession) -> Bool {
+        requiresReconnect && self.session == session
+    }
+
+    func markReconnectRequired(for session: AppleAdsWebSession) {
+        guard self.session == session else { return }
+        setReconnectRequired(true)
+    }
+
+    func clearReconnectRequirement(for session: AppleAdsWebSession) {
+        guard self.session == session else { return }
+        setReconnectRequired(false)
+    }
+
     func clear() {
-        keychain.delete(service: keychainService, account: sessionAccount)
-        keychainItemPresence.markAbsent(service: keychainService, account: sessionAccount)
+        keychain.delete(service: keychainService, account: Self.sessionAccount)
+        keychainItemPresence.markAbsent(service: keychainService, account: Self.sessionAccount)
         session = nil
+        setReconnectRequired(false)
+    }
+
+    private func setReconnectRequired(_ isRequired: Bool) {
+        if isRequired {
+            defaults.set(true, forKey: reconnectRequiredDefaultsKey)
+        } else {
+            defaults.removeObject(forKey: reconnectRequiredDefaultsKey)
+        }
+        requiresReconnect = isRequired
     }
 
     private static func readSession(
@@ -167,13 +298,21 @@ final class AppleAdsWebSessionManager {
         }
 
         let storefrontCode = settingsStore.popularityContextStorefrontCode ?? "US"
-        guard let popularity = try await AppleAdsCMPopularityClient(httpClient: httpClient)
-            .keywordPopularity(for: keyword, storefrontCode: storefrontCode, adamId: adamId, session: session)
-        else {
-            throw OpenASOError.providerUnavailable("Apple Ads web session worked, but the keyword returned no popularity.")
-        }
+        do {
+            guard let popularity = try await AppleAdsCMPopularityClient(httpClient: httpClient)
+                .keywordPopularity(for: keyword, storefrontCode: storefrontCode, adamId: adamId, session: session)
+            else {
+                throw OpenASOError.providerUnavailable("Apple Ads web session worked, but the keyword returned no popularity.")
+            }
 
-        return popularity
+            sessionStore.clearReconnectRequirement(for: session)
+            return popularity
+        } catch let error as AppleAdsWebSessionExpiredError {
+            sessionStore.markReconnectRequired(for: session)
+            throw error
+        } catch {
+            throw error
+        }
     }
 
     func resolveDefaultLinkedApp() async throws -> AppleAdsPromotedApp {
@@ -181,26 +320,31 @@ final class AppleAdsWebSessionManager {
             throw OpenASOError.providerUnavailable("Connect an Apple Ads web session first.")
         }
 
-        if let app = capturedLinkedApps.first ?? session.linkedApps?.first {
-            return app
-        }
+        do {
+            if let app = capturedLinkedApps.first ?? session.linkedApps?.first {
+                return app
+            }
 
-        let reportingApps = try await fetchReportingCampaignApps(using: session)
-        if let app = reportingApps.first {
-            return app
-        }
+            let reportingApps = try await fetchReportingCampaignApps(using: session)
+            if let app = reportingApps.first {
+                return app
+            }
 
-        let apps = try await fetchCampaignApps(using: session)
-        if let app = apps.first {
-            return app
-        }
+            let apps = try await fetchCampaignApps(using: session)
+            if let app = apps.first {
+                return app
+            }
 
-        if let accountName = capturedAccountName ?? session.accountName,
-           let app = try await fetchSellerApps(named: accountName).first {
-            return app
-        }
+            if let accountName = capturedAccountName ?? session.accountName,
+               let app = try await fetchSellerApps(named: accountName).first {
+                return app
+            }
 
-        throw OpenASOError.providerUnavailable("Apple Ads needs at least one app with an Apple Ads campaign linked to this account to fetch popularity and difficulty data.")
+            throw OpenASOError.providerUnavailable("Apple Ads needs at least one app with an Apple Ads campaign linked to this account to fetch popularity and difficulty data.")
+        } catch let error as AppleAdsWebSessionExpiredError {
+            sessionStore.markReconnectRequired(for: session)
+            throw error
+        }
     }
 
     func checkDependencyStatus() throws -> AppleAdsWebSessionDependencyStatus {
@@ -246,20 +390,14 @@ final class AppleAdsWebSessionManager {
 
             do {
                 let data = try await data(forWebRequestTo: url, session: session)
-                guard let text = String(data: data, encoding: .utf8),
-                      !text.localizedCaseInsensitiveContains("<html")
-                else {
-                    throw OpenASOError.providerUnavailable("Apple Ads web session expired. Refresh it in Settings.")
-                }
-
                 let apps = try Self.campaignApps(from: data)
                 if !apps.isEmpty {
                     return apps
                 }
-            } catch OpenASOError.providerUnavailable(let message)
-                        where message.localizedCaseInsensitiveContains("web session expired") {
-                throw OpenASOError.providerUnavailable(message)
             } catch {
+                if shouldStopAppleAdsWebFallback(for: error) {
+                    throw error
+                }
                 continue
             }
         }
@@ -285,16 +423,13 @@ final class AppleAdsWebSessionManager {
         request.httpBody = try JSONEncoder().encode(Self.reportingCampaignAppsRequest())
 
         do {
-            let data = try await validatedData(for: request, using: httpClient)
-            guard let text = String(data: data, encoding: .utf8),
-                  !text.localizedCaseInsensitiveContains("<html")
-            else {
-                return []
-            }
-
+            let data = try await validatedAppleAdsWebData(for: request, using: httpClient)
             let response = try JSONDecoder().decode(ReportingCampaignAppsResponse.self, from: data)
             return Self.reportingCampaignApps(from: response)
         } catch {
+            if shouldStopAppleAdsWebFallback(for: error) {
+                throw error
+            }
             return []
         }
     }
@@ -313,7 +448,7 @@ final class AppleAdsWebSessionManager {
             forHTTPHeaderField: "User-Agent"
         )
 
-        return try await validatedData(for: request, using: httpClient)
+        return try await validatedAppleAdsWebData(for: request, using: httpClient)
     }
 
     private func fetchSellerApps(named sellerName: String) async throws -> [AppleAdsPromotedApp] {
@@ -1104,10 +1239,6 @@ struct AppleAdsCMPopularityClient {
             storefrontCode: storefrontCode,
             using: httpClient
         )
-        guard let text = String(data: data, encoding: .utf8), !text.localizedCaseInsensitiveContains("<html") else {
-            throw OpenASOError.providerUnavailable("Apple Ads web session expired. Refresh it in Settings.")
-        }
-
         let response = try JSONDecoder().decode(KeywordPopularityCMResponse.self, from: data)
         if let message = response.error?.errors.first?.message {
             throw OpenASOError.providerUnavailable(message)
@@ -1126,14 +1257,11 @@ struct AppleAdsCMPopularityClient {
         storefrontCode: String,
         using client: HTTPClient
     ) async throws -> Data {
-        let (data, response) = try await client.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OpenASOError.unexpectedResponse
-        }
+        let result = try await appleAdsWebJSONResponse(for: request, using: client)
 
-        switch httpResponse.statusCode {
+        switch result.response.statusCode {
         case 200 ..< 300:
-            return data
+            return result.data
         case 400:
             throw OpenASOError.providerUnavailable(
                 "Apple Ads does not support keyword popularity in \(storefrontDisplayName(for: storefrontCode))."
@@ -1143,7 +1271,7 @@ struct AppleAdsCMPopularityClient {
         case 429:
             throw OpenASOError.rateLimited
         default:
-            throw OpenASOError.providerUnavailable("HTTP \(httpResponse.statusCode)")
+            throw OpenASOError.providerUnavailable("HTTP \(result.response.statusCode)")
         }
     }
 

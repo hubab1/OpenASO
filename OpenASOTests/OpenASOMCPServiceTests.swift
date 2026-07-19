@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Synchronization
 import Testing
 @testable import OpenASO
 
@@ -1766,6 +1767,124 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func refreshKeywordMetricsReportsExpiredSessionOnceAtBatchLevel() async throws {
+        let resolver = StubMCPAppResolver(resolvedApps: [
+            123: makeResolvedApp(appStoreID: 123, name: "Cal AI")
+        ])
+        let requestCount = Mutex(0)
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+            xsrfToken: "token",
+            updatedAt: .now
+        )
+        let context = try MCPTestContext(
+            resolver: resolver,
+            includeKeywordMetricsService: true,
+            popularityContextAppStoreIDProvider: { 123 },
+            appleAdsWebSessionProvider: { session },
+            httpHandler: { request in
+                requestCount.withLock { $0 += 1 }
+                return (
+                    Data(),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 403)
+                )
+            }
+        )
+        try context.appleAdsWebSessionStore.save(session)
+        _ = try await context.service.addTrackedApp(appStoreID: 123, storefront: "us")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["calorie tracker", "macro tracker"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let metricsRefresh = try await context.service.refreshKeywordMetrics(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        #expect(requestCount.withLock { $0 } == 1)
+        #expect(metricsRefresh.summary.updated == 0)
+        #expect(metricsRefresh.summary.skipped == 2)
+        #expect(metricsRefresh.summary.refreshed == 0)
+        #expect(metricsRefresh.summary.failed == 1)
+        #expect(metricsRefresh.outcomes.count == 2)
+        #expect(metricsRefresh.outcomes.allSatisfy { $0.error == nil })
+        #expect(metricsRefresh.batchSummary?.skipped == 2)
+        #expect(metricsRefresh.batchSummary?.errors.count == 1)
+        #expect(metricsRefresh.batchSummary?.errors.first?.code == "apple_ads_session_expired")
+        #expect(context.appleAdsWebSessionStore.requiresReconnect)
+    }
+
+    @Test
+    func refreshKeywordMetricsSurfacesReconnectMarkerBesideFreshCachedPopularity() async throws {
+        let resolver = StubMCPAppResolver(resolvedApps: [
+            123: makeResolvedApp(appStoreID: 123, name: "Cal AI")
+        ])
+        let requestCount = Mutex(0)
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+            xsrfToken: "token",
+            updatedAt: .now
+        )
+        let context = try MCPTestContext(
+            resolver: resolver,
+            includeKeywordMetricsService: true,
+            popularityContextAppStoreIDProvider: { 123 },
+            appleAdsWebSessionProvider: { session },
+            httpHandler: { request in
+                requestCount.withLock { $0 += 1 }
+                Issue.record("Unexpected Apple Ads request to \(request.url?.absoluteString ?? "unknown URL")")
+                throw OpenASOError.providerUnavailable("Unexpected request")
+            }
+        )
+        try context.appleAdsWebSessionStore.save(session)
+        _ = try await context.service.addTrackedApp(appStoreID: 123, storefront: "us")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["calorie tracker"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+        let track = try #require(
+            try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>()).first
+        )
+        context.modelContext.insert(
+            KeywordDailyMetric(
+                queryKey: track.queryKey,
+                keyword: track.term,
+                storefront: track.storefront,
+                platform: track.platform,
+                popularityScore: 42,
+                difficultyScore: nil,
+                source: .appleAdsPopularity,
+                updatedAt: .now,
+                notes: "Fresh cached popularity"
+            )
+        )
+        try context.modelContext.save()
+        context.appleAdsWebSessionStore.markReconnectRequired(for: session)
+
+        let metricsRefresh = try await context.service.refreshKeywordMetrics(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        #expect(requestCount.withLock { $0 } == 0)
+        #expect(metricsRefresh.summary.updated == 1)
+        #expect(metricsRefresh.summary.skipped == 0)
+        #expect(metricsRefresh.summary.refreshed == 1)
+        #expect(metricsRefresh.summary.failed == 1)
+        #expect(metricsRefresh.outcomes.first?.track.popularityScore == 42)
+        #expect(metricsRefresh.outcomes.first?.error == nil)
+        #expect(metricsRefresh.batchSummary?.skipped == 0)
+        #expect(metricsRefresh.batchSummary?.errors.map(\.code) == ["apple_ads_session_expired"])
+    }
+
+    @Test
     func refreshKeywordMetricsWithInjectedServiceFailsGracefullyWhenAppleAdsIsNotConfigured() async throws {
         let resolver = StubMCPAppResolver(resolvedApps: [
             123: makeResolvedApp(appStoreID: 123, name: "Cal AI")
@@ -2776,6 +2895,7 @@ private struct MCPTestContext {
     let modelContext: ModelContext
     let backgroundModelStore: BackgroundModelStore
     let resolver: StubMCPAppResolver
+    let appleAdsWebSessionStore: AppleAdsWebSessionStore
     let service: OpenASOMCPService
 
     @MainActor
@@ -2803,6 +2923,13 @@ private struct MCPTestContext {
         self.resolver = resolver
         let httpClient = MockHTTPClient(handler: httpHandler)
         let appCatalogService = AppCatalogService(appResolver: resolver)
+        let testDefaults = try #require(
+            UserDefaults(suiteName: "com.thirdtech.openaso.mcp.tests.\(UUID().uuidString)")
+        )
+        self.appleAdsWebSessionStore = AppleAdsWebSessionStore(
+            defaults: testDefaults,
+            keychain: InMemoryKeychainService()
+        )
         let rankingRefreshCoordinator = rankingProvider.flatMap { provider in
             useRankingRefreshCoordinator
                 ? RankingRefreshCoordinator(rankingProvider: provider, appCatalogService: appCatalogService)
@@ -2823,8 +2950,8 @@ private struct MCPTestContext {
                 ? KeywordMetricsService(
                     httpClient: httpClient,
                     credentialStore: AppleAdsCredentialStore(keychain: InMemoryKeychainService()),
-                    settingsStore: AppSettingsStore(defaults: UserDefaults(suiteName: "com.thirdtech.openaso.mcp.tests.\(UUID().uuidString)") ?? .standard),
-                    webSessionStore: AppleAdsWebSessionStore(keychain: InMemoryKeychainService())
+                    settingsStore: AppSettingsStore(defaults: testDefaults),
+                    webSessionStore: appleAdsWebSessionStore
                 )
                 : nil,
             popularityContextAppStoreIDProvider: popularityContextAppStoreIDProvider,

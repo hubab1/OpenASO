@@ -33,6 +33,7 @@ enum AppleAdsConnectionState: Equatable {
     case dependencyIssue(String)
 
     static let noLinkedAppsMessage = "No linked Apple Ads apps were found for this account. Add a campaign-linked app in Apple Ads, then refresh."
+    static let reconnectRequiredMessage = "Apple Ads asked for sign-in again. Refresh the session to continue."
 
     var title: String {
         switch self {
@@ -146,13 +147,17 @@ enum AppleAdsConnectionState: Equatable {
     }
 
     static func classified(error: Error, hasSession: Bool) -> AppleAdsConnectionState {
+        if error is AppleAdsWebSessionExpiredError {
+            return .expiredSession(reconnectRequiredMessage)
+        }
+
         let message = OpenASOError.map(error).localizedDescription
         let lowercasedMessage = message.lowercased()
 
         if lowercasedMessage.contains("web session expired")
             || lowercasedMessage.contains("sign in")
             || lowercasedMessage.contains("<html") {
-            return .expiredSession("Apple Ads asked for sign-in again. Refresh the session to continue.")
+            return .expiredSession(reconnectRequiredMessage)
         }
 
         if lowercasedMessage.contains("at least one app")
@@ -175,6 +180,26 @@ enum AppleAdsConnectionState: Equatable {
         }
 
         return .expiredSession(message)
+    }
+
+    static func inferred(
+        hasSession: Bool,
+        requiresReconnect: Bool,
+        updatedAt: Date?
+    ) -> AppleAdsConnectionState {
+        guard hasSession else {
+            return .notConnected
+        }
+
+        if requiresReconnect {
+            return .expiredSession(reconnectRequiredMessage)
+        }
+
+        return .connected(updatedAt: updatedAt)
+    }
+
+    static func shouldClearManualPopularityContext(after error: Error) -> Bool {
+        !(error is AppleAdsWebSessionExpiredError)
     }
 }
 

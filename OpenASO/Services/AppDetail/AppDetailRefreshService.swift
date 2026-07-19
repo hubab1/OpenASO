@@ -80,6 +80,11 @@ struct KeywordBackgroundRefreshOutcome: Sendable {
     let error: OpenASOError?
 }
 
+private struct KeywordRefreshResult: Sendable {
+    let outcomes: [KeywordBackgroundRefreshOutcome]
+    let metricsError: OpenASOError?
+}
+
 private struct RankingPersistenceBatchOutcome: Sendable {
     let outcomes: [KeywordBackgroundRefreshOutcome]
     let statsRebuildRequests: Set<RankingStatsRebuildRequest>
@@ -212,13 +217,13 @@ final class AppDetailRefreshService: Sendable {
 
     private func performRefresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
         await progressStore?.beginRefresh(request)
-        let keywordOutcomes: [KeywordBackgroundRefreshOutcome]
+        let keywordRefreshResult: KeywordRefreshResult
         let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
         let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
 
         switch request.workspace {
         case .keywords:
-            keywordOutcomes = await refreshKeywords(request)
+            keywordRefreshResult = await refreshKeywords(request)
             if request.refreshRatings || request.refreshReviews {
                 (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
             } else {
@@ -236,12 +241,13 @@ final class AppDetailRefreshService: Sendable {
                 ratingOutcomes = []
                 reviewOutcomes = []
             }
-            keywordOutcomes = await refreshKeywords(request)
+            keywordRefreshResult = await refreshKeywords(request)
         }
 
         let firstError = firstRefreshError(
             workspace: request.workspace,
-            keywordOutcomes: keywordOutcomes,
+            keywordOutcomes: keywordRefreshResult.outcomes,
+            keywordMetricsError: keywordRefreshResult.metricsError,
             ratingOutcomes: ratingOutcomes,
             reviewOutcomes: reviewOutcomes
         )
@@ -249,20 +255,20 @@ final class AppDetailRefreshService: Sendable {
         await progressStore?.finish(error: firstError)
 
         return AppDetailRefreshResult(
-            keywordOutcomes: keywordOutcomes,
+            keywordOutcomes: keywordRefreshResult.outcomes,
             ratingOutcomes: ratingOutcomes,
             reviewOutcomes: reviewOutcomes,
             firstError: firstError
         )
     }
 
-    private func refreshKeywords(_ request: AppDetailRefreshRequest) async -> [KeywordBackgroundRefreshOutcome] {
+    private func refreshKeywords(_ request: AppDetailRefreshRequest) async -> KeywordRefreshResult {
         guard request.refreshKeywords, !request.trackIdentityKeys.isEmpty else {
             await progressStore?.updateStep(.keywords, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await progressStore?.updateStep(.metrics, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await recordStage(.rankings, attemptedCount: 0, failureCount: 0, isSkipped: true)
             await recordStage(.keywordMetrics, attemptedCount: 0, failureCount: 0, isSkipped: true)
-            return []
+            return KeywordRefreshResult(outcomes: [], metricsError: nil)
         }
 
         var didRecordRankingStage = false
@@ -315,36 +321,60 @@ final class AppDetailRefreshService: Sendable {
             )
             didRecordRankingStage = true
 
+            let metricsError: OpenASOError?
             if request.refreshMetrics {
                 await progressStore?.updatePhase(.refreshingMetrics)
-                let metricOutcomes = try await keywordMetricsService.refreshMetrics(
-                    for: rankingRequests.map(\.identityKey),
-                    popularityContextAppStoreID: request.popularityContextAppStoreID,
-                    webSession: request.appleAdsWebSession,
-                    using: backgroundModelStore,
-                    progress: { completed, total, failureCount in
-                        await self.progressStore?.updateStep(
-                            .metrics,
-                            status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
-                            completed: completed,
-                            total: total,
-                            failureCount: failureCount
-                        )
-                    }
-                )
-                await recordStage(
-                    .keywordMetrics,
-                    attemptedCount: metricOutcomes.count,
-                    failureCount: metricOutcomes.filter { $0.errorMessage != nil }.count
-                )
+                do {
+                    let metricResult = try await keywordMetricsService.refreshMetricsBatch(
+                        for: rankingRequests.map(\.identityKey),
+                        popularityContextAppStoreID: request.popularityContextAppStoreID,
+                        webSession: request.appleAdsWebSession,
+                        using: backgroundModelStore,
+                        progress: { completed, total, failureCount in
+                            await self.progressStore?.updateStep(
+                                .metrics,
+                                status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
+                                completed: completed,
+                                total: total,
+                                failureCount: failureCount
+                            )
+                        }
+                    )
+                    await recordStage(
+                        .keywordMetrics,
+                        attemptedCount: metricResult.outcomes.count,
+                        failureCount: metricResult.failureCount
+                    )
+                    metricsError = metricResult.firstErrorMessage.map(OpenASOError.providerUnavailable)
+                } catch {
+                    let mappedError = OpenASOError.map(error)
+                    let attemptedCount = rankingRequests.count
+                    await progressStore?.updateStep(
+                        .metrics,
+                        status: .failed,
+                        completed: attemptedCount,
+                        total: attemptedCount,
+                        failureCount: attemptedCount > 0 ? 1 : 0
+                    )
+                    await recordStage(
+                        .keywordMetrics,
+                        attemptedCount: attemptedCount,
+                        failureCount: attemptedCount > 0 ? 1 : 0
+                    )
+                    metricsError = mappedError
+                }
                 didRecordMetricsStage = true
             } else {
                 await progressStore?.updateStep(.metrics, status: .skipped, completed: 0, total: 0, failureCount: 0)
                 await recordStage(.keywordMetrics, attemptedCount: 0, failureCount: 0, isSkipped: true)
                 didRecordMetricsStage = true
+                metricsError = nil
             }
 
-            return combinedKeywordOutcomes
+            return KeywordRefreshResult(
+                outcomes: combinedKeywordOutcomes,
+                metricsError: metricsError
+            )
         } catch {
             let mappedError = OpenASOError.map(error)
             await progressStore?.updateStep(
@@ -369,9 +399,12 @@ final class AppDetailRefreshService: Sendable {
                     isSkipped: !request.refreshMetrics
                 )
             }
-            return request.trackIdentityKeys.map {
-                KeywordBackgroundRefreshOutcome(trackIdentityKey: $0, error: mappedError)
-            }
+            return KeywordRefreshResult(
+                outcomes: request.trackIdentityKeys.map {
+                    KeywordBackgroundRefreshOutcome(trackIdentityKey: $0, error: mappedError)
+                },
+                metricsError: nil
+            )
         }
     }
 
@@ -918,6 +951,7 @@ final class AppDetailRefreshService: Sendable {
     private func firstRefreshError(
         workspace: AppDetailRefreshWorkspace,
         keywordOutcomes: [KeywordBackgroundRefreshOutcome],
+        keywordMetricsError: OpenASOError?,
         ratingOutcomes: [AppStorefrontRatingRefreshOutcome],
         reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
     ) -> OpenASOError? {
@@ -927,9 +961,9 @@ final class AppDetailRefreshService: Sendable {
 
         switch workspace {
         case .keywords:
-            return keywordError ?? ratingError ?? reviewError
+            return keywordError ?? keywordMetricsError ?? ratingError ?? reviewError
         case .ratings:
-            return ratingError ?? reviewError ?? keywordError
+            return ratingError ?? reviewError ?? keywordError ?? keywordMetricsError
         }
     }
 }

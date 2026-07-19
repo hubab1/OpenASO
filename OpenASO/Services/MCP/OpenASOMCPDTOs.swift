@@ -505,25 +505,34 @@ struct OpenASOMCPKeywordRefreshOutcome: Codable, Sendable {
     let error: OpenASOMCPErrorDTO?
 }
 
+struct OpenASOMCPKeywordRefreshBatchSummary: Codable, Sendable, Equatable {
+    let skipped: Int
+    let errors: [OpenASOMCPErrorDTO]
+}
+
 struct OpenASOMCPKeywordRefreshResult: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case summary
         case outcomes
         case notes
+        case batchSummary
     }
 
     let summary: OpenASOMCPMutationSummary
     let outcomes: [OpenASOMCPKeywordRefreshOutcome]
     let notes: [String]
+    let batchSummary: OpenASOMCPKeywordRefreshBatchSummary?
 
     init(
         summary: OpenASOMCPMutationSummary,
         outcomes: [OpenASOMCPKeywordRefreshOutcome],
-        notes: [String] = []
+        notes: [String] = [],
+        batchSummary: OpenASOMCPKeywordRefreshBatchSummary? = nil
     ) {
         self.summary = summary
         self.outcomes = outcomes
         self.notes = notes
+        self.batchSummary = batchSummary
     }
 
     init(from decoder: any Decoder) throws {
@@ -531,6 +540,10 @@ struct OpenASOMCPKeywordRefreshResult: Codable, Sendable {
         summary = try container.decode(OpenASOMCPMutationSummary.self, forKey: .summary)
         outcomes = try container.decode([OpenASOMCPKeywordRefreshOutcome].self, forKey: .outcomes)
         notes = try container.decodeIfPresent([String].self, forKey: .notes) ?? []
+        batchSummary = try container.decodeIfPresent(
+            OpenASOMCPKeywordRefreshBatchSummary.self,
+            forKey: .batchSummary
+        )
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -540,6 +553,7 @@ struct OpenASOMCPKeywordRefreshResult: Codable, Sendable {
         if !notes.isEmpty {
             try container.encode(notes, forKey: .notes)
         }
+        try container.encodeIfPresent(batchSummary, forKey: .batchSummary)
     }
 }
 

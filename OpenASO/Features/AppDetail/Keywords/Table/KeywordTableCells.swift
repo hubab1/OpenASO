@@ -92,9 +92,20 @@ struct KeywordStoreCell: View {
 
 struct KeywordPopularityCell: View {
     let row: KeywordWorkspaceRow
+    let requiresAppleAdsReconnect: Bool
     let openAppleAdsSettings: () -> Void
 
     @State private var isShowingIndicatorPopover = false
+
+    init(
+        row: KeywordWorkspaceRow,
+        requiresAppleAdsReconnect: Bool = false,
+        openAppleAdsSettings: @escaping () -> Void
+    ) {
+        self.row = row
+        self.requiresAppleAdsReconnect = requiresAppleAdsReconnect
+        self.openAppleAdsSettings = openAppleAdsSettings
+    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -105,7 +116,7 @@ struct KeywordPopularityCell: View {
                 placeholder: "-"
             )
 
-            if row.popularityIndicatorState.isVisible {
+            if indicatorState.isVisible {
                 Button {
                     isShowingIndicatorPopover.toggle()
                 } label: {
@@ -119,7 +130,7 @@ struct KeywordPopularityCell: View {
                 .accessibilityLabel(indicatorHelp)
                 .popover(isPresented: $isShowingIndicatorPopover, arrowEdge: .bottom) {
                     KeywordPopularityIndicatorPopover(
-                        state: row.popularityIndicatorState,
+                        state: indicatorState,
                         openAppleAdsSettings: {
                             isShowingIndicatorPopover = false
                             openAppleAdsSettings()
@@ -131,12 +142,18 @@ struct KeywordPopularityCell: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var indicatorState: KeywordPopularityIndicatorState {
+        row.popularityIndicatorState(requiresAppleAdsReconnect: requiresAppleAdsReconnect)
+    }
+
     private var indicatorSystemImage: String {
-        switch row.popularityIndicatorState {
+        switch indicatorState {
         case .none:
             return "circle"
         case .stale:
             return "clock.badge.exclamationmark"
+        case .reconnectRequired:
+            return "arrow.clockwise.circle.fill"
         case .needsSetup:
             return "exclamationmark.triangle.fill"
         case .unavailable:
@@ -145,12 +162,12 @@ struct KeywordPopularityCell: View {
     }
 
     private var indicatorTint: Color {
-        switch row.popularityIndicatorState {
+        switch indicatorState {
         case .none:
             return .secondary
         case .stale:
             return .orange
-        case .needsSetup:
+        case .reconnectRequired, .needsSetup:
             return .red
         case .unavailable:
             return .secondary
@@ -158,11 +175,13 @@ struct KeywordPopularityCell: View {
     }
 
     private var indicatorHelp: String {
-        switch row.popularityIndicatorState {
+        switch indicatorState {
         case .none:
             return "Popularity is up to date"
         case .stale:
             return "Popularity is stale"
+        case .reconnectRequired:
+            return "Apple Ads reconnect required"
         case .needsSetup:
             return "Apple Ads setup required"
         case .unavailable:
@@ -413,7 +432,7 @@ private struct KeywordPopularityIndicatorPopover: View {
 
     private var detailMessage: String? {
         switch state {
-        case .needsSetup(let message), .unavailable(let message):
+        case .reconnectRequired(let message), .needsSetup(let message), .unavailable(let message):
             return message
         case .none, .stale:
             return nil
@@ -422,7 +441,7 @@ private struct KeywordPopularityIndicatorPopover: View {
 
     private var showsSettingsButton: Bool {
         switch state {
-        case .stale, .needsSetup:
+        case .stale, .reconnectRequired, .needsSetup:
             return true
         case .none, .unavailable:
             return false
@@ -435,6 +454,8 @@ private struct KeywordPopularityIndicatorPopover: View {
             return "Popularity"
         case .stale:
             return "Popularity Needs Refresh"
+        case .reconnectRequired:
+            return "Apple Ads Reconnect Required"
         case .needsSetup:
             return "Apple Ads Setup Required"
         case .unavailable:
@@ -448,6 +469,8 @@ private struct KeywordPopularityIndicatorPopover: View {
             return "Popularity is up to date."
         case .stale(let lastUpdatedAt):
             return "Popularity was last updated on \(lastUpdatedAt.formatted(date: .abbreviated, time: .shortened)). Refresh your Apple Ads web session so OpenASO can update this value."
+        case .reconnectRequired:
+            return "Refresh your Apple Ads session before requesting new popularity data. Existing cached values remain available."
         case .needsSetup:
             return "Popularity could not be fetched for this keyword. Connect or refresh Apple Ads so OpenASO can detect a linked app automatically."
         case .unavailable:
@@ -461,6 +484,8 @@ private struct KeywordPopularityIndicatorPopover: View {
             return "checkmark.circle.fill"
         case .stale:
             return "clock.badge.exclamationmark"
+        case .reconnectRequired:
+            return "arrow.clockwise.circle.fill"
         case .needsSetup:
             return "exclamationmark.triangle.fill"
         case .unavailable:
@@ -474,7 +499,7 @@ private struct KeywordPopularityIndicatorPopover: View {
             return .green
         case .stale:
             return .orange
-        case .needsSetup:
+        case .reconnectRequired, .needsSetup:
             return .red
         case .unavailable:
             return .secondary

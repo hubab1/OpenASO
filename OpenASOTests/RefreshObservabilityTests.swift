@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Synchronization
 import Testing
 @testable import OpenASO
 
@@ -134,11 +135,9 @@ struct RefreshObservabilityTests {
                         provider: .iTunesStore,
                         endpoint: .rankingSearch,
                         result: index.isMultiple(of: 10) ? .rateLimited : .success,
-                        durationNanoseconds: UInt64(index)
+                        durationNanoseconds: UInt64(index),
+                        isRetry: index.isMultiple(of: 12)
                     )
-                    if index.isMultiple(of: 12) {
-                        await recorder.recordRetry(runID: firstRunID, provider: .iTunesStore)
-                    }
                 }
             }
         }
@@ -185,19 +184,27 @@ struct RefreshObservabilityTests {
     }
 
     @Test
-    func ratingsRetryIsRecordedWithoutChangingRetryBehavior() async throws {
+    func gateRetryPreservesRunScopeAndRecordsPhysicalRetry() async throws {
         let recorder = RefreshMetricsRecorder(clock: .constant)
-        let base = RetryingRatingsHTTPClient()
-        let client = ObservedHTTPClient(base: base, recorder: recorder, clock: .constant)
-        let service = AppStorefrontRatingService(
-            httpClient: client,
-            retryPolicy: AppStorefrontRatingRetryPolicy(
-                maxAttempts: 2,
-                baseDelaySeconds: 0,
-                maxDelaySeconds: 0
+        let transport = ObservedSequenceHTTPClient(steps: [
+            ObservationHTTPClientStep(
+                statusCode: 429,
+                headers: ["Retry-After": "0"]
             ),
-            retrySleeper: { _ in },
-            refreshMetricsRecorder: recorder
+            ObservationHTTPClientStep(statusCode: 200),
+        ])
+        let client = ProviderHTTPClientPipeline.make(
+            transport: transport,
+            mode: .enabled(ProviderRequestPolicies(default: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 0,
+                maximumAttempts: 2,
+                baseBackoffNanoseconds: 0,
+                maximumBackoffNanoseconds: 0,
+                maximumElapsedNanoseconds: 1_000_000_000,
+                jitterFraction: 0
+            ))),
+            refreshMetricsRecorder: recorder,
+            refreshObservationClock: .constant
         )
         let runID = await recorder.begin(
             trigger: .manual,
@@ -206,67 +213,132 @@ struct RefreshObservabilityTests {
             requestedStorefrontCount: 1
         )
 
-        let outcomes = await RefreshObservationScope.$runID.withValue(runID) {
-            await service.fetchRatingOutcomes(
-                appStoreID: 123,
-                appName: "Private App Name",
-                storefronts: ["US"]
-            )
+        let output = try await RefreshObservationScope.$runID.withValue(runID) {
+            try await client.data(for: URLRequest(
+                url: try #require(URL(string: "https://itunes.apple.com/lookup?id=123&country=us"))
+            ))
         }
         await recorder.recordStage(
             runID: runID,
             stage: .ratings,
-            attemptedCount: outcomes.count,
-            failureCount: outcomes.filter { $0.error != nil }.count
+            attemptedCount: 1,
+            failureCount: 0
         )
         let summary = try #require(await recorder.finish(runID: runID))
         let provider = try #require(summary.providers[.iTunesStore])
 
-        #expect(outcomes.count == 1)
-        #expect(outcomes.first?.error == nil)
-        #expect(outcomes.first?.result?.ratingCount == 42)
-        #expect(await base.requestCount() == 2)
+        #expect((output.1 as? HTTPURLResponse)?.statusCode == 200)
+        #expect(await transport.attempts() == [
+            ObservedTransportAttempt(runID: runID, isRetry: false),
+            ObservedTransportAttempt(runID: runID, isRetry: true),
+        ])
         #expect(provider.requestCount == 2)
         #expect(provider.retryCount == 1)
         #expect(provider.endpointCounts[.ratingsLookup] == 2)
         #expect(provider.resultCounts[.rateLimited] == 1)
         #expect(provider.resultCounts[.success] == 1)
+        #expect(summary.result == .success)
     }
 
     @Test
-    func ratingsRetryIsNotRecordedWhenSleeperThrows() async throws {
-        let observation = try await ratingsSleeperFailureObservation(
-            throwing: RetrySleeperTestError()
+    func cancellationDuringInitialPacingIsObservedWithoutStartingTransport() async throws {
+        let recorder = RefreshMetricsRecorder(clock: .constant)
+        let transport = CountingHTTPClient()
+        let providerClock = ObservabilityManualProviderClock()
+        let client = ProviderHTTPClientPipeline.make(
+            transport: transport,
+            mode: .enabled(ProviderRequestPolicies(default: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 100,
+                maximumAttempts: 1,
+                baseBackoffNanoseconds: 0,
+                maximumBackoffNanoseconds: 0,
+                maximumElapsedNanoseconds: 0,
+                jitterFraction: 0
+            ))),
+            refreshMetricsRecorder: recorder,
+            refreshObservationClock: .constant,
+            providerRequestClock: providerClock.clock
         )
-        let iTunes = try #require(observation.summary.providers[.iTunesStore])
-        let appStoreWeb = try #require(observation.summary.providers[.appStoreWeb])
+        let firstRequest = URLRequest(
+            url: try #require(URL(string: "https://itunes.apple.com/search?term=first"))
+        )
+        _ = try await client.data(for: firstRequest)
+        let runID = await recorder.begin(
+            trigger: .manual,
+            workspace: .keywords,
+            requestedTrackCount: 1,
+            requestedStorefrontCount: 1
+        )
+        let pacedRequest = URLRequest(
+            url: try #require(URL(string: "https://itunes.apple.com/search?term=paced"))
+        )
+        let task = Task {
+            try await RefreshObservationScope.$runID.withValue(runID) {
+                try await client.data(for: pacedRequest)
+            }
+        }
+        #expect(await waitForObservabilitySleep(100, in: providerClock))
 
-        #expect(observation.requestCount == 2)
-        #expect(observation.sleeperCallCount == 2)
-        #expect(iTunes.requestCount == 1)
-        #expect(iTunes.retryCount == 0)
-        #expect(iTunes.resultCounts[.rateLimited] == 1)
-        #expect(appStoreWeb.requestCount == 1)
-        #expect(appStoreWeb.retryCount == 0)
-        #expect(appStoreWeb.resultCounts[.rateLimited] == 1)
-        #expect(!observation.summary.observedCancellation)
-        #expect(observation.summary.result == .failure)
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        let summary = try #require(await recorder.finish(runID: runID))
+
+        #expect(await transport.requestCount() == 1)
+        #expect(summary.providers.isEmpty)
+        #expect(summary.observedCancellation)
+        #expect(summary.result == .cancelled)
     }
 
     @Test
-    func ratingsRetrySleeperCancellationIsObservedWithoutCountingRetry() async throws {
-        let observation = try await ratingsSleeperFailureObservation(
-            throwing: CancellationError()
+    func cancellationDuringGateBackoffIsObservedWithoutStartingRetry() async throws {
+        let recorder = RefreshMetricsRecorder(clock: .constant)
+        let transport = ObservedSequenceHTTPClient(steps: [
+            ObservationHTTPClientStep(statusCode: 503),
+            ObservationHTTPClientStep(statusCode: 200),
+        ])
+        let providerClock = ObservabilityManualProviderClock()
+        let client = ProviderHTTPClientPipeline.make(
+            transport: transport,
+            mode: .enabled(ProviderRequestPolicies(default: ProviderRequestPolicy(
+                minimumIntervalNanoseconds: 0,
+                maximumAttempts: 2,
+                baseBackoffNanoseconds: 100,
+                maximumBackoffNanoseconds: 100,
+                maximumElapsedNanoseconds: 1_000,
+                jitterFraction: 0
+            ))),
+            refreshMetricsRecorder: recorder,
+            refreshObservationClock: .constant,
+            providerRequestClock: providerClock.clock
         )
-        let iTunes = try #require(observation.summary.providers[.iTunesStore])
-        let appStoreWeb = try #require(observation.summary.providers[.appStoreWeb])
+        let runID = await recorder.begin(
+            trigger: .manual,
+            workspace: .ratings,
+            requestedTrackCount: 0,
+            requestedStorefrontCount: 1
+        )
+        let task = Task {
+            try await RefreshObservationScope.$runID.withValue(runID) {
+                try await client.data(for: URLRequest(
+                    url: URL(string: "https://itunes.apple.com/lookup?id=123&country=us")!
+                ))
+            }
+        }
+        #expect(await waitForObservabilitySleep(100, in: providerClock))
 
-        #expect(observation.requestCount == 2)
-        #expect(observation.sleeperCallCount == 2)
-        #expect(iTunes.retryCount == 0)
-        #expect(appStoreWeb.retryCount == 0)
-        #expect(observation.summary.observedCancellation)
-        #expect(observation.summary.result == .cancelled)
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        let summary = try #require(await recorder.finish(runID: runID))
+        let provider = try #require(summary.providers[.iTunesStore])
+
+        #expect(await transport.attempts() == [
+            ObservedTransportAttempt(runID: runID, isRetry: false),
+        ])
+        #expect(provider.requestCount == 1)
+        #expect(provider.retryCount == 0)
+        #expect(provider.resultCounts[.serverFailure] == 1)
+        #expect(summary.observedCancellation)
+        #expect(summary.result == .cancelled)
     }
 
     @Test
@@ -384,6 +456,47 @@ struct RefreshObservabilityTests {
             #expect(provider.resultCounts[.success] == keywordCount)
             #expect(summary.result == .partialFailure)
         }
+    }
+
+    @Test
+    func appDetailMetricsExpiryRecordsOneFailureWithoutRewritingRankingOutcomes() async throws {
+        let httpClient = RankingAndExpiredAppleAdsHTTPClient()
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+            xsrfToken: "token",
+            updatedAt: .now
+        )
+        let fixture = try makeKeywordRefreshFixture(
+            trackSpecifications: (0 ..< 3).map { index in
+                KeywordRefreshTrackSpecification(
+                    appStoreID: 123,
+                    term: "expired-session-keyword-\(index)",
+                    storefront: "us",
+                    platform: .iphone
+                )
+            },
+            storefrontCodes: ["us"],
+            httpClient: httpClient,
+            refreshMetrics: true,
+            popularityContextAppStoreID: 123_456_789,
+            appleAdsWebSession: session
+        )
+
+        let result = await fixture.service.refresh(fixture.request)
+        let summary = try #require(await fixture.recorder.completedSummaries().only)
+        let rankings = try #require(summary.stages[.rankings])
+        let metrics = try #require(summary.stages[.keywordMetrics])
+
+        #expect(result.keywordOutcomes.count == 3)
+        #expect(result.keywordOutcomes.allSatisfy { $0.error == nil })
+        #expect(result.firstError?.localizedDescription.contains(AppleAdsWebSessionExpiredError.message) == true)
+        #expect(rankings.attemptedCount == 3)
+        #expect(rankings.failureCount == 0)
+        #expect(metrics.attemptedCount == 3)
+        #expect(metrics.failureCount == 1)
+        #expect(summary.result == .partialFailure)
+        #expect(await httpClient.rankingRequestCount() == 3)
+        #expect(await httpClient.popularityRequestCount() == 1)
     }
 
     @Test
@@ -552,53 +665,6 @@ struct RefreshObservabilityTests {
         #expect(persistedFailureCount == 1)
     }
 
-    private func ratingsSleeperFailureObservation<Failure: Error & Sendable>(
-        throwing failure: Failure
-    ) async throws -> (summary: RefreshRunSummary, requestCount: Int, sleeperCallCount: Int) {
-        let recorder = RefreshMetricsRecorder(clock: .constant)
-        let base = AlwaysRateLimitedRatingsHTTPClient()
-        let sleeperCounter = AsyncCallCounter()
-        let client = ObservedHTTPClient(base: base, recorder: recorder, clock: .constant)
-        let service = AppStorefrontRatingService(
-            httpClient: client,
-            retryPolicy: AppStorefrontRatingRetryPolicy(
-                maxAttempts: 2,
-                baseDelaySeconds: 0,
-                maxDelaySeconds: 0
-            ),
-            retrySleeper: { _ in
-                await sleeperCounter.recordCall()
-                throw failure
-            },
-            refreshMetricsRecorder: recorder
-        )
-        let runID = await recorder.begin(
-            trigger: .manual,
-            workspace: .ratings,
-            requestedTrackCount: 0,
-            requestedStorefrontCount: 1
-        )
-
-        let outcomes = await RefreshObservationScope.$runID.withValue(runID) {
-            await service.fetchRatingOutcomes(
-                appStoreID: 123,
-                appName: "Private App Name",
-                storefronts: ["US"]
-            )
-        }
-        await recorder.recordStage(
-            runID: runID,
-            stage: .ratings,
-            attemptedCount: outcomes.count,
-            failureCount: outcomes.filter { $0.error != nil }.count
-        )
-        let summary = try #require(await recorder.finish(runID: runID))
-        return (
-            summary,
-            await base.requestCount(),
-            await sleeperCounter.callCount()
-        )
-    }
 }
 
 private extension RefreshObservationClock {
@@ -640,67 +706,125 @@ private struct NetworkFailureHTTPClient: HTTPClient {
     }
 }
 
-private actor RetryingRatingsHTTPClient: HTTPClient {
-    private var count = 0
-
-    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        count += 1
-        let url = request.url ?? URL(string: "https://itunes.apple.com/lookup")!
-        if count == 1 {
-            return (
-                Data(),
-                makeHTTPURLResponse(url: url, statusCode: 429, headerFields: ["Retry-After": "0"])
-            )
-        }
-        let payload = """
-        {
-          "results": [
-            {
-              "trackId": 123,
-              "userRatingCount": 42,
-              "averageUserRating": 4.5
-            }
-          ]
-        }
-        """
-        return (Data(payload.utf8), makeHTTPURLResponse(url: url, statusCode: 200))
-    }
-
-    func requestCount() -> Int {
-        count
-    }
+private struct ObservationHTTPClientStep: Sendable {
+    let statusCode: Int
+    var headers: [String: String] = [:]
 }
 
-private actor AlwaysRateLimitedRatingsHTTPClient: HTTPClient {
-    private var count = 0
+private struct ObservedTransportAttempt: Equatable, Sendable {
+    let runID: UUID?
+    let isRetry: Bool
+}
+
+private actor ObservedSequenceHTTPClient: HTTPClient {
+    private var steps: [ObservationHTTPClientStep]
+    private var recordedAttempts: [ObservedTransportAttempt] = []
+
+    init(steps: [ObservationHTTPClientStep]) {
+        self.steps = steps
+    }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        count += 1
-        let url = request.url ?? URL(string: "https://itunes.apple.com/lookup")!
+        recordedAttempts.append(ObservedTransportAttempt(
+            runID: RefreshObservationScope.runID,
+            isRetry: ProviderRequestObservationScope.isRetryAttempt
+        ))
+        guard !steps.isEmpty else {
+            throw OpenASOError.providerUnavailable("Unexpected observed transport request.")
+        }
+        let step = steps.removeFirst()
+        let url = request.url ?? URL(string: "https://example.invalid")!
         return (
             Data(),
-            makeHTTPURLResponse(url: url, statusCode: 429, headerFields: ["Retry-After": "0"])
+            makeHTTPURLResponse(
+                url: url,
+                statusCode: step.statusCode,
+                headerFields: step.headers
+            )
         )
     }
 
-    func requestCount() -> Int {
-        count
+    func attempts() -> [ObservedTransportAttempt] {
+        recordedAttempts
     }
 }
 
-private actor AsyncCallCounter {
-    private var count = 0
-
-    func recordCall() {
-        count += 1
+private final class ObservabilityManualProviderClock: Sendable {
+    private struct PendingSleep {
+        let deadline: UInt64
+        let continuation: CheckedContinuation<Void, any Error>
     }
 
-    func callCount() -> Int {
-        count
+    private struct State {
+        var now: UInt64 = 0
+        var pending: [UUID: PendingSleep] = [:]
+        var cancelledBeforeRegistration: Set<UUID> = []
+    }
+
+    private let state = Mutex(State())
+
+    var clock: ProviderRequestClock {
+        ProviderRequestClock(
+            nowNanoseconds: { self.state.withLock(\.now) },
+            nowDate: { Date(timeIntervalSince1970: 0) },
+            sleepUntilNanoseconds: sleep
+        )
+    }
+
+    var pendingDeadlines: [UInt64] {
+        state.withLock { $0.pending.values.map(\.deadline) }
+    }
+
+    private func sleep(until deadline: UInt64) async throws {
+        try Task.checkCancellation()
+        let sleepID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                var resumesImmediately = false
+                var resumesCancelled = false
+                state.withLock { state in
+                    if state.cancelledBeforeRegistration.remove(sleepID) != nil || Task.isCancelled {
+                        resumesCancelled = true
+                    } else if deadline <= state.now {
+                        resumesImmediately = true
+                    } else {
+                        state.pending[sleepID] = PendingSleep(
+                            deadline: deadline,
+                            continuation: continuation
+                        )
+                    }
+                }
+                if resumesCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else if resumesImmediately {
+                    continuation.resume()
+                }
+            }
+        } onCancel: {
+            let continuation = self.state.withLock { state -> CheckedContinuation<Void, any Error>? in
+                if let pending = state.pending.removeValue(forKey: sleepID) {
+                    return pending.continuation
+                }
+                state.cancelledBeforeRegistration.insert(sleepID)
+                return nil
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
     }
 }
 
-private struct RetrySleeperTestError: Error, Sendable {}
+private func waitForObservabilitySleep(
+    _ deadline: UInt64,
+    in clock: ObservabilityManualProviderClock
+) async -> Bool {
+    for _ in 0 ..< 2_000 {
+        if clock.pendingDeadlines.contains(deadline) {
+            return true
+        }
+        await Task.yield()
+    }
+    return false
+}
 
 private actor RankingHTTPClient: HTTPClient {
     private var count = 0
@@ -716,6 +840,36 @@ private actor RankingHTTPClient: HTTPClient {
 
     func requestCount() -> Int {
         count
+    }
+}
+
+private actor RankingAndExpiredAppleAdsHTTPClient: HTTPClient {
+    private var rankingCount = 0
+    private var popularityCount = 0
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = request.url ?? URL(string: "https://itunes.apple.com/search")!
+        if url.host == "app-ads.apple.com" {
+            popularityCount += 1
+            return (
+                Data(#"{"message":"unauthorized"}"#.utf8),
+                makeHTTPURLResponse(url: url, statusCode: 401)
+            )
+        }
+
+        rankingCount += 1
+        return (
+            Data("{\"results\":[]}".utf8),
+            makeHTTPURLResponse(url: url, statusCode: 200)
+        )
+    }
+
+    func rankingRequestCount() -> Int {
+        rankingCount
+    }
+
+    func popularityRequestCount() -> Int {
+        popularityCount
     }
 }
 
@@ -830,7 +984,10 @@ private func makeKeywordRefreshFixture(
     trackSpecifications: [KeywordRefreshTrackSpecification],
     additionalIdentityKeys: [String] = [],
     storefrontCodes: [String],
-    httpClient: any HTTPClient
+    httpClient: any HTTPClient,
+    refreshMetrics: Bool = false,
+    popularityContextAppStoreID: Int64? = nil,
+    appleAdsWebSession: AppleAdsWebSession? = nil
 ) throws -> KeywordRefreshFixture {
     let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
     let modelContext = ModelContext(container)
@@ -886,7 +1043,8 @@ private func makeKeywordRefreshFixture(
         allowsIconNetworkFetches: false,
         backgroundModelStore: backgroundModelStore,
         refreshObservationClock: .constant,
-        refreshMetricsRecorder: recorder
+        refreshMetricsRecorder: recorder,
+        providerRequestGateMode: .disabled
     )
     let service = try #require(services.appDetailRefreshService)
     let request = AppDetailRefreshRequest(
@@ -903,12 +1061,12 @@ private func makeKeywordRefreshFixture(
         trackIdentityKeys: trackIdentityKeys,
         trigger: "manual",
         refreshKeywords: true,
-        refreshMetrics: false,
+        refreshMetrics: refreshMetrics,
         refreshRatings: false,
         refreshReviews: false,
         recordsRatingsReviewsRefresh: false,
-        popularityContextAppStoreID: nil,
-        appleAdsWebSession: nil,
+        popularityContextAppStoreID: popularityContextAppStoreID,
+        appleAdsWebSession: appleAdsWebSession,
         appStoreConnectCredentials: AppStoreConnectCredentials(
             issuerID: "",
             keyID: "",

@@ -161,6 +161,64 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func appServicesWiresGateOutsideObservationAndRecordsPhysicalRetry() async throws {
+        let defaults = Self.makeDefaults()
+        let observationClock = RefreshObservationClock(nowNanoseconds: { 1_000 })
+        let recorder = RefreshMetricsRecorder(clock: observationClock)
+        var requestCount = 0
+        let transport = MockHTTPClient { request in
+            requestCount += 1
+            if requestCount == 1 {
+                return (
+                    Data(),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 503)
+                )
+            }
+            return (
+                Data(#"{"results":[{"trackId":123,"trackName":"Example"}]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let policy = ProviderRequestPolicy(
+            minimumIntervalNanoseconds: 0,
+            maximumAttempts: 2,
+            baseBackoffNanoseconds: 0,
+            maximumBackoffNanoseconds: 0,
+            maximumElapsedNanoseconds: 1_000_000_000,
+            jitterFraction: 0
+        )
+        let services = AppServices(
+            httpClient: transport,
+            defaults: defaults,
+            keychain: InMemoryKeychainService(),
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false,
+            refreshObservationClock: observationClock,
+            refreshMetricsRecorder: recorder,
+            providerRequestGateMode: .enabled(ProviderRequestPolicies(default: policy))
+        )
+        let runID = await recorder.begin(
+            trigger: .manual,
+            workspace: .keywords,
+            requestedTrackCount: 0,
+            requestedStorefrontCount: 1
+        )
+
+        let resolved = try await RefreshObservationScope.$runID.withValue(runID) {
+            try await services.appResolver.resolve(appStoreID: 123, storefrontCode: "US")
+        }
+        let summary = try #require(await recorder.finish(runID: runID))
+        let provider = try #require(summary.providers[.iTunesStore])
+
+        #expect(resolved.appStoreID == 123)
+        #expect(requestCount == 2)
+        #expect(provider.requestCount == 2)
+        #expect(provider.retryCount == 1)
+        #expect(provider.resultCounts[.serverFailure] == 1)
+        #expect(provider.resultCounts[.success] == 1)
+    }
+
+    @Test
     func savedKeychainItemsLoadWhenPresenceFlagsExist() throws {
         let defaults = Self.makeDefaults()
         let keychain = InMemoryKeychainService()
@@ -205,6 +263,164 @@ struct AppServicesDependencyTests {
         #expect(loadedAppleAdsStore.webLoginCredentials == webLoginCredentials)
         #expect(loadedWebSessionStore.session == session)
         #expect(loadedAppStoreConnectStore.credentials == appStoreConnectCredentials)
+    }
+
+    @Test
+    func reconnectRequirementPersistsByNamespaceWithoutClearingSession() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.reconnect-a")
+        let otherNamespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.reconnect-b")
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value",
+            xsrfToken: "token",
+            updatedAt: .now,
+            accountName: "Example Account"
+        )
+        let store = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        try store.save(session)
+
+        store.markReconnectRequired(for: session)
+
+        #expect(store.requiresReconnect)
+        #expect(store.session == session)
+        #expect(store.hasSession)
+
+        let reloadedStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let otherStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: otherNamespace
+        )
+        #expect(reloadedStore.requiresReconnect)
+        #expect(reloadedStore.session == session)
+        #expect(!otherStore.requiresReconnect)
+
+        reloadedStore.clearReconnectRequirement(for: session)
+        #expect(!reloadedStore.requiresReconnect)
+        #expect(reloadedStore.session == session)
+
+        reloadedStore.markReconnectRequired(for: session)
+        reloadedStore.clear()
+        #expect(!reloadedStore.requiresReconnect)
+        #expect(!reloadedStore.hasSession)
+    }
+
+    @Test
+    func reconnectRequirementOnlyMutatesTheSessionRevisionThatWasObserved() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.reconnect-race")
+        let store = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let oldSession = AppleAdsWebSession(
+            cookieHeader: "cookie=old",
+            xsrfToken: "old-token",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let currentSession = AppleAdsWebSession(
+            cookieHeader: "cookie=current",
+            xsrfToken: "current-token",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        try store.save(oldSession)
+        try store.save(currentSession)
+        store.markReconnectRequired(for: oldSession)
+        #expect(!store.requiresReconnect)
+
+        store.markReconnectRequired(for: currentSession)
+        #expect(store.requiresReconnect)
+
+        store.clearReconnectRequirement(for: oldSession)
+        #expect(store.requiresReconnect)
+
+        store.clearReconnectRequirement(for: currentSession)
+        #expect(!store.requiresReconnect)
+    }
+
+    @Test
+    func sessionValidationMarksExpiryAndSuccessClearsItWithoutDiscardingConnectionData() async throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.validation")
+        let sessionStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let credentialStore = AppleAdsCredentialStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace,
+            loadsEnvironmentCredentials: false
+        )
+        let settingsStore = AppSettingsStore(defaults: defaults)
+        let loginCredentials = AppleAdsWebLoginCredentials(
+            username: "person@example.com",
+            password: "password"
+        )
+        let session = AppleAdsWebSession(
+            cookieHeader: "cookie=value",
+            xsrfToken: "token",
+            updatedAt: .now,
+            accountName: "Example Account"
+        )
+        try credentialStore.saveWebLoginCredentials(loginCredentials)
+        try sessionStore.save(session)
+        settingsStore.savePopularityContext(appStoreID: 123_456_789, storefrontCode: "GB")
+
+        let expiredManager = AppleAdsWebSessionManager(
+            sessionStore: sessionStore,
+            settingsStore: settingsStore,
+            credentialStore: credentialStore,
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                return (Data(), makeHTTPURLResponse(url: url, statusCode: 401))
+            },
+            namespace: namespace
+        )
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await expiredManager.validateSession(adamId: 987_654_321)
+        }
+        #expect(sessionStore.requiresReconnect)
+        #expect(sessionStore.session == session)
+        #expect(credentialStore.webLoginCredentials == loginCredentials)
+        #expect(settingsStore.popularityContextAppStoreID == 123_456_789)
+        #expect(settingsStore.popularityContextStorefrontCode == "GB")
+
+        let successfulManager = AppleAdsWebSessionManager(
+            sessionStore: sessionStore,
+            settingsStore: settingsStore,
+            credentialStore: credentialStore,
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                let payload = #"{"status":"success","data":[{"name":"workout","popularity":57}]}"#
+                return (Data(payload.utf8), makeHTTPURLResponse(url: url, statusCode: 200))
+            },
+            namespace: namespace
+        )
+
+        let popularity = try await successfulManager.validateSession(adamId: 987_654_321)
+
+        #expect(popularity == 57)
+        #expect(!sessionStore.requiresReconnect)
+        #expect(sessionStore.session == session)
+        #expect(credentialStore.webLoginCredentials == loginCredentials)
+        #expect(settingsStore.popularityContextAppStoreID == 123_456_789)
+        #expect(settingsStore.popularityContextStorefrontCode == "GB")
     }
 
     @Test
@@ -275,6 +491,150 @@ struct AppServicesDependencyTests {
         #expect(popularities["term 1"] == 1)
         #expect(popularities["term 100"] == 100)
         #expect(popularities["term 101"] == 1)
+    }
+
+    @Test
+    func cmPopularityClientClassifiesUnauthorizedAsExpiredSession() async {
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(statusCode: 401)
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesForbiddenAsExpiredSession() async {
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(statusCode: 403)
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesHTMLWhereJSONIsExpectedAsExpiredSession() async {
+        let payload = "  \n\u{FEFF}<!DoCtYpE html><html><body>Sign in</body></html>"
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(
+                data: Data(payload.utf8),
+                statusCode: 200
+            )
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesAppleSignInRedirectAsExpiredSession() async {
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(
+                statusCode: 302,
+                headerFields: ["Location": "https://idmsa.apple.com/appleauth/auth/signin"]
+            )
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesFollowedAppleSignInRedirectAsExpiredSession() async throws {
+        let loginURL = try #require(URL(string: "https://appleid.apple.com/auth/authorize"))
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(statusCode: 200, responseURL: loginURL)
+        }
+    }
+
+    @Test
+    func cmPopularityClientDoesNotTreatHTMLTextInsideJSONAsExpiredSession() async throws {
+        let payload = #"{"status":"success","data":[{"name":"<html keyword","popularity":57}]}"#
+
+        let popularities = try await cmPopularities(data: Data(payload.utf8), statusCode: 200)
+
+        #expect(popularities["<html keyword"] == 57)
+    }
+
+    @Test
+    func cmPopularityClientPreservesNonAuthenticationHTTPFailures() async {
+        await #expect(throws: OpenASOError.appNotFound) {
+            _ = try await cmPopularities(statusCode: 404)
+        }
+        await #expect(throws: OpenASOError.rateLimited) {
+            _ = try await cmPopularities(statusCode: 429)
+        }
+        await #expect(throws: OpenASOError.providerUnavailable("HTTP 500")) {
+            _ = try await cmPopularities(
+                data: Data("<html>Server error</html>".utf8),
+                statusCode: 500,
+                headerFields: ["Content-Type": "text/html"]
+            )
+        }
+    }
+
+    @Test
+    func cmPopularityClientPreservesCancellation() async {
+        let taskCancellationClient = MockHTTPClient { _ in
+            throw CancellationError()
+        }
+        await #expect(throws: CancellationError.self) {
+            _ = try await self.cmPopularities(using: taskCancellationClient)
+        }
+
+        let urlCancellationClient = MockHTTPClient { _ in
+            throw URLError(.cancelled)
+        }
+        await #expect(throws: URLError.self) {
+            _ = try await self.cmPopularities(using: urlCancellationClient)
+        }
+    }
+
+    @Test
+    func cmPopularityClientPreservesTransportFailures() async {
+        let client = MockHTTPClient { _ in
+            throw URLError(.timedOut)
+        }
+
+        await #expect(throws: URLError.self) {
+            _ = try await self.cmPopularities(using: client)
+        }
+    }
+
+    @Test
+    func cmPopularityClientRejectsNonHTTPResponses() async throws {
+        let client = MockHTTPClient { request in
+            let url = try #require(request.url)
+            return (Data(), URLResponse(url: url, mimeType: nil, expectedContentLength: 0, textEncodingName: nil))
+        }
+
+        await #expect(throws: OpenASOError.unexpectedResponse) {
+            _ = try await self.cmPopularities(using: client)
+        }
+    }
+
+    private func cmPopularities(
+        data: Data = Data(#"{"status":"success","data":[{"name":"focus","popularity":50}]}"#.utf8),
+        statusCode: Int,
+        responseURL: URL? = nil,
+        headerFields: [String: String]? = nil
+    ) async throws -> [String: Int] {
+        let client = MockHTTPClient { request in
+            let requestURL = try #require(request.url)
+            return (
+                data,
+                makeHTTPURLResponse(
+                    url: responseURL ?? requestURL,
+                    statusCode: statusCode,
+                    headerFields: headerFields
+                )
+            )
+        }
+        return try await cmPopularities(using: client)
+    }
+
+    private func cmPopularities(using client: HTTPClient) async throws -> [String: Int] {
+        try await AppleAdsCMPopularityClient(httpClient: client).keywordPopularities(
+            for: ["focus"],
+            storefrontCode: "us",
+            adamId: 123_456_789,
+            session: AppleAdsWebSession(
+                cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+                xsrfToken: "token",
+                updatedAt: .now
+            )
+        )
     }
 
     private static func makeDefaults() -> UserDefaults {

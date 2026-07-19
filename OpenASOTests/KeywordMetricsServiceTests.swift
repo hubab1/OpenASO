@@ -7,11 +7,13 @@ import Testing
 @MainActor
 struct KeywordMetricsServiceTests {
     @Test
-    func failedRefreshPreservesExistingPopularityScoreAndUpdatedAt() async throws {
+    func expiredRefreshPreservesExistingPopularityAndRequiresReconnect() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
+        var requestCount = 0
         let services = AppServices.mocked(
             httpClient: MockHTTPClient { request in
+                requestCount += 1
                 let payload = """
                 <html><body>Sign in</body></html>
                 """
@@ -46,16 +48,29 @@ struct KeywordMetricsServiceTests {
         modelContext.insert(trackedApp)
         modelContext.insert(track)
         modelContext.insert(metrics)
+        let rankingStatus = "Ranking failed to refresh. Preserve this failure."
+        try TrackedKeywordRefreshStatusStore.set(
+            rankingStatus,
+            domain: .ranking,
+            for: track,
+            in: modelContext
+        )
         try modelContext.save()
 
         _ = await services.keywordMetricsService.refreshMetrics(for: trackedApp, tracks: [track], in: modelContext)
 
         #expect(metrics.popularityScore == 72)
         #expect(metrics.updatedAt == previousUpdatedAt)
-        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+        let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
             for: track,
             in: modelContext
-        ).popularityMessage == "Popularity failed to fetch. Apple Ads web session expired. Refresh it in Settings.")
+        )
+        #expect(refreshStatus.rankingMessage == rankingStatus)
+        #expect(refreshStatus.popularityMessage == nil)
+        #expect(track.statusMessage == nil)
+        #expect(services.appleAdsWebSessionStore.requiresReconnect)
+        #expect(services.appleAdsWebSessionStore.hasSession)
+        #expect(requestCount == 1)
     }
 
     @Test
@@ -197,6 +212,98 @@ struct KeywordMetricsServiceTests {
         #expect(app.adamId == 6_608_976_383)
         #expect(app.appName == "Atten - App Blocker")
         #expect(app.countryOrRegionCodes == ["GB"])
+    }
+
+    @Test
+    func webSessionAuthenticationFailureStopsLinkedAppFallbacks() async throws {
+        var requestedPaths: [String] = []
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                requestedPaths.append(url.path)
+                return (
+                    Data(#"{"error":"unauthorized"}"#.utf8),
+                    makeHTTPURLResponse(url: url, statusCode: 401)
+                )
+            }
+        )
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "searchads.soid=session",
+                xsrfToken: "xsrf",
+                updatedAt: .now,
+                accountName: "Third Tech Ltd"
+            )
+        )
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await services.appleAdsWebSessionManager.resolveDefaultLinkedApp()
+        }
+        #expect(requestedPaths == ["/reporting/graphql"])
+        #expect(services.appleAdsWebSessionStore.requiresReconnect)
+        #expect(services.appleAdsWebSessionStore.hasSession)
+    }
+
+    @Test
+    func campaignAuthenticationFailureStopsLaterEndpointAndSellerFallbacks() async throws {
+        var requestedPaths: [String] = []
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                requestedPaths.append(url.path)
+                if url.path == "/reporting/graphql" {
+                    let payload = #"{"data":{"reportingV5":{"getReportsByCampaign":{"row":[]}}}}"#
+                    return (
+                        Data(payload.utf8),
+                        makeHTTPURLResponse(url: url, statusCode: 200)
+                    )
+                }
+
+                return (
+                    Data(#"{"error":"forbidden"}"#.utf8),
+                    makeHTTPURLResponse(url: url, statusCode: 403)
+                )
+            }
+        )
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "searchads.soid=session",
+                xsrfToken: "xsrf",
+                updatedAt: .now,
+                accountName: "Third Tech Ltd"
+            )
+        )
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await services.appleAdsWebSessionManager.resolveDefaultLinkedApp()
+        }
+        #expect(requestedPaths == ["/reporting/graphql", "/cm/api/v5/campaigns"])
+        #expect(services.appleAdsWebSessionStore.requiresReconnect)
+        #expect(services.appleAdsWebSessionStore.hasSession)
+    }
+
+    @Test
+    func webSessionCancellationStopsLinkedAppFallbacks() async throws {
+        var requestCount = 0
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { _ in
+                requestCount += 1
+                throw CancellationError()
+            }
+        )
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "searchads.soid=session",
+                xsrfToken: "xsrf",
+                updatedAt: .now,
+                accountName: "Third Tech Ltd"
+            )
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await services.appleAdsWebSessionManager.resolveDefaultLinkedApp()
+        }
+        #expect(requestCount == 1)
     }
 
     @Test
@@ -509,6 +616,299 @@ struct KeywordMetricsServiceTests {
         #expect(progressUpdates.first == .init(completed: 0, total: terms.count, failureCount: 0))
         #expect(progressUpdates.last == .init(completed: terms.count, total: terms.count, failureCount: 0))
         #expect(freshnessFetchRecorder.snapshot() == [terms.count])
+    }
+
+    @Test
+    func expiredBackgroundSessionStopsNinetyTwoKeywordBatchAndPreservesCachedMetrics() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let requestBodies = KeywordPopularityRequestRecorder()
+        let client = MockHTTPClient { request in
+            let body = try #require(request.httpBody)
+            requestBodies.record(try JSONDecoder().decode(KeywordPopularityRequestBody.self, from: body))
+            return (
+                Data(#"{"error":"forbidden"}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 403)
+            )
+        }
+        let defaultsSuiteName = "KeywordMetricsServiceTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer { defaults.removePersistentDomain(forName: defaultsSuiteName) }
+        let namespace = AppNamespace(bundleIdentifier: defaultsSuiteName)
+        let keychain = InMemoryKeychainService()
+        let webSessionStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let session = completeWebSession
+        try webSessionStore.save(session)
+        let service = KeywordMetricsService(
+            httpClient: client,
+            credentialStore: AppleAdsCredentialStore(
+                defaults: defaults,
+                keychain: keychain,
+                namespace: namespace
+            ),
+            settingsStore: AppSettingsStore(defaults: defaults),
+            webSessionStore: webSessionStore
+        )
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let progressRecorder = KeywordMetricsProgressRecorder()
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let staleUpdatedAt = try #require(Calendar.current.date(byAdding: .day, value: -8, to: .now))
+        var identityKeys: [String] = []
+        var expectedScores: [String: Int] = [:]
+        var expectedNotes: [String: String] = [:]
+        var expectedStatuses: [String: String] = [:]
+        var expectedStatusDates: [String: Date] = [:]
+        var expectedFirstRequestTerms: [(identityKey: String, term: String)] = []
+
+        for index in 0..<92 {
+            let storefront = index < 46 ? "ca" : "us"
+            let track = try makeTrack(
+                term: "cached-\(index)",
+                storefront: storefront,
+                trackedApp: trackedApp,
+                in: modelContext
+            )
+            let status = "Ranking failed to refresh. Cached sentinel \(index)."
+            let statusDate = Date(timeIntervalSince1970: 1_900_000_000 + Double(index))
+            let note = "cached-note-\(index)"
+            try TrackedKeywordRefreshStatusStore.set(
+                status,
+                domain: .ranking,
+                for: track,
+                updatedAt: statusDate,
+                in: modelContext
+            )
+            identityKeys.append(track.identityKey)
+            let score = 20 + (index % 70)
+            expectedScores[track.queryKey] = score
+            expectedNotes[track.queryKey] = note
+            expectedStatuses[track.identityKey] = status
+            expectedStatusDates[track.identityKey] = statusDate
+            if storefront == "ca" {
+                expectedFirstRequestTerms.append((track.identityKey, track.term))
+            }
+            modelContext.insert(
+                KeywordDailyMetric(
+                    queryKey: track.queryKey,
+                    keyword: track.term,
+                    storefront: track.storefront,
+                    platform: track.platform,
+                    popularityScore: score,
+                    difficultyScore: nil,
+                    source: .appleAdsPopularity,
+                    updatedAt: staleUpdatedAt,
+                    notes: note
+                )
+            )
+        }
+        try modelContext.save()
+
+        let result = try await service.refreshMetricsBatch(
+            for: identityKeys,
+            popularityContextAppStoreID: 123_456_789,
+            webSession: session,
+            using: backgroundModelStore,
+            progress: { completed, total, failureCount in
+                await progressRecorder.record(
+                    completed: completed,
+                    total: total,
+                    failureCount: failureCount
+                )
+            }
+        )
+        let repeatedResult = try await service.refreshMetricsBatch(
+            for: identityKeys,
+            popularityContextAppStoreID: 123_456_789,
+            webSession: session,
+            using: backgroundModelStore
+        )
+        let storedState = try await backgroundModelStore.read { context in
+            let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
+            let tracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
+            let statusSnapshots = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: tracks.map(\.identityKey),
+                in: context
+            )
+            return (
+                scores: Dictionary(uniqueKeysWithValues: metrics.map { ($0.queryKey, $0.popularityScore) }),
+                updatedAt: Set(metrics.map(\.updatedAt)),
+                notes: Dictionary(uniqueKeysWithValues: metrics.compactMap { metric in
+                    metric.notes.map { (metric.queryKey, $0) }
+                }),
+                statuses: Dictionary(uniqueKeysWithValues: tracks.compactMap { track in
+                    statusSnapshots[track.identityKey]?.rankingMessage.map { (track.identityKey, $0) }
+                }),
+                statusDates: Dictionary(uniqueKeysWithValues: tracks.compactMap { track in
+                    statusSnapshots[track.identityKey]?.rankingUpdatedAt.map { (track.identityKey, $0) }
+                }),
+                popularityMessages: statusSnapshots.values.compactMap(\.popularityMessage),
+                popularityDates: statusSnapshots.values.compactMap(\.popularityUpdatedAt)
+            )
+        }
+        let progressUpdates = await progressRecorder.snapshot()
+        let requests = requestBodies.snapshot()
+
+        #expect(requests.count == 1)
+        #expect(requests.first?.storefronts == ["CA"])
+        #expect(
+            requests.first?.terms
+                == expectedFirstRequestTerms.sorted { $0.identityKey < $1.identityKey }.map(\.term)
+        )
+        #expect(result.outcomes.count == 92)
+        #expect(result.outcomes.allSatisfy { $0.errorMessage == nil && $0.isSkipped })
+        #expect(result.skippedCount == 92)
+        #expect(result.batchErrors == [.appleAdsSessionExpired])
+        #expect(result.failureCount == 1)
+        #expect(repeatedResult.skippedCount == 92)
+        #expect(repeatedResult.failureCount == 1)
+        #expect(progressUpdates.first == .init(completed: 0, total: 92, failureCount: 0))
+        #expect(progressUpdates.last == .init(completed: 92, total: 92, failureCount: 1))
+        #expect(storedState.scores == expectedScores.mapValues(Optional.some))
+        #expect(storedState.updatedAt == [staleUpdatedAt])
+        #expect(storedState.notes == expectedNotes)
+        #expect(storedState.statuses == expectedStatuses)
+        #expect(storedState.statusDates == expectedStatusDates)
+        #expect(storedState.popularityMessages.isEmpty)
+        #expect(storedState.popularityDates.isEmpty)
+        #expect(webSessionStore.requiresReconnect)
+        #expect(webSessionStore.session == session)
+    }
+
+    @Test
+    func cancelledBackgroundRefreshWithReconnectMarkerDoesNotReportCompletedSkips() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let requestCount = Mutex(0)
+        let client = MockHTTPClient { request in
+            requestCount.withLock { $0 += 1 }
+            Issue.record("Unexpected Apple Ads request to \(request.url?.absoluteString ?? "unknown URL")")
+            throw OpenASOError.providerUnavailable("Unexpected request")
+        }
+        let defaultsSuiteName = "KeywordMetricsServiceTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer { defaults.removePersistentDomain(forName: defaultsSuiteName) }
+        let namespace = AppNamespace(bundleIdentifier: defaultsSuiteName)
+        let keychain = InMemoryKeychainService()
+        let webSessionStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let session = completeWebSession
+        try webSessionStore.save(session)
+        webSessionStore.markReconnectRequired(for: session)
+        let service = KeywordMetricsService(
+            httpClient: client,
+            credentialStore: AppleAdsCredentialStore(
+                defaults: defaults,
+                keychain: keychain,
+                namespace: namespace
+            ),
+            settingsStore: AppSettingsStore(defaults: defaults),
+            webSessionStore: webSessionStore
+        )
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let track = try makeTrack(term: "cancelled", trackedApp: trackedApp, in: modelContext)
+        try TrackedKeywordRefreshStatusStore.set(
+            "Ranking status must survive cancellation.",
+            domain: .ranking,
+            for: track,
+            in: modelContext
+        )
+        try modelContext.save()
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+
+        let refreshTask = Task {
+            try await service.refreshMetricsBatch(
+                for: [track.identityKey],
+                popularityContextAppStoreID: 123_456_789,
+                webSession: session,
+                using: backgroundModelStore
+            )
+        }
+        refreshTask.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await refreshTask.value
+        }
+        #expect(requestCount.withLock { $0 } == 0)
+        let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(for: track, in: modelContext)
+        #expect(refreshStatus.rankingMessage == "Ranking status must survive cancellation.")
+        #expect(refreshStatus.popularityMessage == nil)
+        #expect(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).isEmpty)
+    }
+
+    @Test
+    func cancelledForegroundPopularityRequestStopsLaterStorefrontsWithoutStatusWrites() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        var requestCount = 0
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { _ in
+                requestCount += 1
+                throw CancellationError()
+            },
+            modelContainer: container
+        )
+        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
+        try services.appleAdsWebSessionStore.save(completeWebSession)
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let caTrack = try makeTrack(term: "first", storefront: "ca", trackedApp: trackedApp, in: modelContext)
+        let usTrack = try makeTrack(term: "second", storefront: "us", trackedApp: trackedApp, in: modelContext)
+        try TrackedKeywordRefreshStatusStore.set(
+            "Ranking CA status",
+            domain: .ranking,
+            for: caTrack,
+            in: modelContext
+        )
+        try TrackedKeywordRefreshStatusStore.set(
+            "Ranking US status",
+            domain: .ranking,
+            for: usTrack,
+            in: modelContext
+        )
+        try modelContext.save()
+
+        let outcomes = await services.keywordMetricsService.refreshMetrics(
+            for: trackedApp,
+            tracks: [usTrack, caTrack],
+            in: modelContext
+        )
+
+        #expect(outcomes.isEmpty)
+        #expect(requestCount == 1)
+        let caStatus = try TrackedKeywordRefreshStatusStore.snapshot(for: caTrack, in: modelContext)
+        let usStatus = try TrackedKeywordRefreshStatusStore.snapshot(for: usTrack, in: modelContext)
+        #expect(caStatus.rankingMessage == "Ranking CA status")
+        #expect(caStatus.popularityMessage == nil)
+        #expect(usStatus.rankingMessage == "Ranking US status")
+        #expect(usStatus.popularityMessage == nil)
+        #expect(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).isEmpty)
     }
 
     @Test

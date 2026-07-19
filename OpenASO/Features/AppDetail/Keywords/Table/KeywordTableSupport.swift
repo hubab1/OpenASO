@@ -494,6 +494,14 @@ struct KeywordWorkspaceRow: Identifiable {
         popularityIndicatorState(now: .now)
     }
 
+    func popularityIndicatorState(
+        now: Date = .now,
+        requiresAppleAdsReconnect: Bool
+    ) -> KeywordPopularityIndicatorState {
+        popularityIndicatorState(now: now)
+            .overridingForAppleAdsReconnectRequirement(requiresAppleAdsReconnect)
+    }
+
     func popularityIndicatorState(now: Date) -> KeywordPopularityIndicatorState {
         if metrics?.popularityScore != nil {
             guard let updatedAt = metrics?.updatedAt,
@@ -628,11 +636,22 @@ struct KeywordRankingAppSummary: Identifiable {
 enum KeywordPopularityIndicatorState: Equatable {
     case none
     case stale(lastUpdatedAt: Date)
+    case reconnectRequired(message: String)
     case needsSetup(message: String)
     case unavailable(message: String)
 
+    static let reconnectRequiredDetail = "Apple Ads asked for sign-in again. Any cached popularity remains visible, but refresh the session before requesting an update."
+
     var isVisible: Bool {
         self != .none
+    }
+
+    func overridingForAppleAdsReconnectRequirement(_ isRequired: Bool) -> Self {
+        guard isRequired else { return self }
+        if case .unavailable = self {
+            return self
+        }
+        return .reconnectRequired(message: Self.reconnectRequiredDetail)
     }
 }
 

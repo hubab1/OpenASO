@@ -47,15 +47,21 @@ final class AppServices {
         allowsIconNetworkFetches: Bool = true,
         backgroundModelStore: BackgroundModelStore? = nil,
         refreshObservationClock: RefreshObservationClock = .live,
-        refreshMetricsRecorder: RefreshMetricsRecorder? = nil
+        refreshMetricsRecorder: RefreshMetricsRecorder? = nil,
+        providerRequestGateMode: ProviderRequestGateMode? = nil,
+        providerRequestClock: ProviderRequestClock = .live,
+        providerRequestRandomness: ProviderRequestRandomness = .live
     ) {
         let refreshMetricsRecorder = refreshMetricsRecorder ?? RefreshMetricsRecorder(
             clock: refreshObservationClock
         )
-        let httpClient = ObservedHTTPClient(
-            base: httpClient,
-            recorder: refreshMetricsRecorder,
-            clock: refreshObservationClock
+        let httpClient = ProviderHTTPClientPipeline.make(
+            transport: httpClient,
+            mode: providerRequestGateMode ?? .production(defaults: defaults),
+            refreshMetricsRecorder: refreshMetricsRecorder,
+            refreshObservationClock: refreshObservationClock,
+            providerRequestClock: providerRequestClock,
+            providerRequestRandomness: providerRequestRandomness
         )
         let appleAdsCredentialStore = AppleAdsCredentialStore(
             defaults: defaults,
@@ -87,10 +93,7 @@ final class AppServices {
         let catalogService = AppCatalogService(appResolver: resolver)
         let screenshotDownloadService = ScreenshotDownloadService()
         let screenshotDownloadProgressStore = ScreenshotDownloadProgressStore()
-        let appStorefrontRatingService = AppStorefrontRatingService(
-            httpClient: httpClient,
-            refreshMetricsRecorder: refreshMetricsRecorder
-        )
+        let appStorefrontRatingService = AppStorefrontRatingService(httpClient: httpClient)
         let appStorefrontReviewService = AppStorefrontReviewService(
             httpClient: httpClient
         )
@@ -316,37 +319,49 @@ final class AppServices {
         let keywordMetricsService = keywordMetricsService
         let refreshProgressStore = refreshProgressStore
         Task {
-            guard let trackIdentityKeys = try? await keywordMetricsService.stalePopularityTrackIdentityKeys(
-                using: backgroundModelStore
-            ), !trackIdentityKeys.isEmpty else {
+            let trackIdentityKeys: [String]
+            do {
+                trackIdentityKeys = try await keywordMetricsService.stalePopularityTrackIdentityKeys(
+                    using: backgroundModelStore
+                )
+            } catch {
+                refreshProgressStore.beginAppleAdsPopularityRefresh(total: 0)
+                refreshProgressStore.finish(error: OpenASOError.map(error))
+                return
+            }
+            guard !trackIdentityKeys.isEmpty else {
                 return
             }
 
             refreshProgressStore.beginAppleAdsPopularityRefresh(total: trackIdentityKeys.count)
-            guard let outcomes = try? await keywordMetricsService.refreshMetrics(
-                for: trackIdentityKeys,
-                popularityContextAppStoreID: popularityContextAppStoreID,
-                webSession: webSession,
-                using: backgroundModelStore,
-                progress: { completed, total, failureCount in
-                    await refreshProgressStore.updateStep(
-                        .metrics,
-                        status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
-                        completed: completed,
-                        total: total,
-                        failureCount: failureCount
-                    )
-                }
-            ), !outcomes.isEmpty else {
-                refreshProgressStore.finish(error: nil)
-                return
-            }
+            do {
+                let result = try await keywordMetricsService.refreshMetricsBatch(
+                    for: trackIdentityKeys,
+                    popularityContextAppStoreID: popularityContextAppStoreID,
+                    webSession: webSession,
+                    using: backgroundModelStore,
+                    progress: { completed, total, failureCount in
+                        await refreshProgressStore.updateStep(
+                            .metrics,
+                            status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
+                            completed: completed,
+                            total: total,
+                            failureCount: failureCount
+                        )
+                    }
+                )
 
-            await MainActor.run {
-                self.markBackgroundModelStoreChanged()
+                if !result.outcomes.isEmpty {
+                    await MainActor.run {
+                        self.markBackgroundModelStoreChanged()
+                    }
+                }
+                refreshProgressStore.finish(
+                    error: result.firstErrorMessage.map(OpenASOError.providerUnavailable)
+                )
+            } catch {
+                refreshProgressStore.finish(error: OpenASOError.map(error))
             }
-            let firstErrorMessage = outcomes.first { $0.errorMessage != nil }?.errorMessage
-            refreshProgressStore.finish(error: firstErrorMessage.map(OpenASOError.providerUnavailable))
         }
     }
 
@@ -388,7 +403,8 @@ extension AppServices {
             },
             loadsEnvironmentCredentials: false,
             allowsIconNetworkFetches: allowsIconNetworkFetches,
-            backgroundModelStore: backgroundModelStore
+            backgroundModelStore: backgroundModelStore,
+            providerRequestGateMode: .disabled
         )
     }
 }

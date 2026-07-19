@@ -937,10 +937,7 @@ struct AppDetailRefreshServiceQueueTests {
                 settingsStore: AppSettingsStore(defaults: makeDefaults()),
                 webSessionStore: AppleAdsWebSessionStore(defaults: makeDefaults(), keychain: InMemoryKeychainService())
             ),
-            appStorefrontRatingService: AppStorefrontRatingService(
-                httpClient: httpClient,
-                retryPolicy: AppStorefrontRatingRetryPolicy(maxAttempts: 1, baseDelaySeconds: 0, maxDelaySeconds: 0)
-            ),
+            appStorefrontRatingService: AppStorefrontRatingService(httpClient: httpClient),
             appStorefrontReviewService: AppStorefrontReviewService(httpClient: httpClient),
             appStoreConnectReviewService: AppStoreConnectReviewService(
                 httpClient: httpClient,
