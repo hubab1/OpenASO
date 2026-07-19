@@ -972,8 +972,14 @@ struct OpenASOMCPServiceTests {
 
         #expect(await rankingProvider.searchedKeysSnapshot() == terms.map(rankingQueryKey))
         let tracks = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+            for: tracks.map(\.identityKey),
+            in: context.modelContext
+        )
         #expect(tracks.allSatisfy { $0.lastRefreshAt == nil })
-        #expect(tracks.allSatisfy { $0.statusMessage?.contains("Ranking failed") == true })
+        #expect(tracks.allSatisfy {
+            statuses[$0.identityKey]?.rankingMessage?.contains("Ranking failed") == true
+        })
     }
 
     @Test
@@ -1246,11 +1252,15 @@ struct OpenASOMCPServiceTests {
         )
 
         #expect(result.summary.failed == 1)
-        let failedTrack = try #require(ModelContext(context.container).fetch(
+        let failedContext = ModelContext(context.container)
+        let failedTrack = try #require(failedContext.fetch(
             FetchDescriptor<TrackedAppKeyword>()
         ).first)
         #expect(failedTrack.lastRefreshAt == successfulRefreshAt)
-        #expect(failedTrack.statusMessage?.contains("Ranking failed") == true)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: failedTrack,
+            in: failedContext
+        ).rankingMessage?.contains("Ranking failed") == true)
 
         await rankingProvider.clearFailure(for: rankingQueryKey("alpha"))
         let retry = try await context.service.refreshKeywordRankings(
@@ -1259,11 +1269,15 @@ struct OpenASOMCPServiceTests {
             platform: "iphone"
         )
         #expect(retry.summary.refreshed == 1)
-        let recoveredTrack = try #require(ModelContext(context.container).fetch(
+        let recoveredContext = ModelContext(context.container)
+        let recoveredTrack = try #require(recoveredContext.fetch(
             FetchDescriptor<TrackedAppKeyword>()
         ).first)
         #expect(recoveredTrack.lastRefreshAt == isoDate("2026-05-07T12:00:00Z"))
-        #expect(recoveredTrack.statusMessage == nil)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: recoveredTrack,
+            in: recoveredContext
+        ).rankingMessage == nil)
     }
 
     @Test
@@ -1662,7 +1676,11 @@ struct OpenASOMCPServiceTests {
 
         let tracksAfterCancellation = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
         #expect(tracksAfterCancellation.allSatisfy { $0.lastRefreshAt == nil })
-        #expect(tracksAfterCancellation.allSatisfy { $0.statusMessage == nil })
+        let statusesAfterCancellation = try TrackedKeywordRefreshStatusStore.snapshots(
+            for: tracksAfterCancellation.map(\.identityKey),
+            in: context.modelContext
+        )
+        #expect(statusesAfterCancellation.isEmpty)
         let attemptsAfterCancellation = try ModelContext(context.container).fetch(
             FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
         )
@@ -1795,7 +1813,12 @@ struct OpenASOMCPServiceTests {
         )
         let tracks = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
         let track = try #require(tracks.first)
-        track.statusMessage = "Ranking failed to refresh. Network request failed."
+        try TrackedKeywordRefreshStatusStore.set(
+            "Ranking failed to refresh. Network request failed.",
+            domain: .ranking,
+            for: track,
+            in: context.modelContext
+        )
         context.modelContext.insert(KeywordDailyMetric(
             queryKey: track.queryKey,
             keyword: track.term,
@@ -1816,6 +1839,8 @@ struct OpenASOMCPServiceTests {
 
         #expect(metricsRefresh.summary.failed == 0)
         #expect(metricsRefresh.outcomes.first?.error == nil)
+        #expect(metricsRefresh.outcomes.first?.track.rankingStatusMessage?.contains("Ranking failed") == true)
+        #expect(metricsRefresh.outcomes.first?.track.popularityStatusMessage == nil)
         #expect(metricsRefresh.outcomes.first?.track.statusMessage?.contains("Ranking failed") == true)
         #expect(metricsRefresh.outcomes.first?.track.popularityScore == 42)
     }

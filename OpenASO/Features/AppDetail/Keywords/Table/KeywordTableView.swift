@@ -347,12 +347,16 @@ struct KeywordTableView: View {
         guard !rows.isEmpty else { return }
 
         var chartKeys = selectedChartKeywordKeys
-        rows.forEach { row in
-            chartKeys.remove(row.track.identityKey)
-            modelContext.delete(row.track)
-        }
 
         do {
+            try TrackedKeywordRefreshStatusStore.deleteStatuses(
+                for: rows.map(\.track.identityKey),
+                in: modelContext
+            )
+            rows.forEach { row in
+                chartKeys.remove(row.track.identityKey)
+                modelContext.delete(row.track)
+            }
             try modelContext.save()
             saveChartSelection(chartKeys)
             selection.subtract(rows.map(\.id))

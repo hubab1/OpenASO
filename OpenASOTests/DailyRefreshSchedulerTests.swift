@@ -129,6 +129,7 @@ private func makeInMemoryContainer() throws -> ModelContainer {
         KeywordAppRanking.self,
         TrackedApp.self,
         TrackedAppKeyword.self,
+        TrackedKeywordRefreshStatus.self,
         TrackedKeywordDailyRanking.self,
         TrackedKeywordRankedResult.self,
         Storefront.self

@@ -216,6 +216,8 @@ struct OpenASOMCPKeywordSummary: Codable, Identifiable, Sendable {
     let popularityScore: Int?
     let difficultyScore: Int?
     let notes: String
+    let rankingStatusMessage: String?
+    let popularityStatusMessage: String?
     let statusMessage: String?
     let lastRefreshAt: Date?
     let createdAt: Date

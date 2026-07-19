@@ -198,9 +198,17 @@ struct RankingRefreshCoordinatorTests {
         #expect(outcomes.first(where: { $0.trackID == fixture.firstTrack.persistentModelID })?.error == .networkUnavailable)
         #expect(outcomes.first(where: { $0.trackID == fixture.secondTrack.persistentModelID })?.error == .networkUnavailable)
         #expect(outcomes.first(where: { $0.trackID == fixture.thirdTrack.persistentModelID })?.rank == 2)
-        #expect(fixture.firstTrack.statusMessage?.contains("network") == true)
-        #expect(fixture.secondTrack.statusMessage?.contains("network") == true)
-        #expect(fixture.thirdTrack.statusMessage == nil)
+        let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+            for: [
+                fixture.firstTrack.identityKey,
+                fixture.secondTrack.identityKey,
+                fixture.thirdTrack.identityKey,
+            ],
+            in: modelContext
+        )
+        #expect(statuses[fixture.firstTrack.identityKey]?.rankingMessage?.contains("network") == true)
+        #expect(statuses[fixture.secondTrack.identityKey]?.rankingMessage?.contains("network") == true)
+        #expect(statuses[fixture.thirdTrack.identityKey]?.rankingMessage == nil)
 
         let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
         #expect(snapshots.map(\.trackIdentityKey) == [fixture.thirdTrack.identityKey])
@@ -1261,6 +1269,7 @@ private func makeInMemoryContainer() throws -> ModelContainer {
         KeywordAppRanking.self,
         TrackedApp.self,
         TrackedAppKeyword.self,
+        TrackedKeywordRefreshStatus.self,
         TrackedKeywordDailyRanking.self,
         TrackedKeywordRankedResult.self,
         Storefront.self

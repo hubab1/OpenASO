@@ -287,6 +287,7 @@ struct KeywordWorkspaceRow: Identifiable {
     let track: TrackedAppKeyword
     let storefront: StorefrontDefinition?
     let metrics: KeywordMetricsSnapshot?
+    let refreshStatus: KeywordRefreshStatusSnapshot
     let latestSnapshot: KeywordRankingCrawlSummary?
     let trendSnapshots: [KeywordRankingCrawlSummary]
     let trendPoints: [Int]
@@ -299,6 +300,7 @@ struct KeywordWorkspaceRow: Identifiable {
         track: TrackedAppKeyword,
         storefront: StorefrontDefinition?,
         metrics: KeywordMetricsSnapshot?,
+        refreshStatus: KeywordRefreshStatusSnapshot = .empty,
         latestSnapshot: KeywordRankingCrawlSummary?,
         trendSnapshots: [KeywordRankingCrawlSummary],
         rankingApps: [KeywordRankingAppSummary],
@@ -307,6 +309,7 @@ struct KeywordWorkspaceRow: Identifiable {
         self.track = track
         self.storefront = storefront
         self.metrics = metrics
+        self.refreshStatus = refreshStatus
         self.latestSnapshot = latestSnapshot
         self.currentRank = latestSnapshot?.rank
         let orderedTrendSnapshots = trendSnapshots.sorted { lhs, rhs in
@@ -331,6 +334,7 @@ struct KeywordWorkspaceRow: Identifiable {
         track: TrackedAppKeyword,
         storefront: StorefrontDefinition?,
         metrics: KeywordDailyMetric?,
+        refreshStatus: KeywordRefreshStatusSnapshot = .empty,
         latestSnapshot: KeywordRankingCrawlSummary?,
         trendSnapshots: [KeywordRankingCrawlSummary],
         rankingApps: [KeywordRankingAppSummary],
@@ -340,6 +344,7 @@ struct KeywordWorkspaceRow: Identifiable {
             track: track,
             storefront: storefront,
             metrics: metrics.map(KeywordMetricsSnapshot.init),
+            refreshStatus: refreshStatus,
             latestSnapshot: latestSnapshot,
             trendSnapshots: trendSnapshots,
             rankingApps: rankingApps,
@@ -351,6 +356,7 @@ struct KeywordWorkspaceRow: Identifiable {
         track: TrackedAppKeyword,
         storefront: StorefrontDefinition?,
         metrics: KeywordDailyMetric?,
+        refreshStatus: KeywordRefreshStatusSnapshot = .empty,
         latestSnapshot: TrackedKeywordDailyRanking?,
         trendSnapshots: [TrackedKeywordDailyRanking],
         rankingApps: [TrackedKeywordRankedResult]
@@ -359,6 +365,7 @@ struct KeywordWorkspaceRow: Identifiable {
             track: track,
             storefront: storefront,
             metrics: metrics.map(KeywordMetricsSnapshot.init),
+            refreshStatus: refreshStatus,
             latestSnapshot: latestSnapshot.map(KeywordRankingCrawlSummary.init),
             trendSnapshots: trendSnapshots.map(KeywordRankingCrawlSummary.init),
             rankingApps: rankingApps.map(KeywordRankingAppSummary.init),
@@ -463,6 +470,10 @@ struct KeywordWorkspaceRow: Identifiable {
     }
 
     var statusMessage: String? {
+        if let statusMessage = refreshStatus.displayMessage, !statusMessage.isEmpty {
+            return statusMessage
+        }
+
         if let statusMessage = track.statusMessage, !statusMessage.isEmpty {
             return statusMessage
         }
@@ -494,16 +505,24 @@ struct KeywordWorkspaceRow: Identifiable {
             return .stale(lastUpdatedAt: updatedAt)
         }
 
-        guard let statusMessage else {
+        let popularityStatusMessage = refreshStatus.popularityMessage
+            ?? track.statusMessage.flatMap { legacyStatusMessage in
+                TrackedKeywordRefreshStatusStore.domain(forLegacyMessage: legacyStatusMessage) == .popularity
+                    ? legacyStatusMessage
+                    : nil
+            }
+            ?? statusMessage
+
+        guard let popularityStatusMessage else {
             return .none
         }
 
-        if statusMessage.hasPrefix("Popularity unavailable.") {
-            return .unavailable(message: statusMessage)
+        if popularityStatusMessage.hasPrefix("Popularity unavailable.") {
+            return .unavailable(message: popularityStatusMessage)
         }
 
-        if statusMessage.hasPrefix("Popularity failed to fetch.") {
-            return .needsSetup(message: statusMessage)
+        if popularityStatusMessage.hasPrefix("Popularity failed to fetch.") {
+            return .needsSetup(message: popularityStatusMessage)
         }
 
         return .none

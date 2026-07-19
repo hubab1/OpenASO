@@ -903,9 +903,17 @@ final class OpenASOMCPService: Sendable {
         queryKeys: Array(Set(tracks.map(\.queryKey))),
         in: modelContext
       )
+      let refreshStatuses = try TrackedKeywordRefreshStatusStore.snapshots(
+        for: tracks.map(\.identityKey),
+        in: modelContext
+      )
       let total = tracks.count
       let items = Array(tracks.dropFirst(page.offset).prefix(page.limit)).map {
-        Self.keywordSummary(track: $0, metrics: metricsByQueryKey[$0.queryKey])
+        Self.keywordSummary(
+          track: $0,
+          metrics: metricsByQueryKey[$0.queryKey],
+          refreshStatus: refreshStatuses[$0.identityKey]
+        )
       }
       return OpenASOMCPPage(
         items: items,
@@ -1414,8 +1422,16 @@ final class OpenASOMCPService: Sendable {
       }
       track.notes = notes
       let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
+      let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+        for: track,
+        in: modelContext
+      )
       return OpenASOMCPKeywordNotesResult(
-        track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+        track: Self.keywordSummary(
+          track: track,
+          metrics: metrics[track.queryKey],
+          refreshStatus: refreshStatus
+        ),
         summary: OpenASOMCPMutationSummary(
           inserted: 0,
           updated: 1,
@@ -1863,20 +1879,42 @@ final class OpenASOMCPService: Sendable {
               )
             }
             let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
+            let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+              for: track,
+              in: modelContext
+            )
             outcomes.append(
               OpenASOMCPKeywordRefreshOutcome(
-                track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+                track: Self.keywordSummary(
+                  track: track,
+                  metrics: metrics[track.queryKey],
+                  refreshStatus: refreshStatus
+                ),
                 error: nil
               ))
           } else if let error = item.2,
             let track = try Self.fetchTrackedKeyword(
               identityKey: item.0.identityKey, in: modelContext)
           {
-            track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
+            try TrackedKeywordRefreshStatusStore.set(
+              "Ranking failed to refresh. \(error.localizedDescription)",
+              domain: .ranking,
+              for: track,
+              updatedAt: now(),
+              in: modelContext
+            )
             let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
+            let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+              for: track,
+              in: modelContext
+            )
             outcomes.append(
               OpenASOMCPKeywordRefreshOutcome(
-                track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+                track: Self.keywordSummary(
+                  track: track,
+                  metrics: metrics[track.queryKey],
+                  refreshStatus: refreshStatus
+                ),
                 error: OpenASOMCPErrorDTO(error)
               ))
           }
@@ -1953,7 +1991,13 @@ final class OpenASOMCPService: Sendable {
         for identityKey in trackIdentityKeys {
           guard let track = try Self.fetchTrackedKeyword(identityKey: identityKey, in: modelContext)
           else { continue }
-          track.statusMessage = message
+          try TrackedKeywordRefreshStatusStore.set(
+            message,
+            domain: .popularity,
+            for: track,
+            updatedAt: now(),
+            in: modelContext
+          )
         }
       }
       refreshErrorsByIdentityKey = Dictionary(
@@ -1966,13 +2010,25 @@ final class OpenASOMCPService: Sendable {
         try Self.fetchTrackedKeyword(identityKey: $0, in: modelContext)
       }
       let metrics = try Self.metricsByQueryKey(queryKeys: tracks.map(\.queryKey), in: modelContext)
+      let refreshStatuses = try TrackedKeywordRefreshStatusStore.snapshots(
+        for: tracks.map(\.identityKey),
+        in: modelContext
+      )
       let outcomes = tracks.map { track in
         let metric = metrics[track.queryKey]
+        let refreshStatus = TrackedKeywordRefreshStatusStore.snapshot(
+          for: track,
+          persisted: refreshStatuses[track.identityKey]
+        )
         let error =
           refreshErrors[track.identityKey]
-          ?? Self.popularityStatusMessage(from: track.statusMessage)
+          ?? refreshStatus.popularityMessage
         return OpenASOMCPKeywordRefreshOutcome(
-          track: Self.keywordSummary(track: track, metrics: metric),
+          track: Self.keywordSummary(
+            track: track,
+            metrics: metric,
+            refreshStatus: refreshStatus
+          ),
           error: error.map {
             OpenASOMCPErrorDTO(
               code: $0.localizedCaseInsensitiveContains("Connect an Apple Ads")
@@ -3817,7 +3873,11 @@ extension OpenASOMCPService {
     )
   }
 
-  fileprivate static func keywordSummary(track: TrackedAppKeyword, metrics: KeywordDailyMetric?)
+  fileprivate static func keywordSummary(
+    track: TrackedAppKeyword,
+    metrics: KeywordDailyMetric?,
+    refreshStatus: KeywordRefreshStatusSnapshot? = nil
+  )
     -> OpenASOMCPKeywordSummary
   {
     let latest = track.latestSnapshot
@@ -3829,6 +3889,10 @@ extension OpenASOMCPService {
       rankDelta = nil
     }
 
+    let resolvedStatus = TrackedKeywordRefreshStatusStore.snapshot(
+      for: track,
+      persisted: refreshStatus
+    )
     return OpenASOMCPKeywordSummary(
       id: track.identityKey,
       trackIdentityKey: track.identityKey,
@@ -3844,7 +3908,9 @@ extension OpenASOMCPService {
       popularityScore: metrics?.popularityScore,
       difficultyScore: metrics?.difficultyScore,
       notes: track.notes,
-      statusMessage: track.statusMessage,
+      rankingStatusMessage: resolvedStatus.rankingMessage,
+      popularityStatusMessage: resolvedStatus.popularityMessage,
+      statusMessage: resolvedStatus.preferredMessage,
       lastRefreshAt: track.lastRefreshAt,
       createdAt: track.createdAt
     )
@@ -4141,17 +4207,6 @@ extension OpenASOMCPService {
       || host == "itunes.apple.com"
   }
 
-  fileprivate static func popularityStatusMessage(from statusMessage: String?) -> String? {
-    guard let statusMessage else { return nil }
-    guard
-      statusMessage.hasPrefix("Popularity failed to fetch.")
-        || statusMessage.hasPrefix("Popularity unavailable.")
-    else {
-      return nil
-    }
-    return statusMessage
-  }
-
   fileprivate static func fetchStoreApp(appStoreID: Int64, in modelContext: ModelContext) throws
     -> StoreApp?
   {
@@ -4393,7 +4448,13 @@ extension OpenASOMCPService {
     }
     observation.items.removeAll { !retainedAppStoreIDSet.contains($0.appStoreID) }
 
-    track.statusMessage = nil
+    try TrackedKeywordRefreshStatusStore.set(
+      nil,
+      domain: .ranking,
+      for: track,
+      updatedAt: observedAt,
+      in: modelContext
+    )
     track.lastRefreshAt = observedAt
     track.rankingAppCount = page.resultCount
     return track
