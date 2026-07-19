@@ -2,12 +2,14 @@ import SwiftUI
 
 struct KeywordResearchWorkspaceLauncher: View {
     @Environment(AppServices.self) private var services
+    let detailModelCache: KeywordResearchProjectDetailModelCache
 
     var body: some View {
         if let factory = KeywordResearchModelFactory(services: services) {
             KeywordResearchWorkspaceView(
                 factory: factory,
-                storefronts: (try? services.storefrontCatalog.bundledStorefronts()) ?? []
+                storefronts: (try? services.storefrontCatalog.bundledStorefronts()) ?? [],
+                detailModelCache: detailModelCache
             )
         } else {
             ContentUnavailableView(
@@ -26,7 +28,9 @@ struct KeywordResearchWorkspaceLauncher: View {
 struct KeywordResearchWorkspaceView: View {
     @Environment(\.dismiss) private var dismiss
 
+    private let factory: KeywordResearchModelFactory
     private let storefronts: [BundledStorefront]
+    private let detailModelCache: KeywordResearchProjectDetailModelCache
 
     @State private var projectsModel: KeywordResearchProjectsModel
     @State private var selectedProjectGeneration: KeywordResearchProjectGeneration?
@@ -34,21 +38,29 @@ struct KeywordResearchWorkspaceView: View {
     @State private var projectPendingDeletion: KeywordResearchProjectSnapshot?
     @State private var deletingProjectGeneration: KeywordResearchProjectGeneration?
     @State private var deletionError: KeywordResearchErrorPresentation?
+    @State private var detailBlocksDismissal = false
 
     init(
         factory: KeywordResearchModelFactory,
-        storefronts: [BundledStorefront]
+        storefronts: [BundledStorefront],
+        detailModelCache: KeywordResearchProjectDetailModelCache
     ) {
+        self.factory = factory
         self.storefronts = storefronts
+        self.detailModelCache = detailModelCache
         _projectsModel = State(initialValue: factory.makeProjectsModel())
     }
 
     var body: some View {
         NavigationSplitView {
             projectSidebar
+                .disabled(
+                    detailBlocksDismissal || deletingProjectGeneration != nil
+                )
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
         } detail: {
             projectDetail
+                .disabled(deletingProjectGeneration != nil)
         }
         .navigationTitle("Keyword Research")
         .frame(minWidth: 900, minHeight: 620)
@@ -63,30 +75,33 @@ struct KeywordResearchWorkspaceView: View {
                     } label: {
                         Label("Edit Project", systemImage: "pencil")
                     }
-                    .disabled(projectsModel.mutationState.isRunning)
+                    .disabled(projectsModel.mutationState.isRunning || detailBlocksDismissal)
 
                     Button(role: .destructive) {
                         projectPendingDeletion = selectedProject
                     } label: {
                         Label("Delete Project", systemImage: "trash")
                     }
-                    .disabled(projectsModel.mutationState.isRunning)
+                    .disabled(projectsModel.mutationState.isRunning || detailBlocksDismissal)
                 }
 
                 Button("Close") {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                .disabled(deletingProjectGeneration != nil)
+                .disabled(deletingProjectGeneration != nil || detailBlocksDismissal)
             }
         }
-        .interactiveDismissDisabled(deletingProjectGeneration != nil)
+        .interactiveDismissDisabled(
+            deletingProjectGeneration != nil || detailBlocksDismissal
+        )
         .task {
             guard projectsModel.loadState == .idle else { return }
             await projectsModel.reload()
             reconcileSelection()
         }
         .onChange(of: projectsModel.projects) {
+            detailModelCache.reconcile(with: projectsModel.projects)
             reconcileSelection()
         }
         .sheet(item: $editorContext) { context in
@@ -213,7 +228,7 @@ struct KeywordResearchWorkspaceView: View {
     @ViewBuilder
     private var projectListFooter: some View {
         if projectsModel.requiresReload {
-            StatusRow(
+            KeywordResearchStatusRow(
                 title: "Projects changed",
                 message: "Reload before continuing to the next page.",
                 systemImage: "arrow.clockwise",
@@ -222,7 +237,7 @@ struct KeywordResearchWorkspaceView: View {
                 Task { await reloadProjects() }
             }
         } else if case .failed(let error) = projectsModel.loadState {
-            StatusRow(
+            KeywordResearchStatusRow(
                 title: error.title,
                 message: error.message,
                 systemImage: "exclamationmark.triangle",
@@ -248,46 +263,17 @@ struct KeywordResearchWorkspaceView: View {
     @ViewBuilder
     private var projectDetail: some View {
         if let project = selectedProject {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(project.name)
-                            .font(.largeTitle)
-                            .fontWeight(.semibold)
-                        Text("Pre-live research project")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    LabeledContent("Default storefront", value: project.defaultStorefront.uppercased())
-                    LabeledContent("Default platform", value: project.defaultPlatform.displayName)
-                    LabeledContent("Bundle identifier", value: project.bundleID ?? "Not set")
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Notes")
-                            .font(.headline)
-                        Text(project.notes.isEmpty ? "No notes" : project.notes)
-                            .foregroundStyle(project.notes.isEmpty ? .secondary : .primary)
-                            .textSelection(.enabled)
-                    }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Independent research")
-                            .font(.headline)
-                        Text(
-                            "This workspace does not claim that the project has an App Store rank. "
-                                + "Ranking evidence belongs to shared keyword search results."
-                        )
-                        .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(28)
-                .frame(maxWidth: 720, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(project.keywordResearchAccessibilityLabel)
+            KeywordResearchProjectWorkspaceView(
+                project: project,
+                model: detailModelCache.model(for: project) {
+                    factory.makeProjectDetailModel(project: project)
+                },
+                storefronts: storefronts,
+                blocksWorkspaceDismissal: $detailBlocksDismissal,
+                reconcileProject: projectsModel.recordAuthoritativeProject,
+                resolveAuthoritativeProject: resolveAuthoritativeProject
+            )
+            .id(project.generation)
         } else {
             ContentUnavailableView(
                 "Select a Research Project",
@@ -332,6 +318,7 @@ struct KeywordResearchWorkspaceView: View {
                     ?? .presenting(OpenASOError.unexpectedResponse)
                 return
             }
+            detailModelCache.remove(project.generation)
             deletingProjectGeneration = nil
             if selectedProjectGeneration == project.generation {
                 selectedProjectGeneration = nil
@@ -345,11 +332,55 @@ struct KeywordResearchWorkspaceView: View {
         reconcileSelection()
     }
 
+    private func resolveAuthoritativeProject(
+        _ generation: KeywordResearchProjectGeneration
+    ) async throws -> KeywordResearchProjectSnapshot {
+        let loaded = try await factory.loadProject(generation: generation)
+        if projectsModel.recordAuthoritativeProject(loaded) {
+            return loaded
+        }
+        if let current = projectsModel.projects.first(where: {
+            $0.generation == generation && $0.updatedAt >= loaded.updatedAt
+        }) {
+            return current
+        }
+        throw KeywordResearchProjectStoreError.staleProjectRevision(generation.id)
+    }
+
     private func reconcileSelection() {
         selectedProjectGeneration = KeywordResearchWorkspaceSelection.reconciled(
             selectedProjectGeneration,
             projects: projectsModel.projects
         )
+    }
+}
+
+@MainActor
+final class KeywordResearchProjectDetailModelCache {
+    private var models: [
+        KeywordResearchProjectGeneration: KeywordResearchProjectDetailModel
+    ] = [:]
+
+    func model(
+        for project: KeywordResearchProjectSnapshot,
+        create: () -> KeywordResearchProjectDetailModel
+    ) -> KeywordResearchProjectDetailModel {
+        if let existing = models[project.generation] {
+            return existing
+        }
+        let model = create()
+        models[project.generation] = model
+        return model
+    }
+
+    func reconcile(with projects: [KeywordResearchProjectSnapshot]) {
+        for project in projects {
+            models[project.generation]?.replaceProject(project)
+        }
+    }
+
+    func remove(_ generation: KeywordResearchProjectGeneration) {
+        models[generation] = nil
     }
 }
 
@@ -381,7 +412,7 @@ private struct ProjectRow: View {
     }
 }
 
-private struct StatusRow: View {
+struct KeywordResearchStatusRow: View {
     let title: String
     let message: String
     let systemImage: String

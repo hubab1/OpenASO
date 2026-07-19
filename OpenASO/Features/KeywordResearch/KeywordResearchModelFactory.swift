@@ -93,6 +93,12 @@ struct KeywordResearchModelFactory {
         )
     }
 
+    func loadProject(
+        generation: KeywordResearchProjectGeneration
+    ) async throws -> KeywordResearchProjectSnapshot {
+        try await projectStore.loadProject(generation: generation)
+    }
+
     func makeProjectDetailModel(
         project: KeywordResearchProjectSnapshot,
         pageSize: Int = 50

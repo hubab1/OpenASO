@@ -33,6 +33,7 @@ struct KeywordResearchModelFactoryTests {
         #expect(project.bundleID == nil)
         #expect(project.defaultStorefront == "gb")
         #expect(services.backgroundModelStoreRevision == 2)
+        #expect(try await factory.loadProject(generation: project.generation) == project)
 
         let detailModel = factory.makeProjectDetailModel(project: project, pageSize: 2)
         await detailModel.reload()
