@@ -5,9 +5,14 @@ struct KeywordResearchHistoryDependencies: Sendable {
     let loadPage: @Sendable (
         _ projectGeneration: KeywordResearchProjectGeneration,
         _ keywordGeneration: KeywordResearchKeywordGeneration,
-        _ offset: Int,
+        _ cursor: KeywordResearchRankingHistoryCursor?,
         _ limit: Int
     ) async throws -> KeywordResearchRankingHistoryPage
+}
+
+enum KeywordResearchHistoryLoadOperation: Equatable, Sendable {
+    case reload
+    case nextPage
 }
 
 /// Presents shared query observations for a research membership. Positions in
@@ -19,8 +24,9 @@ final class KeywordResearchHistoryModel {
     private(set) var projectGeneration: KeywordResearchProjectGeneration
     private(set) var keyword: KeywordResearchKeywordSnapshot
     private(set) var observations: [KeywordResearchRankingObservationSnapshot] = []
-    private(set) var nextOffset: Int?
+    private(set) var nextCursor: KeywordResearchRankingHistoryCursor?
     private(set) var loadState: KeywordResearchPageLoadState = .idle
+    private(set) var failedOperation: KeywordResearchHistoryLoadOperation?
     private(set) var requiresReload = false
 
     @ObservationIgnored private let dependencies: KeywordResearchHistoryDependencies
@@ -43,7 +49,7 @@ final class KeywordResearchHistoryModel {
         self.dependencies = dependencies
     }
 
-    var hasMoreObservations: Bool { !requiresReload && nextOffset != nil }
+    var hasMoreObservations: Bool { !requiresReload && nextCursor != nil }
 
     var accessibilitySummary: String {
         let countDescription = observations.count == 1
@@ -59,6 +65,7 @@ final class KeywordResearchHistoryModel {
         loadGeneration &+= 1
         let generation = loadGeneration
         activeLoadGeneration = generation
+        failedOperation = nil
         let targetProject = projectGeneration
         let targetKeyword = keyword.generation
         loadState = .loading
@@ -72,7 +79,7 @@ final class KeywordResearchHistoryModel {
             let page = try await dependencies.loadPage(
                 targetProject,
                 targetKeyword,
-                0,
+                nil,
                 pageSize
             )
             try Task.checkCancellation()
@@ -82,19 +89,22 @@ final class KeywordResearchHistoryModel {
             else { return }
 
             observations = Self.deduplicated(page.observations)
-            nextOffset = page.nextOffset
+            nextCursor = page.nextCursor
             hasLoadedInitialPage = true
             requiresReload = false
             loadState = .loaded
         } catch is CancellationError {
             guard generation == loadGeneration else { return }
+            failedOperation = nil
             loadState = observations.isEmpty ? .idle : .loaded
         } catch {
             guard generation == loadGeneration else { return }
             guard !Task.isCancelled else {
+                failedOperation = nil
                 loadState = observations.isEmpty ? .idle : .loaded
                 return
             }
+            failedOperation = .reload
             loadState = .failed(.presenting(error))
         }
     }
@@ -102,12 +112,13 @@ final class KeywordResearchHistoryModel {
     func loadNextPage() async {
         guard !requiresReload,
               activeLoadGeneration == nil,
-              let offset = nextOffset
+              let cursor = nextCursor
         else { return }
 
         loadGeneration &+= 1
         let generation = loadGeneration
         activeLoadGeneration = generation
+        failedOperation = nil
         let targetProject = projectGeneration
         let targetKeyword = keyword.generation
         loadState = .loadingNextPage
@@ -121,7 +132,7 @@ final class KeywordResearchHistoryModel {
             let page = try await dependencies.loadPage(
                 targetProject,
                 targetKeyword,
-                offset,
+                cursor,
                 pageSize
             )
             try Task.checkCancellation()
@@ -131,18 +142,29 @@ final class KeywordResearchHistoryModel {
             else { return }
 
             observations = Self.merging(observations, with: page.observations)
-            nextOffset = page.nextOffset
+            nextCursor = page.nextCursor
             loadState = .loaded
         } catch is CancellationError {
             guard generation == loadGeneration else { return }
+            failedOperation = nil
             loadState = observations.isEmpty ? .idle : .loaded
         } catch {
             guard generation == loadGeneration else { return }
             guard !Task.isCancelled else {
+                failedOperation = nil
                 loadState = observations.isEmpty ? .idle : .loaded
                 return
             }
+            failedOperation = .nextPage
             loadState = .failed(.presenting(error))
+        }
+    }
+
+    func retryFailedLoad() async {
+        if failedOperation == .nextPage, nextCursor != nil, !requiresReload {
+            await loadNextPage()
+        } else {
+            await reload()
         }
     }
 
@@ -157,19 +179,20 @@ final class KeywordResearchHistoryModel {
               observation.platform == keyword.platform
         else { return }
 
-        // A committed refresh can shift every offset in an incomplete page,
-        // while an in-flight read may have started before the commit. Keep the
-        // observation visible, but require an authoritative page-zero reload
-        // before continuing pagination.
+        // An in-flight read may have started before the commit, and a newly
+        // visible observation can belong before an existing continuation.
+        // Keep it visible, but require an authoritative first-page reload
+        // before continuing pagination from an incomplete history.
         let invalidatesCursor = activeLoadGeneration != nil
             || !hasLoadedInitialPage
-            || nextOffset != nil
+            || nextCursor != nil
         if activeLoadGeneration != nil {
             invalidatePendingLoad(markReloadRequired: true)
         } else {
             requiresReload = requiresReload || invalidatesCursor
         }
         observations = Self.upserting(observation, in: observations)
+        failedOperation = nil
         loadState = .loaded
     }
 
@@ -194,8 +217,9 @@ final class KeywordResearchHistoryModel {
         self.projectGeneration = projectGeneration
         keyword = replacement
         observations = []
-        nextOffset = nil
+        nextCursor = nil
         hasLoadedInitialPage = false
+        failedOperation = nil
         requiresReload = false
         loadState = .idle
     }
@@ -208,6 +232,7 @@ final class KeywordResearchHistoryModel {
     private func invalidatePendingLoad(markReloadRequired: Bool) {
         loadGeneration &+= 1
         activeLoadGeneration = nil
+        failedOperation = nil
         requiresReload = requiresReload || markReloadRequired
         loadState = observations.isEmpty ? .idle : .loaded
     }

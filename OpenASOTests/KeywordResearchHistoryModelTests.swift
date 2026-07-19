@@ -22,13 +22,15 @@ struct KeywordResearchHistoryModelTests {
             observedAt: testDate.addingTimeInterval(-2)
         )
         let loader = ControlledOperation<KeywordResearchRankingHistoryPage>()
-        let calls = Recorder<PageCall>()
+        let firstCursor = historyCursor(second)
+        let finalCursor = historyCursor(third)
+        let calls = Recorder<HistoryPageCall>()
         let model = KeywordResearchHistoryModel(
             projectGeneration: project.generation,
             keyword: keyword,
             pageSize: 2,
-            dependencies: KeywordResearchHistoryDependencies { _, _, offset, limit in
-                await calls.record(PageCall(offset: offset, limit: limit))
+            dependencies: KeywordResearchHistoryDependencies { _, _, cursor, limit in
+                await calls.record(HistoryPageCall(cursor: cursor, limit: limit))
                 return try await loader.call()
             }
         )
@@ -39,12 +41,12 @@ struct KeywordResearchHistoryModelTests {
             at: 0,
             with: KeywordResearchRankingHistoryPage(
                 observations: [first, first, second],
-                nextOffset: 14
+                nextCursor: firstCursor
             )
         )
         await reload.value
         #expect(model.observations.map(\.id) == [first.id, second.id])
-        #expect(model.nextOffset == 14)
+        #expect(model.nextCursor == firstCursor)
 
         let next = Task { @MainActor in await model.loadNextPage() }
         await loader.waitForCallCount(2)
@@ -52,12 +54,12 @@ struct KeywordResearchHistoryModelTests {
             at: 0,
             with: KeywordResearchRankingHistoryPage(
                 observations: [second, third],
-                nextOffset: 41
+                nextCursor: finalCursor
             )
         )
         await next.value
         #expect(model.observations.map(\.id) == [first.id, second.id, third.id])
-        #expect(model.nextOffset == 41)
+        #expect(model.nextCursor == finalCursor)
 
         let newest = makeObservation(
             project: project,
@@ -67,7 +69,7 @@ struct KeywordResearchHistoryModelTests {
         )
         model.record(newest)
         #expect(model.observations.map(\.id) == [newest.id, first.id, second.id, third.id])
-        #expect(model.nextOffset == 41)
+        #expect(model.nextCursor == finalCursor)
         #expect(model.requiresReload)
         #expect(!model.hasMoreObservations)
 
@@ -82,10 +84,93 @@ struct KeywordResearchHistoryModelTests {
         await failure.value
         #expect(model.observations.map(\.id) == [newest.id, first.id, second.id, third.id])
         #expect(model.requiresReload)
+        #expect(model.failedOperation == .reload)
         #expect(await calls.values == [
-            PageCall(offset: 0, limit: 2),
-            PageCall(offset: 14, limit: 2),
-            PageCall(offset: 0, limit: 2),
+            HistoryPageCall(cursor: nil, limit: 2),
+            HistoryPageCall(cursor: firstCursor, limit: 2),
+            HistoryPageCall(cursor: nil, limit: 2),
+        ])
+    }
+
+    @Test
+    func retriesFailedContinuationWithoutDiscardingLoadedPages() async {
+        let project = makeProject(name: "Project")
+        let keyword = makeKeyword(project: project)
+        let first = makeObservation(project: project, keyword: keyword, id: "first")
+        let second = makeObservation(
+            project: project,
+            keyword: keyword,
+            id: "second",
+            observedAt: testDate.addingTimeInterval(-1)
+        )
+        let third = makeObservation(
+            project: project,
+            keyword: keyword,
+            id: "third",
+            observedAt: testDate.addingTimeInterval(-2)
+        )
+        let firstCursor = historyCursor(first)
+        let secondCursor = historyCursor(second)
+        let loader = ControlledOperation<KeywordResearchRankingHistoryPage>()
+        let calls = Recorder<HistoryPageCall>()
+        let model = KeywordResearchHistoryModel(
+            projectGeneration: project.generation,
+            keyword: keyword,
+            pageSize: 1,
+            dependencies: KeywordResearchHistoryDependencies { _, _, cursor, limit in
+                await calls.record(HistoryPageCall(cursor: cursor, limit: limit))
+                return try await loader.call()
+            }
+        )
+
+        let initial = Task { @MainActor in await model.reload() }
+        await loader.waitForCallCount(1)
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchRankingHistoryPage(
+                observations: [first],
+                nextCursor: firstCursor
+            )
+        )
+        await initial.value
+
+        let secondPage = Task { @MainActor in await model.loadNextPage() }
+        await loader.waitForCallCount(2)
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchRankingHistoryPage(
+                observations: [second],
+                nextCursor: secondCursor
+            )
+        )
+        await secondPage.value
+
+        let failedPage = Task { @MainActor in await model.loadNextPage() }
+        await loader.waitForCallCount(3)
+        await loader.fail(at: 0, with: OpenASOError.networkUnavailable)
+        await failedPage.value
+        #expect(model.failedOperation == .nextPage)
+        #expect(model.observations == [first, second])
+        #expect(model.nextCursor == secondCursor)
+
+        let retry = Task { @MainActor in await model.retryFailedLoad() }
+        await loader.waitForCallCount(4)
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchRankingHistoryPage(
+                observations: [third],
+                nextCursor: nil
+            )
+        )
+        await retry.value
+
+        #expect(model.observations == [first, second, third])
+        #expect(model.failedOperation == nil)
+        #expect(await calls.values == [
+            HistoryPageCall(cursor: nil, limit: 1),
+            HistoryPageCall(cursor: firstCursor, limit: 1),
+            HistoryPageCall(cursor: secondCursor, limit: 1),
+            HistoryPageCall(cursor: secondCursor, limit: 1),
         ])
     }
 
@@ -119,7 +204,7 @@ struct KeywordResearchHistoryModelTests {
             at: 1,
             with: KeywordResearchRankingHistoryPage(
                 observations: [freshObservation],
-                nextOffset: nil
+                nextCursor: nil
             )
         )
         await newLoad.value
@@ -127,7 +212,7 @@ struct KeywordResearchHistoryModelTests {
             at: 0,
             with: KeywordResearchRankingHistoryPage(
                 observations: [oldObservation],
-                nextOffset: nil
+                nextCursor: nil
             )
         )
         await oldLoad.value
@@ -156,7 +241,7 @@ struct KeywordResearchHistoryModelTests {
             at: 0,
             with: KeywordResearchRankingHistoryPage(
                 observations: [observation],
-                nextOffset: 1
+                nextCursor: historyCursor(observation)
             )
         )
         await initial.value
@@ -208,7 +293,7 @@ struct KeywordResearchHistoryModelTests {
             at: 0,
             with: KeywordResearchRankingHistoryPage(
                 observations: [middle, oldest],
-                nextOffset: nil
+                nextCursor: nil
             )
         )
         await initial.value
@@ -230,7 +315,7 @@ struct KeywordResearchHistoryModelTests {
             at: 0,
             with: KeywordResearchRankingHistoryPage(
                 observations: [middle],
-                nextOffset: nil
+                nextCursor: nil
             )
         )
         await staleReload.value
@@ -247,7 +332,7 @@ struct KeywordResearchHistoryModelTests {
             projectGeneration: project.generation,
             keyword: keyword,
             dependencies: KeywordResearchHistoryDependencies { _, _, _, _ in
-                KeywordResearchRankingHistoryPage(observations: [], nextOffset: nil)
+                KeywordResearchRankingHistoryPage(observations: [], nextCursor: nil)
             }
         )
 
@@ -258,4 +343,20 @@ struct KeywordResearchHistoryModelTests {
         #expect(!model.hasMoreObservations)
         #expect(model.loadState == .loaded)
     }
+}
+
+private struct HistoryPageCall: Equatable, Sendable {
+    let cursor: KeywordResearchRankingHistoryCursor?
+    let limit: Int
+}
+
+private func historyCursor(
+    _ observation: KeywordResearchRankingObservationSnapshot
+) -> KeywordResearchRankingHistoryCursor {
+    KeywordResearchRankingHistoryCursor(
+        dayBucket: KeywordRankingCrawl.utcDayBucket(
+            for: observation.observedAt
+        ),
+        consumedSourceIDs: [observation.source.rawValue]
+    )
 }

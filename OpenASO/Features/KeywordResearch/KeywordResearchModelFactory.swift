@@ -188,12 +188,12 @@ struct KeywordResearchModelFactory {
             dependencies: KeywordResearchHistoryDependencies {
                 projectGeneration,
                 keywordGeneration,
-                offset,
+                cursor,
                 limit in
                 try await historyReader.page(
                     projectGeneration: projectGeneration,
                     keywordGeneration: keywordGeneration,
-                    offset: offset,
+                    after: cursor,
                     limit: limit
                 )
             }
