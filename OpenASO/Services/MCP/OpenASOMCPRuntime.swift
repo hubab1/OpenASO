@@ -7,10 +7,17 @@ enum OpenASOMCPRuntime {
     ) async throws -> Server {
         let modelContainer = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: false)
         let backgroundModelStore = BackgroundModelStore(modelContainer: modelContainer)
-        let httpClient = URLSessionHTTPClient()
+        let refreshObservationClock = RefreshObservationClock.live
+        let refreshMetricsRecorder = RefreshMetricsRecorder(clock: refreshObservationClock)
+        let httpClient = ProviderHTTPClientPipeline.make(
+            transport: URLSessionHTTPClient(),
+            mode: .production(defaults: .standard),
+            refreshMetricsRecorder: refreshMetricsRecorder,
+            refreshObservationClock: refreshObservationClock
+        )
         let appResolver = DefaultAppResolver(httpClient: httpClient)
         let appCatalogService = AppCatalogService(appResolver: appResolver)
-        let rankingProvider = ITunesSearchFallbackProvider(httpClient: httpClient)
+        let rankingProvider = SearchRankingProviderFactory.makeProduction(httpClient: httpClient)
         let rankingRefreshCoordinator = await RankingRefreshCoordinator(
             rankingProvider: rankingProvider,
             appCatalogService: appCatalogService

@@ -823,7 +823,12 @@ final class OpenASOMCPService: Sendable {
       )
     }
 
-    var fetched: [(RankingRefreshRequest, SearchRankingPage?, OpenASOError?)] = []
+    var fetched: [(
+      request: RankingRefreshRequest,
+      page: SearchRankingPage?,
+      fetchedAt: Date?,
+      error: OpenASOError?
+    )] = []
     for request in requestBatch.requests {
       do {
         let page = try await Self.withRankingSearchTimeout {
@@ -834,9 +839,9 @@ final class OpenASOMCPService: Sendable {
             limit: resultLimit
           )
         }
-        fetched.append((request, page, nil))
+        fetched.append((request, page, now(), nil))
       } catch {
-        fetched.append((request, nil, OpenASOError.map(error)))
+        fetched.append((request, nil, nil, OpenASOError.map(error)))
       }
     }
 
@@ -844,12 +849,11 @@ final class OpenASOMCPService: Sendable {
     return try await backgroundModelStore.write { modelContext in
       var outcomes: [OpenASOMCPKeywordRefreshOutcome] = []
       for item in fetchedResults {
-        if let page = item.1 {
-          let observedAt = now()
+        if let page = item.page, let observedAt = item.fetchedAt {
           let track: TrackedAppKeyword
           if let rankingRefreshCoordinator {
             let pageResult = RankingRefreshPageResult(
-              request: item.0,
+              request: item.request,
               page: page,
               searchedAt: observedAt,
               observedHour: nil,
@@ -867,7 +871,7 @@ final class OpenASOMCPService: Sendable {
           } else {
             track = try Self.persistRankingPage(
               page,
-              request: item.0,
+              request: item.request,
               appStoreID: appStoreID,
               observedAt: observedAt,
               appCatalogService: appCatalogService,
@@ -878,17 +882,23 @@ final class OpenASOMCPService: Sendable {
           outcomes.append(
             OpenASOMCPKeywordRefreshOutcome(
               track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+              rankingProvenance: Self.rankingProvenance(
+                request: item.request,
+                page: page,
+                fetchedAt: observedAt
+              ),
               error: nil
             ))
-        } else if let error = item.2,
+        } else if let error = item.error,
           let track = try Self.fetchTrackedKeyword(
-            identityKey: item.0.identityKey, in: modelContext)
+            identityKey: item.request.identityKey, in: modelContext)
         {
           track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
           let metrics = try Self.metricsByQueryKey(queryKeys: [track.queryKey], in: modelContext)
           outcomes.append(
             OpenASOMCPKeywordRefreshOutcome(
               track: Self.keywordSummary(track: track, metrics: metrics[track.queryKey]),
+              rankingProvenance: nil,
               error: OpenASOMCPErrorDTO(error)
             ))
         }
@@ -975,6 +985,7 @@ final class OpenASOMCPService: Sendable {
           ?? Self.popularityStatusMessage(from: track.statusMessage)
         return OpenASOMCPKeywordRefreshOutcome(
           track: Self.keywordSummary(track: track, metrics: metric),
+          rankingProvenance: nil,
           error: error.map {
             OpenASOMCPErrorDTO(
               code: $0.localizedCaseInsensitiveContains("Connect an Apple Ads")
@@ -1939,7 +1950,14 @@ extension OpenASOMCPService {
             resultCount: evidence.resultCount,
             topRatedAppCount: evidence.topRatedAppCount,
             maximumRatingCount: evidence.maximumRatingCount,
-            topApps: evidence.topApps
+            topApps: evidence.topApps,
+            rankingProvenance: OpenASOMCPRankingProvenance(
+              source: evidence.source,
+              storefront: evidence.storefront,
+              platform: evidence.platform,
+              fetchedAt: evidence.observedAt,
+              fallbackContext: evidence.fallbackContext
+            )
           ))
       }
     }
@@ -2062,6 +2080,7 @@ extension OpenASOMCPService {
       resultCount: page.resultCount,
       source: page.source.rawValue,
       observedAt: observedAt,
+      fallbackContext: page.fallbackContext.map(Self.rankingFallbackContext),
       targetRank: targetAppStoreID.flatMap { id in
         page.items.first { $0.appStoreID == id }?.position
       },
@@ -2070,6 +2089,63 @@ extension OpenASOMCPService {
       }.count,
       maximumRatingCount: topApps.compactMap(\.ratingCount).max(),
       topApps: topApps
+    )
+  }
+
+  fileprivate static func rankingProvenance(
+    request: RankingRefreshRequest,
+    page: SearchRankingPage,
+    fetchedAt: Date
+  ) -> OpenASOMCPRankingProvenance {
+    OpenASOMCPRankingProvenance(
+      source: page.source.rawValue,
+      storefront: request.storefront,
+      platform: request.platform.rawValue,
+      fetchedAt: fetchedAt,
+      fallbackContext: page.fallbackContext.map(rankingFallbackContext)
+    )
+  }
+
+  fileprivate static func rankingFallbackContext(
+    _ context: SearchRankingFailureContext
+  ) -> OpenASOMCPRankingFallbackContext {
+    let category: String
+    let transportCode: Int?
+    let httpStatus: Int?
+    let responseFailure: String?
+    switch context.category {
+    case .transport(let code):
+      category = "transport"
+      transportCode = code
+      httpStatus = nil
+      responseFailure = nil
+    case .httpStatus(let status):
+      category = "httpStatus"
+      transportCode = nil
+      httpStatus = status
+      responseFailure = nil
+    case .response(let failure):
+      category = "response"
+      transportCode = nil
+      httpStatus = nil
+      responseFailure = failure.rawValue
+    case .provider:
+      category = "provider"
+      transportCode = nil
+      httpStatus = nil
+      responseFailure = nil
+    case .other:
+      category = "other"
+      transportCode = nil
+      httpStatus = nil
+      responseFailure = nil
+    }
+    return OpenASOMCPRankingFallbackContext(
+      provider: context.provider.rawValue,
+      category: category,
+      transportCode: transportCode,
+      httpStatus: httpStatus,
+      responseFailure: responseFailure
     )
   }
 
@@ -2696,6 +2772,8 @@ extension OpenASOMCPService {
       notes: track.notes,
       statusMessage: track.statusMessage,
       lastRefreshAt: track.lastRefreshAt,
+      latestRankingSource: latest?.source.rawValue,
+      latestRankingObservedAt: latest?.searchedAt,
       createdAt: track.createdAt
     )
   }
@@ -3106,6 +3184,9 @@ extension OpenASOMCPService {
       _ = try appCatalogService.upsertStoreApp(
         from: item,
         storefrontCode: request.storefront,
+        rankingSource: page.source,
+        fetchedAt: observedAt,
+        requestedPlatform: request.platform,
         in: modelContext,
         cache: &catalogCache
       )
@@ -3413,16 +3494,20 @@ private struct CompetitorAccumulator {
     }
 
     let existing = evidenceByQueryKey[row.queryKey]
+    let keepsExistingLatest = (existing?.latestObservedAt ?? .distantPast) > row.observedAt
     let evidence = OpenASOMCPCompetitorKeywordEvidence(
       queryKey: row.queryKey,
       keyword: keyword,
       storefront: row.storefront,
       platform: row.platformRaw,
       bestRank: min(existing?.bestRank ?? row.position, row.position),
-      latestRank: (existing?.latestObservedAt ?? Date.distantPast) > row.observedAt
+      latestRank: keepsExistingLatest
         ? existing?.latestRank ?? row.position
         : row.position,
-      latestObservedAt: max(existing?.latestObservedAt ?? row.observedAt, row.observedAt)
+      latestObservedAt: max(existing?.latestObservedAt ?? row.observedAt, row.observedAt),
+      source: keepsExistingLatest
+        ? existing?.source ?? row.observation.source.rawValue
+        : row.observation.source.rawValue
     )
     evidenceByQueryKey[row.queryKey] = evidence
   }

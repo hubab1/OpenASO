@@ -416,7 +416,15 @@ struct RefreshRequestClassification: Sendable {
             }
         case "apps.apple.com":
             provider = .appStoreWeb
-            endpoint = .ratingsPage
+            let pathComponents = path.split(separator: "/")
+            let rankingPlatforms: Set<Substring> = ["iphone", "ipad", "mac"]
+            if pathComponents.count == 3,
+               rankingPlatforms.contains(pathComponents[1]),
+               pathComponents[2] == "search" {
+                endpoint = .rankingSearch
+            } else {
+                endpoint = .ratingsPage
+            }
         case "api.appstoreconnect.apple.com":
             provider = .appStoreConnect
             endpoint = path.contains("customerreviews") ? .appStoreConnectReviews : .other

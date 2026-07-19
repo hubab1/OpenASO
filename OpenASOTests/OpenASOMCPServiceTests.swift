@@ -640,6 +640,7 @@ struct OpenASOMCPServiceTests {
         #expect(competitors.first?.occurrenceCount == 2)
         #expect(competitors.first?.bestRank == 1)
         #expect(competitors.first?.evidence.map(\.keyword) == ["focus timer", "pomodoro"])
+        #expect(competitors.first?.evidence.allSatisfy { $0.source == RankingSource.iTunesFallback.rawValue } == true)
         #expect(competitors.allSatisfy { $0.appStoreID != "123" })
 
         let capped = try await service.listCompetitors(
@@ -659,11 +660,17 @@ struct OpenASOMCPServiceTests {
             "calorie tracker::us::iphone": SearchRankingPage(items: [
                 makeRankingItem(position: 1, appStoreID: 456, name: "MyFitnessPal", ratingCount: 3_000_000),
                 makeRankingItem(position: 2, appStoreID: 123, name: "Cal AI", ratingCount: 50_000)
-            ], source: .iTunesFallback),
+            ], source: .iTunesFallback, fallbackContext: SearchRankingFailureContext(
+                provider: .appStoreWeb,
+                category: .httpStatus(503)
+            )),
             "ai calorie tracker::us::iphone": SearchRankingPage(items: [
                 makeRankingItem(position: 1, appStoreID: 123, name: "Cal AI", ratingCount: 50_000),
                 makeRankingItem(position: 2, appStoreID: 789, name: "Macro AI", ratingCount: 25_000)
-            ], source: .iTunesFallback)
+            ], source: .iTunesFallback, fallbackContext: SearchRankingFailureContext(
+                provider: .appStoreWeb,
+                category: .httpStatus(503)
+            ))
         ])
         let context = try MCPTestContext(rankingProvider: rankingProvider, useRankingRefreshCoordinator: true)
         let service = context.service
@@ -679,6 +686,8 @@ struct OpenASOMCPServiceTests {
         #expect(result.app.isTracked == false)
         #expect(result.errors.isEmpty)
         #expect(result.candidates.contains { $0.keyword == "calorie tracker" && $0.targetRank == 2 })
+        #expect(result.candidates.first { $0.keyword == "calorie tracker" }?.rankingProvenance?.source == RankingSource.iTunesFallback.rawValue)
+        #expect(result.candidates.first { $0.keyword == "calorie tracker" }?.rankingProvenance?.fallbackContext?.httpStatus == 503)
         #expect(result.candidates.contains { $0.keyword == "ai calorie tracker" && $0.targetRank == 1 })
         #expect(result.candidates.first?.topRatedAppCount ?? 0 > 0)
     }
@@ -745,7 +754,10 @@ struct OpenASOMCPServiceTests {
             "calorie tracker::us::iphone": SearchRankingPage(items: [
                 makeRankingItem(position: 1, appStoreID: 456, name: "MyFitnessPal", ratingCount: 3_000_000),
                 makeRankingItem(position: 2, appStoreID: 123, name: "Cal AI", ratingCount: 50_000)
-            ], source: .iTunesFallback)
+            ], source: .iTunesFallback, fallbackContext: SearchRankingFailureContext(
+                provider: .appStoreWeb,
+                category: .response(.truncatedResults)
+            ))
         ])
         let context = try MCPTestContext(rankingProvider: rankingProvider)
 
@@ -760,6 +772,14 @@ struct OpenASOMCPServiceTests {
         #expect(result.topRatedAppCount == 2)
         #expect(result.maximumRatingCount == 3_000_000)
         #expect(result.topApps.map(\.name) == ["MyFitnessPal", "Cal AI"])
+        #expect(result.source == RankingSource.iTunesFallback.rawValue)
+        #expect(result.fallbackContext == OpenASOMCPRankingFallbackContext(
+            provider: SearchRankingFailureContext.Provider.appStoreWeb.rawValue,
+            category: "response",
+            transportCode: nil,
+            httpStatus: nil,
+            responseFailure: SearchRankingResponseFailure.truncatedResults.rawValue
+        ))
     }
 
     @Test
@@ -840,7 +860,10 @@ struct OpenASOMCPServiceTests {
             "calorie tracker::us::iphone": SearchRankingPage(items: [
                 makeRankingItem(position: 1, appStoreID: 456, name: "MyFitnessPal", ratingCount: 3_000_000),
                 makeRankingItem(position: 2, appStoreID: 123, name: "Cal AI", ratingCount: 50_000)
-            ], source: .iTunesFallback)
+            ], source: .iTunesFallback, fallbackContext: SearchRankingFailureContext(
+                provider: .appStoreWeb,
+                category: .httpStatus(503)
+            ))
         ])
         let context = try MCPTestContext(rankingProvider: rankingProvider)
         try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
@@ -859,6 +882,20 @@ struct OpenASOMCPServiceTests {
 
         #expect(rankingRefresh.summary.refreshed == 1)
         #expect(rankingRefresh.outcomes.first?.track.latestRank == 2)
+        #expect(rankingRefresh.outcomes.first?.rankingProvenance?.source == RankingSource.iTunesFallback.rawValue)
+        #expect(rankingRefresh.outcomes.first?.rankingProvenance?.storefront == "us")
+        #expect(rankingRefresh.outcomes.first?.rankingProvenance?.platform == AppPlatform.iphone.rawValue)
+        #expect(rankingRefresh.outcomes.first?.rankingProvenance?.fallbackContext?.httpStatus == 503)
+        #expect(rankingRefresh.outcomes.first?.track.latestRankingSource == RankingSource.iTunesFallback.rawValue)
+        #expect(rankingRefresh.outcomes.first?.track.latestRankingObservedAt == rankingRefresh.outcomes.first?.rankingProvenance?.fetchedAt)
+
+        let listedKeywords = try await context.service.listKeywords(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+        #expect(listedKeywords.items.first?.latestRankingSource == RankingSource.iTunesFallback.rawValue)
+        #expect(listedKeywords.items.first?.latestRankingObservedAt == rankingRefresh.outcomes.first?.rankingProvenance?.fetchedAt)
 
         let competitors = try await context.service.listCompetitors(
             appStoreID: 123,
@@ -875,6 +912,7 @@ struct OpenASOMCPServiceTests {
         )
 
         #expect(metricsRefresh.summary.failed == 1)
+        #expect(metricsRefresh.outcomes.first?.rankingProvenance == nil)
         #expect(metricsRefresh.outcomes.first?.error?.code == "apple_ads_not_configured")
         #expect(metricsRefresh.outcomes.first?.track.statusMessage?.contains("Connect an Apple Ads") == true)
     }
@@ -1704,7 +1742,11 @@ private actor StubMCPRankingProvider: SearchRankingProvider {
         guard let page = pages[key] else {
             return SearchRankingPage(items: [], source: .iTunesFallback)
         }
-        return SearchRankingPage(items: Array(page.items.prefix(limit)), source: page.source)
+        return SearchRankingPage(
+            items: Array(page.items.prefix(limit)),
+            source: page.source,
+            fallbackContext: page.fallbackContext
+        )
     }
 }
 

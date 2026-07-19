@@ -113,7 +113,7 @@ final class AppServices {
             webSessionStore: appleAdsWebSessionStore
         )
         let keywordInsightsService = KeywordInsightsService()
-        let rankingProvider = ITunesSearchFallbackProvider(httpClient: httpClient)
+        let rankingProvider = SearchRankingProviderFactory.makeProduction(httpClient: httpClient)
         let refreshProgressStore = AppRefreshProgressStore()
         let storefrontCatalog = StorefrontCatalog()
         let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?

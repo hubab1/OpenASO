@@ -198,6 +198,8 @@ struct OpenASOMCPKeywordSummary: Codable, Identifiable, Sendable {
     let notes: String
     let statusMessage: String?
     let lastRefreshAt: Date?
+    let latestRankingSource: String?
+    let latestRankingObservedAt: Date?
     let createdAt: Date
 }
 
@@ -336,6 +338,23 @@ struct OpenASOMCPCompetitorKeywordEvidence: Codable, Sendable, Hashable {
     let bestRank: Int
     let latestRank: Int
     let latestObservedAt: Date
+    let source: String
+}
+
+struct OpenASOMCPRankingFallbackContext: Codable, Sendable, Equatable {
+    let provider: String
+    let category: String
+    let transportCode: Int?
+    let httpStatus: Int?
+    let responseFailure: String?
+}
+
+struct OpenASOMCPRankingProvenance: Codable, Sendable, Equatable {
+    let source: String
+    let storefront: String
+    let platform: String
+    let fetchedAt: Date
+    let fallbackContext: OpenASOMCPRankingFallbackContext?
 }
 
 struct OpenASOMCPRankedApp: Codable, Identifiable, Sendable {
@@ -360,6 +379,7 @@ struct OpenASOMCPKeywordRankingEvidence: Codable, Sendable {
     let resultCount: Int
     let source: String
     let observedAt: Date
+    let fallbackContext: OpenASOMCPRankingFallbackContext?
     let targetRank: Int?
     let topRatedAppCount: Int
     let maximumRatingCount: Int?
@@ -381,6 +401,7 @@ struct OpenASOMCPKeywordCandidate: Codable, Identifiable, Sendable {
     let topRatedAppCount: Int
     let maximumRatingCount: Int?
     let topApps: [OpenASOMCPRankedApp]
+    let rankingProvenance: OpenASOMCPRankingProvenance?
 }
 
 struct OpenASOMCPKeywordVerificationError: Codable, Sendable, Equatable {
@@ -432,6 +453,7 @@ struct OpenASOMCPReviewDownloadResult: Codable, Sendable {
 
 struct OpenASOMCPKeywordRefreshOutcome: Codable, Sendable {
     let track: OpenASOMCPKeywordSummary
+    let rankingProvenance: OpenASOMCPRankingProvenance?
     let error: OpenASOMCPErrorDTO?
 }
 

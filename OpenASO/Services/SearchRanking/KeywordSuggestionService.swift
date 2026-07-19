@@ -409,6 +409,7 @@ private struct KeywordSuggestionEvidence {
     private(set) var bestObservedRank = Int.max
     private(set) var currentObservedRank = Int.max
     private(set) var latestObservedAt = Date.distantPast
+    private(set) var source: RankingSource = .iTunesFallback
     private(set) var observationCount = 0
     private(set) var observedDays: Set<Int> = []
     private var collapsedEvidenceKeys: Set<String> = []
@@ -429,6 +430,7 @@ private struct KeywordSuggestionEvidence {
             if observedAt > latestObservedAt || (observedAt == latestObservedAt && item.position < currentObservedRank) {
                 latestObservedAt = observedAt
                 currentObservedRank = item.position
+                source = item.observation.source
             }
             return
         }
@@ -437,6 +439,7 @@ private struct KeywordSuggestionEvidence {
         if observedAt > latestObservedAt || (observedAt == latestObservedAt && item.position < currentObservedRank) {
             latestObservedAt = observedAt
             currentObservedRank = item.position
+            source = item.observation.source
         }
         observationCount += 1
         observedDays.insert(day)
@@ -508,7 +511,7 @@ private struct ScoredKeywordSuggestion {
             bestObservedRank: evidence.bestObservedRank,
             currentObservedRank: evidence.currentObservedRank,
             latestObservedAt: evidence.latestObservedAt,
-            source: .appStoreWeb
+            source: evidence.source
         )
     }
 

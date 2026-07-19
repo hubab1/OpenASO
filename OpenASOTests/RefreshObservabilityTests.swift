@@ -7,6 +7,29 @@ import Testing
 @MainActor
 struct RefreshObservabilityTests {
     @Test
+    func appStoreWebSearchPathsAreRankingEndpointsWhileAppPagesRemainRatingsPages() throws {
+        for urlString in [
+            "https://apps.apple.com/us/iphone/search?term=notes",
+            "https://apps.apple.com/gb/ipad/search?term=notes",
+            "https://apps.apple.com/jp/mac/search?term=notes",
+        ] {
+            let classification = RefreshRequestClassification(URL(string: urlString)!)
+            #expect(classification.provider == .appStoreWeb)
+            #expect(classification.endpoint == .rankingSearch)
+        }
+
+        for urlString in [
+            "https://apps.apple.com/us/app/example/id123",
+            "https://apps.apple.com/us/iphone/app/example/id123",
+            "https://apps.apple.com/us/search?term=notes",
+        ] {
+            let classification = RefreshRequestClassification(URL(string: urlString)!)
+            #expect(classification.provider == .appStoreWeb)
+            #expect(classification.endpoint == .ratingsPage)
+        }
+    }
+
+    @Test
     func requestsOutsideRefreshScopeAreNotRecorded() async throws {
         let recorder = RefreshMetricsRecorder(clock: .constant)
         let base = CountingHTTPClient()
@@ -428,7 +451,9 @@ struct RefreshObservabilityTests {
         #expect(secondResult.keywordOutcomes.count == keywordCount + 1)
         #expect(secondResult.keywordOutcomes.filter { $0.error != nil }.count == 1)
         #expect(summaries.count == 2)
-        #expect(await base.requestCount() == keywordCount * 2)
+        // The fixture intentionally returns iTunes JSON for every URL. Web
+        // parsing therefore fails safely and each query exercises fallback.
+        #expect(await base.requestCount() == keywordCount * 4)
         #expect(persistedTrackCount == keywordCount)
         #expect(persistedQueryCount == keywordCount)
 
@@ -437,7 +462,8 @@ struct RefreshObservabilityTests {
             let metrics = try #require(summary.stages[.keywordMetrics])
             let ratings = try #require(summary.stages[.ratings])
             let reviews = try #require(summary.stages[.reviews])
-            let provider = try #require(summary.providers[.iTunesStore])
+            let webProvider = try #require(summary.providers[.appStoreWeb])
+            let fallbackProvider = try #require(summary.providers[.iTunesStore])
 
             #expect(summary.requestedTrackCount == keywordCount + 1)
             #expect(summary.requestedStorefrontCount == 2)
@@ -451,9 +477,12 @@ struct RefreshObservabilityTests {
             #expect(metrics.isSkipped)
             #expect(ratings.isSkipped)
             #expect(reviews.isSkipped)
-            #expect(provider.requestCount == keywordCount)
-            #expect(provider.endpointCounts[.rankingSearch] == keywordCount)
-            #expect(provider.resultCounts[.success] == keywordCount)
+            #expect(webProvider.requestCount == keywordCount)
+            #expect(webProvider.endpointCounts[.rankingSearch] == keywordCount)
+            #expect(webProvider.resultCounts[.success] == keywordCount)
+            #expect(fallbackProvider.requestCount == keywordCount)
+            #expect(fallbackProvider.endpointCounts[.rankingSearch] == keywordCount)
+            #expect(fallbackProvider.resultCounts[.success] == keywordCount)
             #expect(summary.result == .partialFailure)
         }
     }
@@ -495,7 +524,8 @@ struct RefreshObservabilityTests {
         let result = await fixture.service.refresh(fixture.request)
         let summary = try #require(await fixture.recorder.completedSummaries().only)
         let rankings = try #require(summary.stages[.rankings])
-        let provider = try #require(summary.providers[.iTunesStore])
+        let webProvider = try #require(summary.providers[.appStoreWeb])
+        let fallbackProvider = try #require(summary.providers[.iTunesStore])
         let persisted = try await fixture.backgroundModelStore.read { modelContext in
             let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
             let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
@@ -510,13 +540,15 @@ struct RefreshObservabilityTests {
 
         #expect(result.keywordOutcomes.count == 4)
         #expect(result.keywordOutcomes.allSatisfy { $0.error == nil })
-        #expect(await base.requestCount() == 3)
+        #expect(await base.requestCount() == 6)
         #expect(summary.resolvedRankingCount == 4)
         #expect(summary.uniqueRankingQueryCount == 3)
         #expect(rankings.attemptedCount == 4)
         #expect(rankings.successCount == 4)
-        #expect(provider.requestCount == 3)
-        #expect(provider.endpointCounts[.rankingSearch] == 3)
+        #expect(webProvider.requestCount == 3)
+        #expect(webProvider.endpointCounts[.rankingSearch] == 3)
+        #expect(fallbackProvider.requestCount == 3)
+        #expect(fallbackProvider.endpointCounts[.rankingSearch] == 3)
         #expect(persisted.trackCount == 4)
         #expect(persisted.refreshedTrackCount == 4)
         #expect(persisted.snapshotIdentityKeys == Set(result.keywordOutcomes.map(\.trackIdentityKey)))
@@ -552,7 +584,7 @@ struct RefreshObservabilityTests {
         let result = await fixture.service.refresh(fixture.request)
         let summary = try #require(await fixture.recorder.completedSummaries().only)
         let rankings = try #require(summary.stages[.rankings])
-        let provider = try #require(summary.providers[.iTunesStore])
+        let provider = try #require(summary.providers[.appStoreWeb])
         let persisted = try await fixture.backgroundModelStore.read { modelContext in
             let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
             let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
@@ -589,7 +621,7 @@ struct RefreshObservabilityTests {
         let result = await fixture.service.refresh(fixture.request)
         let summary = try #require(await fixture.recorder.completedSummaries().only)
         let rankings = try #require(summary.stages[.rankings])
-        let provider = try #require(summary.providers[.iTunesStore])
+        let provider = try #require(summary.providers[.appStoreWeb])
         let persistedFailureCount = try await fixture.backgroundModelStore.fetch(
             FetchDescriptor<TrackedAppKeyword>()
         ) { tracks in
