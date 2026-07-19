@@ -112,6 +112,15 @@
 		D09D00000000000000000005 /* OpenASOSchemaV3.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000001 /* OpenASOSchemaV3.swift */; };
 		D09D00000000000000000006 /* TrackedKeywordRefreshStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000002 /* TrackedKeywordRefreshStatus.swift */; };
 		D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */; };
+		D20B00000000000000000001 /* OpenASOSchemaV4.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000011 /* OpenASOSchemaV4.swift */; };
+		D20B00000000000000000002 /* OpenASOSchemaV4.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000011 /* OpenASOSchemaV4.swift */; };
+		D20B00000000000000000003 /* EstimatedKeywordDifficultyMetric.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000012 /* EstimatedKeywordDifficultyMetric.swift */; };
+		D20B00000000000000000004 /* EstimatedKeywordDifficultyMetric.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000012 /* EstimatedKeywordDifficultyMetric.swift */; };
+		D20B00000000000000000005 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000013 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift */; };
+		D20B00000000000000000006 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000013 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift */; };
+		D20B00000000000000000007 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
+		D20B00000000000000000008 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
+		D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */; };
 		A20000000000000000000001 /* KeywordTableCells.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* KeywordTableCells.swift */; };
 		A20000000000000000000002 /* KeywordNotesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* KeywordNotesSheet.swift */; };
 		A20000000000000000000003 /* KeywordRankingListSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* KeywordRankingListSheet.swift */; };
@@ -355,6 +364,11 @@
 		D09D00000000000000000001 /* OpenASOSchemaV3.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV3.swift; sourceTree = "<group>"; };
 		D09D00000000000000000002 /* TrackedKeywordRefreshStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordRefreshStatus.swift; sourceTree = "<group>"; };
 		D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordRefreshStatusTests.swift; sourceTree = "<group>"; };
+		D20B00000000000000000011 /* OpenASOSchemaV4.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV4.swift; sourceTree = "<group>"; };
+		D20B00000000000000000012 /* EstimatedKeywordDifficultyMetric.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyMetric.swift; sourceTree = "<group>"; };
+		D20B00000000000000000013 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyResultEvidenceRecord.swift; sourceTree = "<group>"; };
+		D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/EstimatedKeywordDifficultyStore.swift; sourceTree = "<group>"; };
+		D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyStoreTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* KeywordTableCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTableCells.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* KeywordNotesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordNotesSheet.swift; sourceTree = "<group>"; };
 		A20000000000000000000013 /* KeywordRankingListSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingListSheet.swift; sourceTree = "<group>"; };
@@ -498,6 +512,7 @@
 				D02000000000000000000003 /* PersistenceMigrationTests.swift */,
 				D02000000000000000000007 /* ReleasedV1StoreFixture.swift */,
 				D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */,
+				D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */,
 				D02000000000000000000004 /* v0.3.2-v1 */,
 				D14000000000000000000004 /* AppMetadataRefreshProgressStoreTests.swift */,
 				D13000000000000000000004 /* AppMetadataRefreshServiceTests.swift */,
@@ -584,6 +599,7 @@
 				A70100000000000000000002 /* RatingsReviews/AppStorefrontRatingTypes.swift */,
 				0A1B2C3D4E5F678901234514 /* RatingsReviews/AppStorefrontReviewService.swift */,
 				A30000000000000000000002 /* Persistence/BackgroundModelStore.swift */,
+				D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */,
 				A0D71B4C0000000000000014 /* Persistence/DailyRefreshScheduler.swift */,
 				D35A00000000000000000012 /* Persistence/DailyRefreshPlanLoader.swift */,
 				465129A02F247ED683558D8B /* SearchRanking/DefaultAppResolver.swift */,
@@ -794,6 +810,9 @@
 				A10000000000000000000001 /* OpenASOSchemaV1.swift */,
 				D18000000000000000000001 /* OpenASOSchemaV2.swift */,
 				D09D00000000000000000001 /* OpenASOSchemaV3.swift */,
+				D20B00000000000000000011 /* OpenASOSchemaV4.swift */,
+				D20B00000000000000000012 /* EstimatedKeywordDifficultyMetric.swift */,
+				D20B00000000000000000013 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift */,
 				7B98B0F5A49E13B4633818A9 /* RankingSource.swift */,
 				BEEF00000000000000000005 /* StoreApp.swift */,
 				ECBEF6240F66A5F359B09D41 /* Storefront.swift */,
@@ -1026,6 +1045,7 @@
 				0A1B2C3D4E5F678901234511 /* AppStorefrontReview.swift in Sources */,
 				0A1B2C3D4E5F678901234513 /* RatingsReviews/AppStorefrontReviewService.swift in Sources */,
 				A30000000000000000000001 /* Persistence/BackgroundModelStore.swift in Sources */,
+				D20B00000000000000000007 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */,
 				04E8C4E18F1A4D519C0A1136 /* CodableAppStorage.swift in Sources */,
 				C5A400000000000000000001 /* CSVFormats.swift in Sources */,
 				A0D71B4C0000000000000013 /* Persistence/DailyRefreshScheduler.swift in Sources */,
@@ -1050,6 +1070,9 @@
 				A10000000000000000000002 /* OpenASOSchemaV1.swift in Sources */,
 				D18000000000000000000003 /* OpenASOSchemaV2.swift in Sources */,
 				D09D00000000000000000003 /* OpenASOSchemaV3.swift in Sources */,
+				D20B00000000000000000001 /* OpenASOSchemaV4.swift in Sources */,
+				D20B00000000000000000003 /* EstimatedKeywordDifficultyMetric.swift in Sources */,
+				D20B00000000000000000005 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift in Sources */,
 				04E8C4E18F1A4D519C0A1111 /* AppleAds/KeywordMetricsService.swift in Sources */,
 				04E8C4E18F1A4D519C0A1112 /* SearchRanking/KeywordSuggestionService.swift in Sources */,
 				9F18F6F8A4D64BE38FBED4A8 /* KeywordTableView.swift in Sources */,
@@ -1141,6 +1164,7 @@
 				D02000000000000000000001 /* PersistenceMigrationTests.swift in Sources */,
 				D02000000000000000000006 /* ReleasedV1StoreFixture.swift in Sources */,
 				D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */,
+				D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */,
 				D14000000000000000000002 /* AppMetadataRefreshProgressStoreTests.swift in Sources */,
 				D13000000000000000000002 /* AppMetadataRefreshServiceTests.swift in Sources */,
 				D35A00000000000000000003 /* HeadlessRefreshServiceTests.swift in Sources */,
@@ -1187,7 +1211,11 @@
 				C15A00000000000000000107 /* OpenASOSchemaV1.swift in Sources */,
 				D18000000000000000000005 /* OpenASOSchemaV2.swift in Sources */,
 				D09D00000000000000000005 /* OpenASOSchemaV3.swift in Sources */,
+				D20B00000000000000000002 /* OpenASOSchemaV4.swift in Sources */,
+				D20B00000000000000000004 /* EstimatedKeywordDifficultyMetric.swift in Sources */,
+				D20B00000000000000000006 /* EstimatedKeywordDifficultyResultEvidenceRecord.swift in Sources */,
 				C15A00000000000000000108 /* Persistence/BackgroundModelStore.swift in Sources */,
+				D20B00000000000000000008 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */,
 				C15A00000000000000000109 /* Persistence/ModelContainerFactory.swift in Sources */,
 				C15A0000000000000000010A /* OpenASOError.swift in Sources */,
 				C15A0000000000000000010B /* AppPlatform.swift in Sources */,
