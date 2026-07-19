@@ -41,6 +41,7 @@ final class AppServices {
     let appDetailRefreshService: AppDetailRefreshService?
     let refreshProgressStore: AppRefreshProgressStore
     let mcpServerController: OpenASOMCPServerController
+    let keywordResearchProjectStore: KeywordResearchProjectStore?
     private(set) var backgroundModelStore: BackgroundModelStore?
     private(set) var backgroundModelStoreRevision = 0
 
@@ -53,6 +54,7 @@ final class AppServices {
         loadsEnvironmentCredentials: Bool = true,
         allowsIconNetworkFetches: Bool = true,
         backgroundModelStore: BackgroundModelStore? = nil,
+        keywordResearchProjectStore: KeywordResearchProjectStore? = nil,
         refreshObservationClock: RefreshObservationClock = .live,
         refreshMetricsRecorder: RefreshMetricsRecorder? = nil,
         providerRequestGateMode: ProviderRequestGateMode? = nil,
@@ -157,6 +159,10 @@ final class AppServices {
         let mcpRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler()
         let refreshProgressStore = AppRefreshProgressStore()
         let storefrontCatalog = StorefrontCatalog()
+        let keywordResearchProjectStore = keywordResearchProjectStore
+            ?? backgroundModelStore.map {
+                KeywordResearchProjectStore(backgroundModelStore: $0)
+            }
         let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?
         if let backgroundModelStore {
             metadataEnrichmentHandler = { requests in
@@ -335,15 +341,17 @@ final class AppServices {
         self.refreshCoordinator = refreshCoordinator
         self.appDetailRefreshService = appDetailRefreshService
         self.refreshProgressStore = refreshProgressStore
+        self.keywordResearchProjectStore = keywordResearchProjectStore
         self.mcpServerController = OpenASOMCPServerController(portProvider: {
             settingsStore.mcpServerPort
         }) {
-            guard let backgroundModelStore else {
+            guard let backgroundModelStore, let keywordResearchProjectStore else {
                 throw OpenASOError.providerUnavailable("OpenASO MCP needs an initialized workspace store.")
             }
 
             let mcpService = OpenASOMCPService(
                 backgroundModelStore: backgroundModelStore,
+                keywordResearchProjectStore: keywordResearchProjectStore,
                 appResolver: resolver,
                 appCatalogService: catalogService,
                 httpClient: httpClient,

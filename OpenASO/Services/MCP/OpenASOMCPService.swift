@@ -464,6 +464,7 @@ final class OpenASOMCPService: Sendable {
   ]
 
   private let backgroundModelStore: BackgroundModelStore
+  let keywordResearchProjectStore: (any KeywordResearchProjectReading)?
   private let appResolver: any AppResolver
   private let appCatalogService: AppCatalogService
   private let httpClient: any HTTPClient
@@ -482,6 +483,7 @@ final class OpenASOMCPService: Sendable {
 
   init(
     backgroundModelStore: BackgroundModelStore,
+    keywordResearchProjectStore: (any KeywordResearchProjectReading)? = nil,
     appResolver: any AppResolver,
     appCatalogService: AppCatalogService,
     httpClient: any HTTPClient,
@@ -499,6 +501,7 @@ final class OpenASOMCPService: Sendable {
     now: @escaping @Sendable () -> Date = { Date() }
   ) {
     self.backgroundModelStore = backgroundModelStore
+    self.keywordResearchProjectStore = keywordResearchProjectStore
     self.appResolver = appResolver
     self.appCatalogService = appCatalogService
     self.httpClient = httpClient

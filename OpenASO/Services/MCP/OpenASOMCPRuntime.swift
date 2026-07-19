@@ -1,12 +1,12 @@
 import Foundation
 import MCP
+import SwiftData
 
 enum OpenASOMCPRuntime {
     static func makeServer(
         configuration: OpenASOMCPServerConfiguration = OpenASOMCPServerConfiguration()
     ) async throws -> Server {
         let modelContainer = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: false)
-        let backgroundModelStore = BackgroundModelStore(modelContainer: modelContainer)
         let refreshObservationClock = RefreshObservationClock.live
         let refreshMetricsRecorder = RefreshMetricsRecorder(clock: refreshObservationClock)
         let httpClient = ProviderHTTPClientPipeline.make(
@@ -14,6 +14,28 @@ enum OpenASOMCPRuntime {
             mode: .production(defaults: .standard),
             refreshMetricsRecorder: refreshMetricsRecorder,
             refreshObservationClock: refreshObservationClock
+        )
+        let mcpService = await makeService(
+            modelContainer: modelContainer,
+            httpClient: httpClient
+        )
+
+        return await OpenASOMCPServerFactory(
+            service: mcpService,
+            configuration: configuration
+        ).makeServer()
+    }
+
+    /// Builds the standalone runtime's dependency graph around an injected
+    /// container. Tests use this seam with an in-memory store so they never
+    /// open the user's workspace.
+    static func makeService(
+        modelContainer: ModelContainer,
+        httpClient: any HTTPClient = URLSessionHTTPClient()
+    ) async -> OpenASOMCPService {
+        let backgroundModelStore = BackgroundModelStore(modelContainer: modelContainer)
+        let keywordResearchProjectStore = KeywordResearchProjectStore(
+            backgroundModelStore: backgroundModelStore
         )
         let appResolver = DefaultAppResolver(httpClient: httpClient)
         let appCatalogService = AppCatalogService(appResolver: appResolver)
@@ -25,6 +47,7 @@ enum OpenASOMCPRuntime {
         let reviewService = AppStorefrontReviewService(httpClient: httpClient)
         let mcpService = OpenASOMCPService(
             backgroundModelStore: backgroundModelStore,
+            keywordResearchProjectStore: keywordResearchProjectStore,
             appResolver: appResolver,
             appCatalogService: appCatalogService,
             httpClient: httpClient,
@@ -33,11 +56,7 @@ enum OpenASOMCPRuntime {
             rankingRefreshCoordinator: rankingRefreshCoordinator,
             reviewService: reviewService
         )
-
-        return await OpenASOMCPServerFactory(
-            service: mcpService,
-            configuration: configuration
-        ).makeServer()
+        return mcpService
     }
 
     static func runStdio(
