@@ -137,6 +137,251 @@ struct KeywordResearchProjectStoreTests {
     }
 
     @Test
+    func pageReadsProbePastTheBoundaryAndReturnExactContinuationOffsets() async throws {
+        let projectFixture = try makeFixture()
+        let lowerProjectID = UUID(uuidString: "32000000-0000-4000-8000-000000000011")!
+        let middleProjectID = UUID(uuidString: "32000000-0000-4000-8000-000000000012")!
+        let higherProjectID = UUID(uuidString: "32000000-0000-4000-8000-000000000013")!
+
+        for (id, name) in [
+            (higherProjectID, "Higher"),
+            (lowerProjectID, "Lower"),
+            (middleProjectID, "Middle")
+        ] {
+            _ = try await projectFixture.store.createProject(id: id, name: name)
+        }
+
+        let firstProjectPage = try await projectFixture.store.listProjectsPage(
+            offset: 0,
+            limit: 2
+        )
+        let finalProjectPage = try await projectFixture.store.listProjectsPage(
+            offset: try #require(firstProjectPage.nextOffset),
+            limit: 2
+        )
+        let pastProjectEnd = try await projectFixture.store.listProjectsPage(
+            offset: 3,
+            limit: 2
+        )
+
+        #expect(firstProjectPage.items.map(\.id) == [lowerProjectID, middleProjectID])
+        #expect(firstProjectPage.nextOffset == 2)
+        #expect(finalProjectPage.items.map(\.id) == [higherProjectID])
+        #expect(finalProjectPage.nextOffset == nil)
+        #expect(pastProjectEnd.items.isEmpty)
+        #expect(pastProjectEnd.nextOffset == nil)
+        #expect(
+            try await projectFixture.store.listProjects(offset: 0, limit: 2)
+                == firstProjectPage.items
+        )
+
+        let exactProjectFixture = try makeFixture()
+        _ = try await exactProjectFixture.store.createProject(
+            id: lowerProjectID,
+            name: "Lower"
+        )
+        _ = try await exactProjectFixture.store.createProject(
+            id: higherProjectID,
+            name: "Higher"
+        )
+        let exactProjectPage = try await exactProjectFixture.store.listProjectsPage(
+            offset: 0,
+            limit: 2
+        )
+        #expect(exactProjectPage.items.map(\.id) == [lowerProjectID, higherProjectID])
+        #expect(exactProjectPage.nextOffset == nil)
+
+        let keywordFixture = try makeFixture()
+        var project = try await keywordFixture.store.createProject(name: "Keyword pages")
+        let lowerKeywordID = UUID(uuidString: "32000000-0000-4000-8000-000000000021")!
+        let middleKeywordID = UUID(uuidString: "32000000-0000-4000-8000-000000000022")!
+        let higherKeywordID = UUID(uuidString: "32000000-0000-4000-8000-000000000023")!
+
+        for (id, term) in [
+            (higherKeywordID, "higher"),
+            (lowerKeywordID, "lower"),
+            (middleKeywordID, "middle")
+        ] {
+            let addition = try await keywordFixture.store.addKeyword(
+                id: id,
+                to: project.revision,
+                term: term,
+                storefront: "us",
+                platform: .iphone
+            )
+            project = addition.project
+        }
+
+        let firstKeywordPage = try await keywordFixture.store.listKeywordsPage(
+            in: project.generation,
+            offset: 0,
+            limit: 2
+        )
+        let finalKeywordPage = try await keywordFixture.store.listKeywordsPage(
+            in: project.generation,
+            offset: try #require(firstKeywordPage.nextOffset),
+            limit: 2
+        )
+        let exactKeywordPage = try await keywordFixture.store.listKeywordsPage(
+            in: project.generation,
+            offset: 0,
+            limit: 3
+        )
+        let pastKeywordEnd = try await keywordFixture.store.listKeywordsPage(
+            in: project.generation,
+            offset: 3,
+            limit: 2
+        )
+
+        #expect(firstKeywordPage.items.map(\.id) == [lowerKeywordID, middleKeywordID])
+        #expect(firstKeywordPage.nextOffset == 2)
+        #expect(finalKeywordPage.items.map(\.id) == [higherKeywordID])
+        #expect(finalKeywordPage.nextOffset == nil)
+        #expect(exactKeywordPage.items.map(\.id) == [
+            lowerKeywordID,
+            middleKeywordID,
+            higherKeywordID
+        ])
+        #expect(exactKeywordPage.nextOffset == nil)
+        #expect(pastKeywordEnd.items.isEmpty)
+        #expect(pastKeywordEnd.nextOffset == nil)
+        #expect(
+            try await keywordFixture.store.listKeywords(
+                in: project.generation,
+                offset: 0,
+                limit: 2
+            ) == firstKeywordPage.items
+        )
+        #expect(Set([firstKeywordPage, firstKeywordPage]).count == 1)
+    }
+
+    @Test
+    func pageReadsValidateBoundsBeforeAccessingPersistentGenerations() async throws {
+        let fixture = try makeFixture()
+        let missingGeneration = KeywordResearchProjectGeneration(
+            id: UUID(uuidString: "32000000-0000-4000-8000-000000000031")!,
+            incarnationID: UUID(uuidString: "32000000-0000-4000-8000-000000000032")!
+        )
+
+        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
+            _ = try await fixture.store.listProjectsPage(offset: -1, limit: 1)
+        }
+        for invalidLimit in [0, KeywordResearchProjectStore.maximumPageLimit + 1] {
+            await #expect(throws: KeywordResearchProjectStoreError.invalidLimit) {
+                _ = try await fixture.store.listProjectsPage(offset: 0, limit: invalidLimit)
+            }
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
+            _ = try await fixture.store.listProjects(offset: Int.max, limit: 1)
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
+            _ = try await fixture.store.listProjectsPage(offset: Int.max, limit: 1)
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
+            _ = try await fixture.store.listKeywordsPage(
+                in: missingGeneration,
+                offset: -1,
+                limit: 1
+            )
+        }
+        for invalidLimit in [0, KeywordResearchProjectStore.maximumPageLimit + 1] {
+            await #expect(throws: KeywordResearchProjectStoreError.invalidLimit) {
+                _ = try await fixture.store.listKeywordsPage(
+                    in: missingGeneration,
+                    offset: 0,
+                    limit: invalidLimit
+                )
+            }
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
+            _ = try await fixture.store.listKeywords(
+                in: missingGeneration,
+                offset: Int.max,
+                limit: 1
+            )
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
+            _ = try await fixture.store.listKeywordsPage(
+                in: missingGeneration,
+                offset: Int.max,
+                limit: 1
+            )
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.projectNotFound(
+            missingGeneration.id
+        )) {
+            _ = try await fixture.store.listKeywordsPage(
+                in: missingGeneration,
+                offset: 0,
+                limit: 1
+            )
+        }
+    }
+
+    @Test
+    func exactProjectReloadAndKeywordPagesRejectDeletedOrReincarnatedGenerations() async throws {
+        let fixture = try makeFixture()
+        let projectID = UUID(uuidString: "32000000-0000-4000-8000-000000000041")!
+        let original = try await fixture.store.createProject(
+            id: projectID,
+            name: "Original"
+        )
+
+        #expect(try await fixture.store.loadProject(generation: original.generation) == original)
+
+        let updated = try await fixture.store.updateProject(
+            revision: original.revision,
+            name: "Updated",
+            defaultStorefront: "gb",
+            defaultPlatform: .ipad
+        )
+        #expect(updated.generation == original.generation)
+        #expect(try await fixture.store.loadProject(generation: original.generation) == updated)
+
+        try await fixture.store.deleteProject(revision: updated.revision)
+        await #expect(throws: KeywordResearchProjectStoreError.projectNotFound(projectID)) {
+            _ = try await fixture.store.loadProject(generation: original.generation)
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.projectNotFound(projectID)) {
+            _ = try await fixture.store.listKeywordsPage(
+                in: original.generation,
+                offset: 0,
+                limit: 50
+            )
+        }
+
+        let replacement = try await fixture.store.createProject(
+            id: projectID,
+            name: "Replacement"
+        )
+        #expect(replacement.generation != original.generation)
+        await #expect(throws: KeywordResearchProjectStoreError.staleProjectRevision(projectID)) {
+            _ = try await fixture.store.loadProject(generation: original.generation)
+        }
+        await #expect(throws: KeywordResearchProjectStoreError.staleProjectRevision(projectID)) {
+            _ = try await fixture.store.listKeywordsPage(
+                in: original.generation,
+                offset: 0,
+                limit: 50
+            )
+        }
+        #expect(
+            try await fixture.store.loadProject(generation: replacement.generation)
+                == replacement
+        )
+        #expect(
+            try await fixture.store.listKeywordsPage(
+                in: replacement.generation,
+                offset: 0,
+                limit: 50
+            ) == KeywordResearchPage<KeywordResearchKeywordSnapshot>(
+                items: [],
+                nextOffset: nil
+            )
+        )
+    }
+
+    @Test
     func validationUsesNormalizedUTF8BoundsAndStrictPagination() async throws {
         let fixture = try makeFixture()
 
