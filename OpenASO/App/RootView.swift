@@ -5,6 +5,8 @@ struct RootView: View {
 
     @State private var selectedApp: TrackedApp?
     @State private var isPresentingKeywordResearch = false
+    @State private var keywordResearchDetailModelCache =
+        KeywordResearchProjectDetailModelCache()
 
     var body: some View {
         NavigationSplitView {
@@ -25,7 +27,9 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $isPresentingKeywordResearch) {
-            KeywordResearchWorkspaceLauncher()
+            KeywordResearchWorkspaceLauncher(
+                detailModelCache: keywordResearchDetailModelCache
+            )
         }
         .task {
             guard !Self.isRunningUnderTests else {
