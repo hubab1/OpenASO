@@ -42,6 +42,7 @@ final class AppServices {
     let refreshProgressStore: AppRefreshProgressStore
     let mcpServerController: OpenASOMCPServerController
     let keywordResearchProjectStore: KeywordResearchProjectStore?
+    let keywordResearchProjectCopyService: KeywordResearchProjectCopyService?
     let keywordResearchRankingWorkflow: KeywordResearchRankingWorkflow?
     let keywordResearchMetricsWorkflow: KeywordResearchMetricsWorkflow?
     private(set) var backgroundModelStore: BackgroundModelStore?
@@ -57,6 +58,7 @@ final class AppServices {
         allowsIconNetworkFetches: Bool = true,
         backgroundModelStore: BackgroundModelStore? = nil,
         keywordResearchProjectStore: KeywordResearchProjectStore? = nil,
+        keywordResearchProjectCopyService: KeywordResearchProjectCopyService? = nil,
         keywordResearchRankingWorkflow: KeywordResearchRankingWorkflow? = nil,
         keywordResearchMetricsWorkflow: KeywordResearchMetricsWorkflow? = nil,
         refreshObservationClock: RefreshObservationClock = .live,
@@ -166,6 +168,10 @@ final class AppServices {
         let keywordResearchProjectStore = keywordResearchProjectStore
             ?? backgroundModelStore.map {
                 KeywordResearchProjectStore(backgroundModelStore: $0)
+            }
+        let keywordResearchProjectCopyService = keywordResearchProjectCopyService
+            ?? backgroundModelStore.map {
+                KeywordResearchProjectCopyService(backgroundModelStore: $0)
             }
         let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?
         if let backgroundModelStore {
@@ -374,6 +380,7 @@ final class AppServices {
         self.appDetailRefreshService = appDetailRefreshService
         self.refreshProgressStore = refreshProgressStore
         self.keywordResearchProjectStore = keywordResearchProjectStore
+        self.keywordResearchProjectCopyService = keywordResearchProjectCopyService
         self.keywordResearchRankingWorkflow = keywordResearchRankingWorkflow
         self.keywordResearchMetricsWorkflow = keywordResearchMetricsWorkflow
         self.mcpServerController = OpenASOMCPServerController(portProvider: {
