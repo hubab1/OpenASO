@@ -57,21 +57,44 @@ struct KeywordResearchKeywordAddition: Equatable, Hashable, Sendable {
     let keyword: KeywordResearchKeywordSnapshot
 }
 
+struct KeywordResearchPage<Item: Sendable>: Sendable {
+    let items: [Item]
+    let nextOffset: Int?
+}
+
+extension KeywordResearchPage: Equatable where Item: Equatable {}
+extension KeywordResearchPage: Hashable where Item: Hashable {}
+
 /// The MCP dependency intentionally exposes reads only. A future standalone
 /// mutation surface must first add store-wide, cross-process coordination;
 /// process-local actor isolation is not sufficient for two persistent
 /// containers writing the same workspace.
 protocol KeywordResearchProjectReading: Sendable {
+    func loadProject(
+        generation: KeywordResearchProjectGeneration
+    ) async throws -> KeywordResearchProjectSnapshot
+
     func listProjects(
         offset: Int,
         limit: Int
     ) async throws -> [KeywordResearchProjectSnapshot]
+
+    func listProjectsPage(
+        offset: Int,
+        limit: Int
+    ) async throws -> KeywordResearchPage<KeywordResearchProjectSnapshot>
 
     func listKeywords(
         in projectGeneration: KeywordResearchProjectGeneration,
         offset: Int,
         limit: Int
     ) async throws -> [KeywordResearchKeywordSnapshot]
+
+    func listKeywordsPage(
+        in projectGeneration: KeywordResearchProjectGeneration,
+        offset: Int,
+        limit: Int
+    ) async throws -> KeywordResearchPage<KeywordResearchKeywordSnapshot>
 }
 
 enum KeywordResearchProjectStoreError: Error, Equatable, Sendable {
@@ -184,6 +207,31 @@ actor KeywordResearchProjectStore {
         }
     }
 
+    func loadProject(
+        generation: KeywordResearchProjectGeneration
+    ) async throws -> KeywordResearchProjectSnapshot {
+        try await modelStore.read { modelContext in
+            Self.snapshot(try Self.requireProject(
+                generation: generation,
+                in: modelContext
+            ))
+        }
+    }
+
+    func listProjectsPage(
+        offset: Int = 0,
+        limit: Int = 50
+    ) async throws -> KeywordResearchPage<KeywordResearchProjectSnapshot> {
+        try Self.validatePagination(offset: offset, limit: limit)
+
+        return try await modelStore.fetch(
+            Self.projectsDescriptor(offset: offset, limit: limit + 1)
+        ) { projects in
+            let snapshots = projects.map(Self.snapshot)
+            return Self.page(items: snapshots, offset: offset, limit: limit)
+        }
+    }
+
     func updateProject(
         revision: KeywordResearchProjectRevision,
         name: String,
@@ -249,6 +297,28 @@ actor KeywordResearchProjectStore {
                 limit: limit
             )
             return try modelContext.fetch(descriptor).map(Self.snapshot)
+        }
+    }
+
+    func listKeywordsPage(
+        in projectGeneration: KeywordResearchProjectGeneration,
+        offset: Int = 0,
+        limit: Int = 50
+    ) async throws -> KeywordResearchPage<KeywordResearchKeywordSnapshot> {
+        try Self.validatePagination(offset: offset, limit: limit)
+
+        return try await modelStore.read { modelContext in
+            _ = try Self.requireProject(
+                generation: projectGeneration,
+                in: modelContext
+            )
+            let descriptor = Self.keywordsDescriptor(
+                projectID: projectGeneration.id,
+                offset: offset,
+                limit: limit + 1
+            )
+            let snapshots = try modelContext.fetch(descriptor).map(Self.snapshot)
+            return Self.page(items: snapshots, offset: offset, limit: limit)
         }
     }
 
@@ -487,6 +557,22 @@ private extension KeywordResearchProjectStore {
         guard (1...maximumPageLimit).contains(limit) else {
             throw KeywordResearchProjectStoreError.invalidLimit
         }
+        guard offset <= Int.max - limit else {
+            throw KeywordResearchProjectStoreError.invalidOffset
+        }
+    }
+
+    static func page<Item: Sendable>(
+        items: [Item],
+        offset: Int,
+        limit: Int
+    ) -> KeywordResearchPage<Item> {
+        let hasMore = items.count > limit
+        let pageItems = Array(items.prefix(limit))
+        return KeywordResearchPage(
+            items: pageItems,
+            nextOffset: hasMore ? offset + pageItems.count : nil
+        )
     }
 
     static func nextRevisionDate(previous: Date, candidate: Date) -> Date {
