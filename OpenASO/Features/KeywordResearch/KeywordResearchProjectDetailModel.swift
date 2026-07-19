@@ -66,7 +66,7 @@ final class KeywordResearchProjectDetailModel {
         self.dependencies = dependencies
     }
 
-    var hasMoreKeywords: Bool { nextOffset != nil }
+    var hasMoreKeywords: Bool { !requiresReload && nextOffset != nil }
 
     func rankingState(
         for keywordID: UUID

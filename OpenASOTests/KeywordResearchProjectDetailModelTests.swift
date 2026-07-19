@@ -506,6 +506,51 @@ struct KeywordResearchProjectDetailModelTests {
         await obsoleteLoad.value
         #expect(model.loadState == .idle)
     }
+
+    @Test
+    func explicitLoadCancellationHidesInvalidContinuationCursor() async {
+        let project = makeProject(name: "Project")
+        let keyword = makeKeyword(project: project)
+        let loader = ControlledOperation<KeywordResearchKeywordPresentationPage>()
+        let model = KeywordResearchProjectDetailModel(
+            project: project,
+            dependencies: detailDependencies(
+                loadKeywordsPage: { _, _, _ in try await loader.call() }
+            )
+        )
+
+        let initial = Task { @MainActor in await model.reload() }
+        await loader.waitForCallCount(1)
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchKeywordPresentationPage(
+                keywords: [keyword],
+                nextOffset: 8
+            )
+        )
+        await initial.value
+        #expect(model.hasMoreKeywords)
+
+        let continuation = Task { @MainActor in await model.loadNextPage() }
+        await loader.waitForCallCount(2)
+        model.cancelLoading()
+
+        #expect(model.requiresReload)
+        #expect(model.nextOffset == 8)
+        #expect(!model.hasMoreKeywords)
+        #expect(model.loadState == .loaded)
+
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchKeywordPresentationPage(
+                keywords: [],
+                nextOffset: nil
+            )
+        )
+        await continuation.value
+        #expect(model.nextOffset == 8)
+        #expect(!model.hasMoreKeywords)
+    }
 }
 
 private struct KeywordAddCall: Equatable, Sendable {
