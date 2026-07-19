@@ -20,6 +20,7 @@ struct AppDetailView: View {
     private let defaultPlatform: AppPlatform
 
     @State private var isPresentingAddKeywords = false
+    @State private var presentedMarketInsights: KeywordMarketInsightsSheetContext?
     @State private var isRefreshingApp = false
     @State private var errorMessage: String?
     @State private var searchText = ""
@@ -34,6 +35,7 @@ struct AppDetailView: View {
     @State private var exportDefaultFilename = "keywords.csv"
     @State private var transferAlert: TrackedKeywordTransferAlert?
     @State private var keywordRefreshToken = 0
+    @State private var marketInsightsRefreshToken = 0
     @State private var queuedKeywordAdds: [KeywordAddRequest] = []
     @State private var isFlushingQueuedKeywordAdds = false
     @State private var isRefreshingQueuedKeywordAdds = false
@@ -117,6 +119,9 @@ struct AppDetailView: View {
 
             ToolbarItemGroup(placement: .primaryAction) {
                 if selectedWorkspaceView == .keywords {
+                    AppDetailMarketInsightsToolbarButton(
+                        action: presentMarketInsights
+                    )
                     AppDetailImportExportToolbarMenu(
                         exportAction: prepareCSVExport,
                         exportHistoryAction: prepareKeywordHistoryCSVExport,
@@ -146,6 +151,15 @@ struct AppDetailView: View {
                 initialStorefrontCode: addKeywordsInitialStorefrontCode,
                 isRefreshInProgress: isRefreshInProgress,
                 queueKeywordAdd: queueKeywordAdd
+            )
+        }
+        .sheet(item: $presentedMarketInsights) { context in
+            KeywordMarketInsightsSheet(
+                context: context,
+                refreshToken: marketInsightsRefreshToken,
+                dataSource: .production(
+                    backgroundModelStore: services.backgroundModelStore
+                )
             )
         }
         .onAppear {
@@ -191,6 +205,43 @@ struct AppDetailView: View {
 
     private var isRefreshDisabled: Bool {
         isRefreshingApp
+    }
+
+    private func presentMarketInsights() {
+        let platform = KeywordMarketInsightsScopeProjection.concretePlatform(
+            selectedPlatformFilter: keywordWorkspaceState.selectedPlatformFilter,
+            defaultPlatform: defaultPlatform
+        )
+        let candidates = trackedApp.keywordTracks.map { track in
+            KeywordMarketInsightsScopeProjection.CandidateMarket(
+                storefront: track.storefront,
+                platform: track.platform
+            )
+        }
+        do {
+            let scope = try KeywordMarketInsightsScopeProjection.project(
+                appStoreID: appStoreID,
+                candidateMarkets: candidates,
+                selectedStorefrontFilter: selectedStorefrontFilter,
+                selectedPlatformFilter: keywordWorkspaceState.selectedPlatformFilter,
+                defaultPlatform: defaultPlatform
+            )
+            presentedMarketInsights = KeywordMarketInsightsSheetContext(
+                appName: appName,
+                appStoreID: appStoreID,
+                platform: platform,
+                scope: scope,
+                scopeIssue: nil
+            )
+        } catch {
+            presentedMarketInsights = KeywordMarketInsightsSheetContext(
+                appName: appName,
+                appStoreID: appStoreID,
+                platform: platform,
+                scope: nil,
+                scopeIssue: "No tracked \(platform.displayName) countries are available in this scope. Track a keyword for this platform or choose a different device filter, then reopen Market Insights."
+            )
+        }
     }
 
     private var addKeywordsInitialStorefrontCode: String? {
@@ -268,6 +319,7 @@ struct AppDetailView: View {
                 }
                 keywordRefreshToken += 1
                 ratingsRefreshToken += 1
+                recordMarketInsightsRefreshCompletion(for: request)
 
                 OpenASOLog.appDetail.info(
                     "Refresh finished appStoreID=\(appStoreID, privacy: .public) ratingSuccesses=\(result.ratingOutcomes.filter { $0.error == nil }.count, privacy: .public) ratingFailures=\(result.ratingOutcomes.filter { $0.error != nil }.count, privacy: .public) reviewSuccesses=\(result.reviewOutcomes.filter { $0.error == nil }.count, privacy: .public) reviewFailures=\(result.reviewOutcomes.filter { $0.error != nil }.count, privacy: .public) keywordFailures=\(result.keywordOutcomes.filter { $0.error != nil }.count, privacy: .public)"
@@ -324,6 +376,7 @@ struct AppDetailView: View {
                     await MainActor.run {
                         keywordRefreshToken += 1
                         ratingsRefreshToken += 1
+                        recordMarketInsightsRefreshCompletion(for: request)
                     }
                 }
             }
@@ -464,6 +517,7 @@ struct AppDetailView: View {
                 }
                 keywordRefreshToken += 1
                 isRefreshingQueuedKeywordAdds = false
+                recordMarketInsightsRefreshCompletion(for: request)
                 flushQueuedKeywordAdds()
             }
         }
@@ -984,8 +1038,28 @@ struct AppDetailView: View {
             await MainActor.run {
                 keywordRefreshToken += 1
                 ratingsRefreshToken += 1
+                if let completedRequest = requests.first(where: {
+                    $0.app.appStoreID == appStoreID
+                        && $0.refreshKeywords
+                        && !$0.trackIdentityKeys.isEmpty
+                }) {
+                    recordMarketInsightsRefreshCompletion(for: completedRequest)
+                }
             }
         }
+    }
+
+    private func recordMarketInsightsRefreshCompletion(
+        for request: AppDetailRefreshRequest
+    ) {
+        marketInsightsRefreshToken += KeywordMarketInsightsRefreshProjection.tokenIncrement(
+            for: .completed(
+                appStoreID: request.app.appStoreID,
+                refreshesRankings: request.refreshKeywords,
+                keywordCount: request.trackIdentityKeys.count
+            ),
+            viewedAppStoreID: appStoreID
+        )
     }
 
     private func importedKeywordRefreshRequests(

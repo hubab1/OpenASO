@@ -213,6 +213,15 @@ struct AppDetailAddKeywordsToolbarButton: View {
     }
 }
 
+struct AppDetailMarketInsightsToolbarButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button("Market Insights", systemImage: "globe", action: action)
+            .help("Compare Saved Keyword Rankings Across Countries")
+    }
+}
+
 private struct AppDetailFilterButton: View {
     @Binding var selectedPlatformFilter: PlatformFilter
     @Binding var popularityFilterRange: ClosedRange<Double>

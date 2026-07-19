@@ -116,13 +116,25 @@
 		D22000000000000000000001 /* SearchRanking/KeywordMarketInsightsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */; };
 		D22000000000000000000002 /* SearchRanking/KeywordMarketInsightsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */; };
 		D22000000000000000000003 /* KeywordMarketInsightsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000012 /* KeywordMarketInsightsServiceTests.swift */; };
+		D23000000000000000000001 /* KeywordMarketInsightDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000021 /* KeywordMarketInsightDetailSheet.swift */; };
+		D23000000000000000000002 /* KeywordMarketInsightDifficultySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000022 /* KeywordMarketInsightDifficultySection.swift */; };
+		D23000000000000000000003 /* KeywordMarketInsightMarketCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000023 /* KeywordMarketInsightMarketCard.swift */; };
+		D23000000000000000000004 /* KeywordMarketInsightSummaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000024 /* KeywordMarketInsightSummaryCard.swift */; };
 		D23000000000000000000005 /* KeywordMarketInsightsDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000025 /* KeywordMarketInsightsDataSource.swift */; };
 		D23000000000000000000006 /* KeywordMarketInsightsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000026 /* KeywordMarketInsightsModel.swift */; };
 		D23000000000000000000007 /* KeywordMarketInsightsPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000027 /* KeywordMarketInsightsPresentation.swift */; };
+		D23000000000000000000008 /* KeywordMarketInsightsScopeBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000028 /* KeywordMarketInsightsScopeBar.swift */; };
+		D23000000000000000000009 /* KeywordMarketInsightsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000029 /* KeywordMarketInsightsSheet.swift */; };
+		D2300000000000000000000A /* KeywordMarketInsightsStatusBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2300000000000000000002A /* KeywordMarketInsightsStatusBanner.swift */; };
+		D2300000000000000000000B /* KeywordMarketInsightsStatusLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2300000000000000000002B /* KeywordMarketInsightsStatusLabel.swift */; };
+		D2300000000000000000000C /* KeywordMarketInsightsTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2300000000000000000002C /* KeywordMarketInsightsTable.swift */; };
 		D2300000000000000000000D /* KeywordMarketInsightsViewScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2300000000000000000002D /* KeywordMarketInsightsViewScope.swift */; };
+		D2300000000000000000000E /* KeywordMarketInsightsRefreshProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2300000000000000000002E /* KeywordMarketInsightsRefreshProjection.swift */; };
+		D2300000000000000000000F /* KeywordMarketInsightLiveDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2300000000000000000002F /* KeywordMarketInsightLiveDetailSheet.swift */; };
 		D23000000000000000000011 /* KeywordMarketInsightsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000031 /* KeywordMarketInsightsModelTests.swift */; };
 		D23000000000000000000012 /* KeywordMarketInsightsPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000032 /* KeywordMarketInsightsPresentationTests.swift */; };
 		D23000000000000000000013 /* KeywordMarketInsightsViewScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000033 /* KeywordMarketInsightsViewScopeTests.swift */; };
+		D23000000000000000000014 /* KeywordMarketInsightsRefreshProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23000000000000000000034 /* KeywordMarketInsightsRefreshProjectionTests.swift */; };
 		D20C00000000000000000002 /* Persistence/EstimatedKeywordDifficultyPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */; };
 		D20C00000000000000000003 /* Persistence/EstimatedKeywordDifficultyPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */; };
 		D20C00000000000000000004 /* EstimatedKeywordDifficultySummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000013 /* EstimatedKeywordDifficultySummaryTests.swift */; };
@@ -384,13 +396,25 @@
 		D20C00000000000000000011 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift; sourceTree = "<group>"; };
 		D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordMarketInsightsService.swift; sourceTree = "<group>"; };
 		D22000000000000000000012 /* KeywordMarketInsightsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsServiceTests.swift; sourceTree = "<group>"; };
+		D23000000000000000000021 /* KeywordMarketInsightDetailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightDetailSheet.swift; sourceTree = "<group>"; };
+		D23000000000000000000022 /* KeywordMarketInsightDifficultySection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightDifficultySection.swift; sourceTree = "<group>"; };
+		D23000000000000000000023 /* KeywordMarketInsightMarketCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightMarketCard.swift; sourceTree = "<group>"; };
+		D23000000000000000000024 /* KeywordMarketInsightSummaryCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightSummaryCard.swift; sourceTree = "<group>"; };
 		D23000000000000000000025 /* KeywordMarketInsightsDataSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsDataSource.swift; sourceTree = "<group>"; };
 		D23000000000000000000026 /* KeywordMarketInsightsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsModel.swift; sourceTree = "<group>"; };
 		D23000000000000000000027 /* KeywordMarketInsightsPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsPresentation.swift; sourceTree = "<group>"; };
+		D23000000000000000000028 /* KeywordMarketInsightsScopeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsScopeBar.swift; sourceTree = "<group>"; };
+		D23000000000000000000029 /* KeywordMarketInsightsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsSheet.swift; sourceTree = "<group>"; };
+		D2300000000000000000002A /* KeywordMarketInsightsStatusBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsStatusBanner.swift; sourceTree = "<group>"; };
+		D2300000000000000000002B /* KeywordMarketInsightsStatusLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsStatusLabel.swift; sourceTree = "<group>"; };
+		D2300000000000000000002C /* KeywordMarketInsightsTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsTable.swift; sourceTree = "<group>"; };
 		D2300000000000000000002D /* KeywordMarketInsightsViewScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsViewScope.swift; sourceTree = "<group>"; };
+		D2300000000000000000002E /* KeywordMarketInsightsRefreshProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsRefreshProjection.swift; sourceTree = "<group>"; };
+		D2300000000000000000002F /* KeywordMarketInsightLiveDetailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightLiveDetailSheet.swift; sourceTree = "<group>"; };
 		D23000000000000000000031 /* KeywordMarketInsightsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsModelTests.swift; sourceTree = "<group>"; };
 		D23000000000000000000032 /* KeywordMarketInsightsPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsPresentationTests.swift; sourceTree = "<group>"; };
 		D23000000000000000000033 /* KeywordMarketInsightsViewScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsViewScopeTests.swift; sourceTree = "<group>"; };
+		D23000000000000000000034 /* KeywordMarketInsightsRefreshProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsRefreshProjectionTests.swift; sourceTree = "<group>"; };
 		D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/EstimatedKeywordDifficultyPresentation.swift; sourceTree = "<group>"; };
 		D20C00000000000000000013 /* EstimatedKeywordDifficultySummaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultySummaryTests.swift; sourceTree = "<group>"; };
 		D20C00000000000000000014 /* EstimatedKeywordDifficultyPersistenceAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyPersistenceAdapterTests.swift; sourceTree = "<group>"; };
@@ -563,6 +587,7 @@
 				D23000000000000000000031 /* KeywordMarketInsightsModelTests.swift */,
 				D23000000000000000000032 /* KeywordMarketInsightsPresentationTests.swift */,
 				D23000000000000000000033 /* KeywordMarketInsightsViewScopeTests.swift */,
+				D23000000000000000000034 /* KeywordMarketInsightsRefreshProjectionTests.swift */,
 				D02000000000000000000004 /* v0.3.2-v1 */,
 				0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */,
 				0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */,
@@ -802,10 +827,21 @@
 		D23000000000000000000040 /* MarketInsights */ = {
 			isa = PBXGroup;
 			children = (
+				D23000000000000000000021 /* KeywordMarketInsightDetailSheet.swift */,
+				D23000000000000000000022 /* KeywordMarketInsightDifficultySection.swift */,
+				D23000000000000000000023 /* KeywordMarketInsightMarketCard.swift */,
+				D23000000000000000000024 /* KeywordMarketInsightSummaryCard.swift */,
 				D23000000000000000000025 /* KeywordMarketInsightsDataSource.swift */,
 				D23000000000000000000026 /* KeywordMarketInsightsModel.swift */,
 				D23000000000000000000027 /* KeywordMarketInsightsPresentation.swift */,
+				D23000000000000000000028 /* KeywordMarketInsightsScopeBar.swift */,
+				D23000000000000000000029 /* KeywordMarketInsightsSheet.swift */,
+				D2300000000000000000002A /* KeywordMarketInsightsStatusBanner.swift */,
+				D2300000000000000000002B /* KeywordMarketInsightsStatusLabel.swift */,
+				D2300000000000000000002C /* KeywordMarketInsightsTable.swift */,
 				D2300000000000000000002D /* KeywordMarketInsightsViewScope.swift */,
+				D2300000000000000000002E /* KeywordMarketInsightsRefreshProjection.swift */,
+				D2300000000000000000002F /* KeywordMarketInsightLiveDetailSheet.swift */,
 			);
 			path = MarketInsights;
 			sourceTree = "<group>";
@@ -1169,10 +1205,21 @@
 				A08A2D06F81C49F4A34FB388 /* KeywordTrendSparklineView.swift in Sources */,
 				A0D71B4C0000000000000015 /* KeywordVisibilitySummaryView.swift in Sources */,
 				A0D71B4C000000000000000C /* AppKeywordsView.swift in Sources */,
+				D23000000000000000000001 /* KeywordMarketInsightDetailSheet.swift in Sources */,
+				D23000000000000000000002 /* KeywordMarketInsightDifficultySection.swift in Sources */,
+				D23000000000000000000003 /* KeywordMarketInsightMarketCard.swift in Sources */,
+				D23000000000000000000004 /* KeywordMarketInsightSummaryCard.swift in Sources */,
 				D23000000000000000000005 /* KeywordMarketInsightsDataSource.swift in Sources */,
 				D23000000000000000000006 /* KeywordMarketInsightsModel.swift in Sources */,
 				D23000000000000000000007 /* KeywordMarketInsightsPresentation.swift in Sources */,
+				D23000000000000000000008 /* KeywordMarketInsightsScopeBar.swift in Sources */,
+				D23000000000000000000009 /* KeywordMarketInsightsSheet.swift in Sources */,
+				D2300000000000000000000A /* KeywordMarketInsightsStatusBanner.swift in Sources */,
+				D2300000000000000000000B /* KeywordMarketInsightsStatusLabel.swift in Sources */,
+				D2300000000000000000000C /* KeywordMarketInsightsTable.swift in Sources */,
 				D2300000000000000000000D /* KeywordMarketInsightsViewScope.swift in Sources */,
+				D2300000000000000000000E /* KeywordMarketInsightsRefreshProjection.swift in Sources */,
+				D2300000000000000000000F /* KeywordMarketInsightLiveDetailSheet.swift in Sources */,
 				B70000000000000000000007 /* KeywordWorkspaceModel.swift in Sources */,
 				B70000000000000000000002 /* KeywordWorkspaceProjection.swift in Sources */,
 				C0DEC0DE0000000000000002 /* CustomSegmentedPicker.swift in Sources */,
@@ -1253,6 +1300,7 @@
 				D23000000000000000000011 /* KeywordMarketInsightsModelTests.swift in Sources */,
 				D23000000000000000000012 /* KeywordMarketInsightsPresentationTests.swift in Sources */,
 				D23000000000000000000013 /* KeywordMarketInsightsViewScopeTests.swift in Sources */,
+				D23000000000000000000014 /* KeywordMarketInsightsRefreshProjectionTests.swift in Sources */,
 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
 				0A5C00000000000000000007 /* AppStoreWebMetadataProviderTests.swift in Sources */,
 				A19000000000000000000003 /* AppStoreWebRankingProviderTests.swift in Sources */,
