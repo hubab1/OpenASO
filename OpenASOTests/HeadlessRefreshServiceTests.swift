@@ -367,12 +367,14 @@ struct HeadlessRefreshServiceTests {
             refreshRatingsAndReviews: false
         )
         let planLoader = ControlledHeadlessPlanLoader()
-        let events = HeadlessRefreshEventRecorder()
+        let observations = HeadlessRefreshTestObservationRecorder()
         let service = HeadlessRefreshService(dependencies: HeadlessRefreshDependencies(
             loadPlan: { request in try await planLoader.load(request) },
             refreshApp: { _ in .succeeded() },
             now: { instant },
-            recordEvent: { event in await events.record(event) }
+            recordObservation: { observation in
+                await observations.record(observation)
+            }
         ))
 
         let firstTask = Task { await service.run(firstRequest) }
@@ -391,6 +393,20 @@ struct HeadlessRefreshServiceTests {
         #expect(skipped.finishedAt == instant)
         #expect(await planLoader.callCount() == 1)
 
+        let skippedObservation = try #require(await observations.values().last)
+        #expect(skippedObservation.event == .runSkipped(
+            requestRunID: secondRunID,
+            activeRunID: firstRunID,
+            at: instant
+        ))
+        #expect(skippedObservation.snapshot.activeRun?.runID == firstRunID)
+        #expect(skippedObservation.snapshot.recentRuns.isEmpty)
+        let skippedPresentation = try #require(DailyRefreshRunStatusPresentation(
+            activeRun: skippedObservation.snapshot.activeRun,
+            latestRun: skippedObservation.snapshot.recentRuns.first
+        ))
+        #expect(skippedPresentation.kind == .preparing)
+
         await planLoader.succeed(HeadlessRefreshPlan(apps: []))
         let first = await firstTask.value
         let finalSnapshot = await service.snapshot()
@@ -398,7 +414,7 @@ struct HeadlessRefreshServiceTests {
         #expect(first.disposition == .noWork)
         #expect(finalSnapshot.activeRun == nil)
         #expect(finalSnapshot.recentRuns == [first])
-        #expect(await events.values() == [
+        #expect(await observations.values().map(\.event) == [
             .runStarted(runID: firstRunID, scheduledFor: instant, startedAt: instant),
             .runSkipped(requestRunID: secondRunID, activeRunID: firstRunID, at: instant),
             .planLoaded(runID: firstRunID, plannedAppCount: 0),
@@ -548,7 +564,7 @@ struct HeadlessRefreshServiceTests {
     }
 
     @Test
-    func conflictingCompletedRequestIdentityIsRejectedWithoutProviderWork() async {
+    func conflictingCompletedRequestIdentityIsRejectedWithoutProviderWork() async throws {
         let runID = UUID(uuidString: "00000000-0000-0000-0000-000000000017")!
         let instant = Date(timeIntervalSince1970: 4_530)
         let firstRequest = HeadlessRefreshRunRequest(
@@ -561,12 +577,14 @@ struct HeadlessRefreshServiceTests {
             scheduledFor: instant,
             refreshRatingsAndReviews: true
         )
-        let events = HeadlessRefreshEventRecorder()
+        let observations = HeadlessRefreshTestObservationRecorder()
         let service = HeadlessRefreshService(dependencies: HeadlessRefreshDependencies(
             loadPlan: { _ in HeadlessRefreshPlan(apps: []) },
             refreshApp: { _ in .succeeded() },
             now: { instant },
-            recordEvent: { event in await events.record(event) }
+            recordObservation: { observation in
+                await observations.record(observation)
+            }
         ))
 
         let first = await service.run(firstRequest)
@@ -575,7 +593,21 @@ struct HeadlessRefreshServiceTests {
         #expect(rejected.disposition == .rejectedRequestConflict)
         #expect(rejected.issue?.kind == .requestIdentityConflict)
         #expect((await service.snapshot()).recentRuns == [first])
-        #expect(await events.values() == [
+
+        let rejectedObservation = try #require(await observations.values().last)
+        #expect(rejectedObservation.event == .runRejected(
+            requestRunID: runID,
+            at: instant
+        ))
+        #expect(rejectedObservation.snapshot.activeRun == nil)
+        #expect(rejectedObservation.snapshot.recentRuns == [first])
+        let rejectedPresentation = try #require(DailyRefreshRunStatusPresentation(
+            activeRun: rejectedObservation.snapshot.activeRun,
+            latestRun: rejectedObservation.snapshot.recentRuns.first
+        ))
+        #expect(rejectedPresentation.kind == .noWork)
+
+        #expect(await observations.values().map(\.event) == [
             .runStarted(runID: runID, scheduledFor: instant, startedAt: instant),
             .planLoaded(runID: runID, plannedAppCount: 0),
             .runFinished(first),
@@ -1226,6 +1258,18 @@ private actor HeadlessRefreshEventRecorder {
 
     func values() -> [HeadlessRefreshEvent] {
         recordedEvents
+    }
+}
+
+private actor HeadlessRefreshTestObservationRecorder {
+    private var observations: [HeadlessRefreshObservation] = []
+
+    func record(_ observation: HeadlessRefreshObservation) {
+        observations.append(observation)
+    }
+
+    func values() -> [HeadlessRefreshObservation] {
+        observations
     }
 }
 
