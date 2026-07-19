@@ -364,6 +364,55 @@ struct KeywordResearchProjectsModelTests {
         #expect(model.nextOffset == 11)
         #expect(model.hasMoreProjects)
     }
+
+    @Test
+    func detailRevisionReconciliationRejectsLatePagesAndStaleSnapshots() async {
+        let project = makeProject(name: "Project")
+        let updated = makeProject(
+            id: project.id,
+            incarnationID: project.incarnationID,
+            name: project.name,
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt.addingTimeInterval(1)
+        )
+        let reincarnated = makeProject(id: project.id, name: "Reincarnated")
+        let loader = ControlledOperation<KeywordResearchProjectPresentationPage>()
+        let model = KeywordResearchProjectsModel(
+            dependencies: projectsDependencies { _, _ in try await loader.call() }
+        )
+
+        let initial = Task { @MainActor in await model.reload() }
+        await loader.waitForCallCount(1)
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchProjectPresentationPage(
+                projects: [project],
+                nextOffset: 8
+            )
+        )
+        await initial.value
+
+        let continuation = Task { @MainActor in await model.loadNextPage() }
+        await loader.waitForCallCount(2)
+        #expect(model.recordAuthoritativeProject(updated))
+        #expect(model.projects == [updated])
+        #expect(model.requiresReload)
+        #expect(!model.hasMoreProjects)
+
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchProjectPresentationPage(
+                projects: [project],
+                nextOffset: nil
+            )
+        )
+        await continuation.value
+        #expect(model.projects == [updated])
+
+        #expect(!model.recordAuthoritativeProject(project))
+        #expect(!model.recordAuthoritativeProject(reincarnated))
+        #expect(model.projects == [updated])
+    }
 }
 
 private func projectsDependencies(
