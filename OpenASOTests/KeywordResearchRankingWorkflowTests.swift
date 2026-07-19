@@ -7,6 +7,32 @@ import Testing
 @MainActor
 struct KeywordResearchRankingWorkflowTests {
     @Test
+    func sharedTargetResolverReturnsExactScalarTargetAndMatchingQuery() async throws {
+        let fixture = try await makeFixture(
+            provider: ScriptedResearchRankingProvider(steps: []),
+            dates: []
+        )
+        let resolver = KeywordResearchTargetResolver()
+
+        let target = try await fixture.backgroundStore.read { modelContext in
+            let target = try resolver.requireTarget(
+                projectGeneration: fixture.project.generation,
+                keywordGeneration: fixture.keyword.generation,
+                in: modelContext
+            )
+            _ = try resolver.requireQuery(for: target, in: modelContext)
+            return target
+        }
+
+        #expect(target == KeywordResearchTarget(
+            queryKey: fixture.keyword.queryKey,
+            term: "launch::planner",
+            storefront: "gb",
+            platform: .ipad
+        ))
+    }
+
+    @Test
     func refreshPersistsCanonicalSharedObservationWithoutCreatingTrackedState() async throws {
         let searchedAt = utcDate(year: 2026, month: 7, day: 1, hour: 13)
         let provider = ScriptedResearchRankingProvider(steps: [

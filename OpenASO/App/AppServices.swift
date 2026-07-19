@@ -43,6 +43,7 @@ final class AppServices {
     let mcpServerController: OpenASOMCPServerController
     let keywordResearchProjectStore: KeywordResearchProjectStore?
     let keywordResearchRankingWorkflow: KeywordResearchRankingWorkflow?
+    let keywordResearchMetricsWorkflow: KeywordResearchMetricsWorkflow?
     private(set) var backgroundModelStore: BackgroundModelStore?
     private(set) var backgroundModelStoreRevision = 0
 
@@ -57,6 +58,7 @@ final class AppServices {
         backgroundModelStore: BackgroundModelStore? = nil,
         keywordResearchProjectStore: KeywordResearchProjectStore? = nil,
         keywordResearchRankingWorkflow: KeywordResearchRankingWorkflow? = nil,
+        keywordResearchMetricsWorkflow: KeywordResearchMetricsWorkflow? = nil,
         refreshObservationClock: RefreshObservationClock = .live,
         refreshMetricsRecorder: RefreshMetricsRecorder? = nil,
         providerRequestGateMode: ProviderRequestGateMode? = nil,
@@ -250,6 +252,27 @@ final class AppServices {
                     rankingCoordinator: refreshCoordinator
                 )
             }
+        let keywordResearchMetricsWorkflow = keywordResearchMetricsWorkflow
+            ?? backgroundModelStore.map {
+                KeywordResearchMetricsWorkflow(
+                    backgroundModelStore: $0,
+                    metricsService: keywordMetricsService,
+                    rankingCoordinator: refreshCoordinator,
+                    configurationProvider: {
+                        let session = appleAdsWebSessionStore.session
+                        return KeywordResearchMetricsConfiguration(
+                            contextAppStoreID: settingsStore.popularityContextAppStoreID,
+                            webSession: session,
+                            requiresReconnect: session.map {
+                                appleAdsWebSessionStore.requiresReconnect(for: $0)
+                            } ?? false
+                        )
+                    },
+                    reconnectMarker: { attemptedSession in
+                        appleAdsWebSessionStore.markReconnectRequired(for: attemptedSession)
+                    }
+                )
+            }
         let appDetailRefreshService = backgroundModelStore.map {
             AppDetailRefreshService(
                 backgroundModelStore: $0,
@@ -352,6 +375,7 @@ final class AppServices {
         self.refreshProgressStore = refreshProgressStore
         self.keywordResearchProjectStore = keywordResearchProjectStore
         self.keywordResearchRankingWorkflow = keywordResearchRankingWorkflow
+        self.keywordResearchMetricsWorkflow = keywordResearchMetricsWorkflow
         self.mcpServerController = OpenASOMCPServerController(portProvider: {
             settingsStore.mcpServerPort
         }) {

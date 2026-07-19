@@ -529,6 +529,368 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
+    func appIndependentPopularityUsesCanonicalSequentialStorefrontBatchesWithoutTrackedMutation() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let requestBodies = KeywordPopularityRequestRecorder()
+        let contextAppStoreID: Int64 = 6_608_976_383
+        let session = completeWebSession
+        let client = MockHTTPClient { request in
+            #expect(
+                URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "adamId" })?.value
+                    == String(contextAppStoreID)
+            )
+            #expect(request.value(forHTTPHeaderField: "Cookie") == session.cookieHeader)
+            #expect(request.value(forHTTPHeaderField: "X-XSRF-TOKEN-CM") == session.xsrfToken)
+            let body = try #require(request.httpBody)
+            let requestBody = try JSONDecoder().decode(KeywordPopularityRequestBody.self, from: body)
+            requestBodies.record(requestBody)
+            let entries = requestBody.terms.map { term in
+                #"{"name":"\#(term)","popularity":71}"#
+            }.joined(separator: ",")
+            return (
+                Data(#"{"status":"success","data":[\#(entries)]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let service = makeKeywordMetricsService(
+            httpClient: client,
+            freshnessFetchRecorder: KeywordMetricsFreshnessFetchRecorder()
+        )
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "Tracked sentinel",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let trackedQuery = try KeywordQuery.fetchOrInsert(
+            term: "tracked sentinel",
+            storefront: "us",
+            platform: .iphone,
+            in: modelContext
+        )
+        let track = TrackedAppKeyword(
+            term: trackedQuery.term,
+            storefront: trackedQuery.storefront,
+            platform: trackedQuery.platform,
+            trackedApp: trackedApp,
+            query: trackedQuery
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(track)
+        try TrackedKeywordRefreshStatusStore.set(
+            "Tracked status must remain unchanged.",
+            domain: .ranking,
+            for: track,
+            updatedAt: Date(timeIntervalSince1970: 50),
+            in: modelContext
+        )
+        modelContext.insert(AppKeywordStats(
+            appStoreID: trackedApp.appStoreID,
+            queryKey: trackedQuery.queryKey,
+            keyword: trackedQuery.term,
+            storefront: trackedQuery.storefront,
+            platform: trackedQuery.platform,
+            rank: 4,
+            observedAt: Date(timeIntervalSince1970: 40),
+            popularityScore: 88,
+            difficultyScore: 33
+        ))
+        try modelContext.save()
+
+        let gbTargets = try (0..<2).map {
+            try makePopularityTarget(term: "gb-\(String(format: "%03d", $0))", storefront: "gb")
+        }
+        let usTargets = try (0..<102).map {
+            try makePopularityTarget(term: "us-\(String(format: "%03d", $0))", storefront: "us")
+        }
+        let targets = Array((usTargets + gbTargets + [usTargets[0]]).reversed())
+        let observedAt = Date(timeIntervalSince1970: 100)
+
+        let evidence = try await service.fetchPopularityMetrics(
+            for: targets,
+            contextAppStoreID: contextAppStoreID,
+            webSession: session,
+            now: {
+                #expect(requestBodies.snapshot().count == 3)
+                return observedAt
+            }
+        )
+        let outcomes = try await backgroundModelStore.write { context in
+            try service.persistPopularityMetrics(evidence, in: context)
+        }
+
+        let requests = requestBodies.snapshot()
+        #expect(requests.map(\.storefronts) == [["GB"], ["US"], ["US"]])
+        #expect(requests.map { $0.terms.count } == [2, 100, 2])
+        #expect(requests[0].terms == gbTargets.sorted { $0.queryKey < $1.queryKey }.map(\.term))
+        #expect(
+            Array(requests[1...].flatMap(\.terms))
+                == usTargets.sorted { $0.queryKey < $1.queryKey }.map(\.term)
+        )
+        #expect(outcomes.count == gbTargets.count + usTargets.count)
+        #expect(outcomes.allSatisfy {
+            $0.popularityScore == 71 && $0.disposition == .inserted && $0.observedAt == observedAt
+        })
+
+        let storedState = try await backgroundModelStore.read { context in
+            let persistedTrack = try #require(
+                context.fetch(FetchDescriptor<TrackedAppKeyword>()).first
+            )
+            let trackStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+                for: persistedTrack,
+                in: context
+            )
+            let stats = try #require(context.fetch(FetchDescriptor<AppKeywordStats>()).first)
+            return AppIndependentPopularityStoredState(
+                metricCount: try context.fetchCount(FetchDescriptor<KeywordDailyMetric>()),
+                queryCount: try context.fetchCount(FetchDescriptor<KeywordQuery>()),
+                trackedAppCount: try context.fetchCount(FetchDescriptor<TrackedApp>()),
+                trackCount: try context.fetchCount(FetchDescriptor<TrackedAppKeyword>()),
+                rankingStatus: trackStatus.rankingMessage,
+                popularityStatus: trackStatus.popularityMessage,
+                statsCount: try context.fetchCount(FetchDescriptor<AppKeywordStats>()),
+                statsPopularity: stats.popularityScore,
+                statsDifficulty: stats.difficultyScore
+            )
+        }
+        #expect(storedState == AppIndependentPopularityStoredState(
+            metricCount: 104,
+            queryCount: 1,
+            trackedAppCount: 1,
+            trackCount: 1,
+            rankingStatus: "Tracked status must remain unchanged.",
+            popularityStatus: nil,
+            statsCount: 1,
+            statsPopularity: 88,
+            statsDifficulty: 33
+        ))
+        #expect(outcomes.allSatisfy { $0.target.queryKey.hasPrefix("opaque-query/") })
+    }
+
+    @Test
+    func appIndependentPopularityOnlyAppliesStrictlyNewerSuccessesAndPreservesOtherFields() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let observedAt = Date(timeIntervalSince1970: 200)
+        let olderTarget = try makePopularityTarget(term: "older", storefront: "us")
+        let equalTarget = try makePopularityTarget(term: "equal", storefront: "us")
+        let newerTarget = try makePopularityTarget(term: "newer", storefront: "us")
+        let insertedTarget = try makePopularityTarget(term: "inserted", storefront: "us")
+        let missingTarget = try makePopularityTarget(term: "missing", storefront: "us")
+        let responseScores = [
+            olderTarget.term: 71,
+            equalTarget.term: 72,
+            newerTarget.term: 73,
+            insertedTarget.term: 120,
+        ]
+        let client = MockHTTPClient { request in
+            let body = try #require(request.httpBody)
+            let requestBody = try JSONDecoder().decode(KeywordPopularityRequestBody.self, from: body)
+            let entries = requestBody.terms.compactMap { term -> String? in
+                guard let score = responseScores[term] else { return nil }
+                return #"{"name":"\#(term)","popularity":\#(score)}"#
+            }.joined(separator: ",")
+            return (
+                Data(#"{"status":"success","data":[\#(entries)]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let service = makeKeywordMetricsService(
+            httpClient: client,
+            freshnessFetchRecorder: KeywordMetricsFreshnessFetchRecorder()
+        )
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+
+        modelContext.insert(makePopularityMetric(
+            target: olderTarget,
+            popularityScore: 11,
+            difficultyScore: 41,
+            updatedAt: Date(timeIntervalSince1970: 100),
+            notes: "preserve older notes"
+        ))
+        modelContext.insert(makePopularityMetric(
+            target: equalTarget,
+            popularityScore: 22,
+            difficultyScore: 42,
+            updatedAt: observedAt,
+            notes: "preserve equal notes"
+        ))
+        modelContext.insert(makePopularityMetric(
+            target: newerTarget,
+            popularityScore: 33,
+            difficultyScore: 43,
+            updatedAt: Date(timeIntervalSince1970: 300),
+            notes: "preserve newer notes"
+        ))
+        modelContext.insert(AppKeywordStats(
+            appStoreID: 99,
+            queryKey: olderTarget.queryKey,
+            keyword: olderTarget.term,
+            storefront: olderTarget.storefront,
+            platform: olderTarget.platform,
+            rank: 2,
+            observedAt: Date(timeIntervalSince1970: 90),
+            popularityScore: 11,
+            difficultyScore: 41
+        ))
+        try modelContext.save()
+
+        let evidence = try await service.fetchPopularityMetrics(
+            for: [missingTarget, newerTarget, insertedTarget, olderTarget, equalTarget],
+            contextAppStoreID: 123_456_789,
+            webSession: completeWebSession,
+            now: { observedAt }
+        )
+        #expect(!modelContext.hasChanges)
+        let outcomes = try service.persistPopularityMetrics(evidence, in: modelContext)
+        #expect(modelContext.hasChanges)
+        try modelContext.save()
+
+        let dispositions = Dictionary(uniqueKeysWithValues: outcomes.map {
+            ($0.target.queryKey, $0.disposition)
+        })
+        #expect(dispositions[olderTarget.queryKey] == .updated)
+        #expect(dispositions[equalTarget.queryKey] == .ignoredNotNewer)
+        #expect(dispositions[newerTarget.queryKey] == .ignoredNotNewer)
+        #expect(dispositions[insertedTarget.queryKey] == .inserted)
+        #expect(dispositions[missingTarget.queryKey] == .notFound)
+        #expect(outcomes.first(where: { $0.target == insertedTarget })?.popularityScore == 100)
+
+        let storedState = try await backgroundModelStore.read { context in
+            let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
+            let records = Dictionary(uniqueKeysWithValues: metrics.map { metric in
+                (metric.queryKey, StoredPopularityMetric(
+                    popularityScore: metric.popularityScore,
+                    difficultyScore: metric.difficultyScore,
+                    updatedAt: metric.updatedAt,
+                    notes: metric.notes,
+                    confidence: metric.confidenceRaw
+                ))
+            })
+            let stats = try #require(context.fetch(FetchDescriptor<AppKeywordStats>()).first)
+            return PopularityUpsertStoredState(
+                metrics: records,
+                trackedAppCount: try context.fetchCount(FetchDescriptor<TrackedApp>()),
+                trackCount: try context.fetchCount(FetchDescriptor<TrackedAppKeyword>()),
+                statsPopularity: stats.popularityScore,
+                statsDifficulty: stats.difficultyScore
+            )
+        }
+        #expect(storedState.metrics[olderTarget.queryKey] == StoredPopularityMetric(
+            popularityScore: 71,
+            difficultyScore: 41,
+            updatedAt: observedAt,
+            notes: "preserve older notes",
+            confidence: "single_source"
+        ))
+        #expect(storedState.metrics[equalTarget.queryKey] == StoredPopularityMetric(
+            popularityScore: 22,
+            difficultyScore: 42,
+            updatedAt: observedAt,
+            notes: "preserve equal notes",
+            confidence: "legacy_confidence"
+        ))
+        #expect(storedState.metrics[newerTarget.queryKey] == StoredPopularityMetric(
+            popularityScore: 33,
+            difficultyScore: 43,
+            updatedAt: Date(timeIntervalSince1970: 300),
+            notes: "preserve newer notes",
+            confidence: "legacy_confidence"
+        ))
+        #expect(storedState.metrics[insertedTarget.queryKey] == StoredPopularityMetric(
+            popularityScore: 100,
+            difficultyScore: nil,
+            updatedAt: observedAt,
+            notes: nil,
+            confidence: "single_source"
+        ))
+        #expect(storedState.metrics[missingTarget.queryKey] == nil)
+        #expect(storedState.trackedAppCount == 0)
+        #expect(storedState.trackCount == 0)
+        #expect(storedState.statsPopularity == 11)
+        #expect(storedState.statsDifficulty == 41)
+    }
+
+    @Test
+    func firstPopularitySuccessIsNotSuppressedByNewerDifficultyOnlyRow() throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let service = makeKeywordMetricsService(
+            httpClient: MockHTTPClient { _ in
+                throw OpenASOError.providerUnavailable("Unexpected provider request")
+            },
+            freshnessFetchRecorder: KeywordMetricsFreshnessFetchRecorder()
+        )
+        let target = try makePopularityTarget(term: "difficulty only", storefront: "us")
+        let observedAt = Date(timeIntervalSince1970: 200)
+        modelContext.insert(makePopularityMetric(
+            target: target,
+            popularityScore: nil,
+            difficultyScore: 64,
+            updatedAt: Date(timeIntervalSince1970: 300),
+            notes: "preserve difficulty evidence"
+        ))
+        try modelContext.save()
+
+        let outcomes = try service.persistPopularityMetrics([
+            KeywordPopularityMetricEvidence(
+                target: target,
+                popularityScore: 83,
+                observedAt: observedAt
+            )
+        ], in: modelContext)
+        try modelContext.save()
+
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.disposition == .updated)
+        let metric = try #require(modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
+        #expect(metric.popularityScore == 83)
+        #expect(metric.difficultyScore == 64)
+        #expect(metric.notes == "preserve difficulty evidence")
+        #expect(metric.updatedAt == Date(timeIntervalSince1970: 300))
+    }
+
+    @Test
+    func appIndependentPopularityCancellationStopsLaterBatchesAndAllPersistence() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let client = GatedKeywordPopularityHTTPClient()
+        let service = makeKeywordMetricsService(
+            httpClient: client,
+            freshnessFetchRecorder: KeywordMetricsFreshnessFetchRecorder()
+        )
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let targets = try (0..<101).map {
+            try makePopularityTarget(term: "cancel-\(String(format: "%03d", $0))", storefront: "us")
+        }
+        let refreshTask = Task {
+            try await service.fetchPopularityMetrics(
+                for: targets,
+                contextAppStoreID: 123_456_789,
+                webSession: completeWebSession,
+                now: { Date(timeIntervalSince1970: 500) }
+            )
+        }
+        await client.waitUntilStarted()
+
+        refreshTask.cancel()
+        await client.succeed()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await refreshTask.value
+        }
+        #expect(await client.requestCount() == 1)
+        #expect(
+            try await backgroundModelStore.fetchCount(FetchDescriptor<KeywordDailyMetric>()) == 0
+        )
+    }
+
+    @Test
     func backgroundRefreshUsesOneFreshnessFetchForLargeSharedQueryFixtureAndSkipsFreshMetrics() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
@@ -1566,6 +1928,53 @@ struct KeywordMetricsServiceTests {
         )
     }
 
+    private func makePopularityTarget(
+        term: String,
+        storefront: String,
+        platform: AppPlatform = .iphone,
+        queryKey: String? = nil
+    ) throws -> KeywordResearchTarget {
+        let normalizedTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedStorefront = storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return KeywordResearchTarget(
+            queryKey: queryKey ?? [
+                "opaque-query",
+                normalizedStorefront,
+                platform.rawValue,
+                normalizedTerm,
+            ].joined(separator: "/"),
+            term: normalizedTerm,
+            storefront: normalizedStorefront,
+            platform: platform
+        )
+    }
+
+    private func makePopularityMetric(
+        target: KeywordResearchTarget,
+        popularityScore: Int?,
+        difficultyScore: Int,
+        updatedAt: Date,
+        notes: String
+    ) -> KeywordDailyMetric {
+        KeywordDailyMetric(
+            queryKey: target.queryKey,
+            keyword: target.term,
+            storefront: target.storefront,
+            platform: target.platform,
+            popularityScore: popularityScore,
+            difficultyScore: difficultyScore,
+            source: .appleAdsPopularity,
+            popularityDate: "legacy_date",
+            submissionCount: 3,
+            winningCount: 2,
+            confidence: "legacy_confidence",
+            updatedAt: updatedAt,
+            notes: notes
+        )
+    }
+
     private static let privateKey = """
     -----BEGIN EC PRIVATE KEY-----
     MHcCAQEEIM2/+v/sUp+rKfUFKSaY3cDxp3E9Azvop6KV9VmlWgJ+oAoGCCqGSM49
@@ -1581,6 +1990,34 @@ private struct KeywordPopularityRequestBody: Decodable, Sendable {
 }
 
 private struct ForcedBulkFreshnessFetchError: Error {}
+
+private struct AppIndependentPopularityStoredState: Equatable, Sendable {
+    let metricCount: Int
+    let queryCount: Int
+    let trackedAppCount: Int
+    let trackCount: Int
+    let rankingStatus: String?
+    let popularityStatus: String?
+    let statsCount: Int
+    let statsPopularity: Int?
+    let statsDifficulty: Int?
+}
+
+private struct StoredPopularityMetric: Equatable, Sendable {
+    let popularityScore: Int?
+    let difficultyScore: Int?
+    let updatedAt: Date
+    let notes: String?
+    let confidence: String?
+}
+
+private struct PopularityUpsertStoredState: Equatable, Sendable {
+    let metrics: [String: StoredPopularityMetric]
+    let trackedAppCount: Int
+    let trackCount: Int
+    let statsPopularity: Int?
+    let statsDifficulty: Int?
+}
 
 private final class KeywordPopularityRequestRecorder: Sendable {
     private let requestBodies = Mutex<[KeywordPopularityRequestBody]>([])
@@ -1698,5 +2135,61 @@ private actor RemovingTrackHTTPClient: HTTPClient {
             Data(response.utf8),
             makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
         )
+    }
+}
+
+private actor GatedKeywordPopularityHTTPClient: HTTPClient {
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var releasePending = false
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var recordedRequestCount = 0
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        recordedRequestCount += 1
+        didStart = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+
+        if releasePending {
+            releasePending = false
+        } else {
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+            }
+        }
+
+        let body = try #require(request.httpBody)
+        let requestBody = try JSONDecoder().decode(KeywordPopularityRequestBody.self, from: body)
+        let entries = requestBody.terms.map { term in
+            #"{"name":"\#(term)","popularity":65}"#
+        }.joined(separator: ",")
+        return (
+            Data(#"{"status":"success","data":[\#(entries)]}"#.utf8),
+            makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+        )
+    }
+
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func succeed() {
+        guard let releaseContinuation else {
+            releasePending = true
+            return
+        }
+        self.releaseContinuation = nil
+        releaseContinuation.resume()
+    }
+
+    func requestCount() -> Int {
+        recordedRequestCount
     }
 }
