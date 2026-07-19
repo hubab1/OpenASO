@@ -147,6 +147,143 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func appServicesPreservesInjectedKeywordResearchMetricsWorkflow() throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let unexpectedClient = MockHTTPClient { request in
+            throw OpenASOError.providerUnavailable(
+                "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+            )
+        }
+        let sourceServices = AppServices(
+            httpClient: unexpectedClient,
+            defaults: Self.makeDefaults(),
+            keychain: InMemoryKeychainService(),
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false,
+            backgroundModelStore: backgroundModelStore,
+            providerRequestGateMode: .disabled
+        )
+        let injectedWorkflow = try #require(sourceServices.keywordResearchMetricsWorkflow)
+
+        let services = AppServices(
+            httpClient: unexpectedClient,
+            defaults: Self.makeDefaults(),
+            keychain: InMemoryKeychainService(),
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false,
+            keywordResearchMetricsWorkflow: injectedWorkflow,
+            providerRequestGateMode: .disabled
+        )
+
+        let installedWorkflow = try #require(services.keywordResearchMetricsWorkflow)
+        #expect(installedWorkflow === injectedWorkflow)
+    }
+
+    @Test
+    func automaticResearchMetricsWorkflowUsesCurrentAppleAdsStateAndExactSessionMarker() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let contextAppStoreID: Int64 = 6_608_976_383
+        let initialSession = AppleAdsWebSession(
+            cookieHeader: "cookie=initial; XSRF-TOKEN-CM=initial-token",
+            xsrfToken: "initial-token",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let replacementSession = AppleAdsWebSession(
+            cookieHeader: "cookie=replacement; XSRF-TOKEN-CM=replacement-token",
+            xsrfToken: "replacement-token",
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        var sessionStore: AppleAdsWebSessionStore?
+        var expiresAndReplacesSession = false
+        var requestCount = 0
+        let client = MockHTTPClient { request in
+            requestCount += 1
+            let url = try #require(request.url)
+            #expect(
+                URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "adamId" })?.value
+                    == String(contextAppStoreID)
+            )
+            #expect(request.value(forHTTPHeaderField: "Cookie") == initialSession.cookieHeader)
+            #expect(
+                request.value(forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+                    == initialSession.xsrfToken
+            )
+            if expiresAndReplacesSession {
+                try #require(sessionStore).save(replacementSession)
+                return (
+                    Data(),
+                    makeHTTPURLResponse(url: url, statusCode: 401)
+                )
+            }
+            return (
+                Data(
+                    #"{"status":"success","data":[{"name":"app services wiring","popularity":64}]}"#.utf8
+                ),
+                makeHTTPURLResponse(url: url, statusCode: 200)
+            )
+        }
+        let services = AppServices.mocked(httpClient: client, modelContainer: container)
+        sessionStore = services.appleAdsWebSessionStore
+        let projectStore = try #require(services.keywordResearchProjectStore)
+        let workflow = try #require(services.keywordResearchMetricsWorkflow)
+        let project = try await projectStore.createProject(
+            name: "AppServices metrics wiring",
+            defaultStorefront: "us",
+            defaultPlatform: .iphone
+        )
+        let addition = try await projectStore.addKeyword(
+            to: project.revision,
+            term: "app services wiring",
+            storefront: "us",
+            platform: .iphone
+        )
+
+        let missingContext = try await workflow.refresh(
+            projectGeneration: addition.project.generation,
+            keywordGeneration: addition.keyword.generation,
+            policy: .requireNetwork
+        )
+        #expect(missingContext.issue?.code == .missingContextApp)
+        #expect(requestCount == 0)
+
+        services.settingsStore.savePopularityContextAppStoreID(contextAppStoreID)
+        try services.appleAdsWebSessionStore.save(initialSession)
+        services.appleAdsWebSessionStore.markReconnectRequired(for: initialSession)
+        let reconnectRequired = try await workflow.refresh(
+            projectGeneration: addition.project.generation,
+            keywordGeneration: addition.keyword.generation,
+            policy: .requireNetwork
+        )
+        #expect(reconnectRequired.issue?.code == .reconnectRequired)
+        #expect(requestCount == 0)
+
+        services.appleAdsWebSessionStore.clearReconnectRequirement(for: initialSession)
+        let refreshed = try await workflow.refresh(
+            projectGeneration: addition.project.generation,
+            keywordGeneration: addition.keyword.generation,
+            policy: .requireNetwork
+        )
+        #expect(refreshed.popularityScore == 64)
+        #expect(refreshed.provenance == .requestedContext(appStoreID: contextAppStoreID))
+        #expect(refreshed.disposition == .refreshed)
+        #expect(refreshed.issue == nil)
+        #expect(requestCount == 1)
+
+        expiresAndReplacesSession = true
+        let expired = try await workflow.refresh(
+            projectGeneration: addition.project.generation,
+            keywordGeneration: addition.keyword.generation,
+            policy: .requireNetwork
+        )
+        #expect(expired.issue?.code == .sessionExpired)
+        #expect(requestCount == 2)
+        #expect(services.appleAdsWebSessionStore.session == replacementSession)
+        #expect(!services.appleAdsWebSessionStore.requiresReconnect)
+    }
+
+    @Test
     func freshServicesDoNotReadKeychainWithoutPresenceFlags() {
         let defaults = Self.makeDefaults()
         let keychain = RecordingKeychainService()

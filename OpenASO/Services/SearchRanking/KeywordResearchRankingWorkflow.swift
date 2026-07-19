@@ -43,6 +43,7 @@ actor KeywordResearchRankingWorkflow {
 
     private let modelStore: BackgroundModelStore
     private let rankingCoordinator: RankingRefreshCoordinator
+    private let targetResolver = KeywordResearchTargetResolver()
 
     init(
         backgroundModelStore: BackgroundModelStore,
@@ -56,8 +57,9 @@ actor KeywordResearchRankingWorkflow {
         projectGeneration: KeywordResearchProjectGeneration,
         keywordGeneration: KeywordResearchKeywordGeneration
     ) async throws -> KeywordResearchRankingObservationSnapshot {
+        let targetResolver = targetResolver
         let target = try await modelStore.read { modelContext in
-            try Self.requireTarget(
+            try targetResolver.requireTarget(
                 projectGeneration: projectGeneration,
                 keywordGeneration: keywordGeneration,
                 in: modelContext
@@ -89,7 +91,7 @@ actor KeywordResearchRankingWorkflow {
 
         let commit = try await modelStore.write { modelContext in
             try Task.checkCancellation()
-            let currentTarget = try Self.requireTarget(
+            let currentTarget = try targetResolver.requireTarget(
                 projectGeneration: projectGeneration,
                 keywordGeneration: keywordGeneration,
                 in: modelContext
@@ -102,7 +104,7 @@ actor KeywordResearchRankingWorkflow {
                 )
             }
 
-            let query = try Self.requireQuery(for: currentTarget, in: modelContext)
+            let query = try targetResolver.requireQuery(for: currentTarget, in: modelContext)
             let persisted = try rankingCoordinator.persistSharedRankingObservation(
                 pageResult,
                 query: query,
@@ -135,81 +137,9 @@ actor KeywordResearchRankingWorkflow {
 }
 
 private extension KeywordResearchRankingWorkflow {
-    struct Target: Equatable, Sendable {
-        let queryKey: String
-        let term: String
-        let storefront: String
-        let platform: AppPlatform
-    }
-
     struct CommitResult: Sendable {
         let snapshot: KeywordResearchRankingObservationSnapshot
         let shouldScheduleMetadataEnrichment: Bool
-    }
-
-    static func requireTarget(
-        projectGeneration: KeywordResearchProjectGeneration,
-        keywordGeneration: KeywordResearchKeywordGeneration,
-        in modelContext: ModelContext
-    ) throws -> Target {
-        let projectID = projectGeneration.id
-        var projectDescriptor = FetchDescriptor<KeywordResearchProject>(
-            predicate: #Predicate { project in
-                project.id == projectID
-            }
-        )
-        projectDescriptor.fetchLimit = 1
-        guard let project = try modelContext.fetch(projectDescriptor).first else {
-            throw KeywordResearchProjectStoreError.projectNotFound(projectID)
-        }
-        guard project.incarnationID == projectGeneration.incarnationID else {
-            throw KeywordResearchProjectStoreError.staleProjectRevision(projectID)
-        }
-
-        let keywordID = keywordGeneration.id
-        var keywordDescriptor = FetchDescriptor<KeywordResearchKeyword>(
-            predicate: #Predicate { keyword in
-                keyword.id == keywordID
-            }
-        )
-        keywordDescriptor.fetchLimit = 1
-        guard let keyword = try modelContext.fetch(keywordDescriptor).first else {
-            throw KeywordResearchProjectStoreError.keywordNotFound(keywordID)
-        }
-        guard keyword.incarnationID == keywordGeneration.incarnationID else {
-            throw KeywordResearchProjectStoreError.staleKeywordRevision(keywordID)
-        }
-        guard keyword.projectID == project.id else {
-            throw KeywordResearchProjectStoreError.keywordNotFound(keywordID)
-        }
-
-        return Target(
-            queryKey: keyword.queryKey,
-            term: keyword.term,
-            storefront: keyword.storefront,
-            platform: keyword.platform
-        )
-    }
-
-    static func requireQuery(
-        for target: Target,
-        in modelContext: ModelContext
-    ) throws -> KeywordQuery {
-        let queryKey = target.queryKey
-        var descriptor = FetchDescriptor<KeywordQuery>(
-            predicate: #Predicate { query in
-                query.queryKey == queryKey
-            }
-        )
-        descriptor.fetchLimit = 1
-        guard let query = try modelContext.fetch(descriptor).first,
-              query.term == target.term,
-              query.storefront == target.storefront,
-              query.platform == target.platform
-        else {
-            throw OpenASOError.unexpectedResponse
-        }
-        return query
     }
 
     static func snapshot(

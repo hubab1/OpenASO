@@ -139,6 +139,9 @@
 		D32C00000000000000000003 /* KeywordResearchProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */; };
 		D33A00000000000000000001 /* SearchRanking/KeywordResearchRankingWorkflow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */; };
 		D33A00000000000000000002 /* KeywordResearchRankingWorkflowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000012 /* KeywordResearchRankingWorkflowTests.swift */; };
+		D33B00000000000000000001 /* Persistence/KeywordResearchTargetResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33B00000000000000000011 /* Persistence/KeywordResearchTargetResolver.swift */; };
+		D33B00000000000000000002 /* AppleAds/KeywordResearchMetricsWorkflow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33B00000000000000000012 /* AppleAds/KeywordResearchMetricsWorkflow.swift */; };
+		D33B00000000000000000003 /* KeywordResearchMetricsWorkflowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33B00000000000000000013 /* KeywordResearchMetricsWorkflowTests.swift */; };
 		D20B00000000000000000007 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
 		D20B00000000000000000008 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
 		D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */; };
@@ -405,6 +408,9 @@
 		D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchProjectStoreTests.swift; sourceTree = "<group>"; };
 		D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordResearchRankingWorkflow.swift; sourceTree = "<group>"; };
 		D33A00000000000000000012 /* KeywordResearchRankingWorkflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchRankingWorkflowTests.swift; sourceTree = "<group>"; };
+		D33B00000000000000000011 /* Persistence/KeywordResearchTargetResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/KeywordResearchTargetResolver.swift; sourceTree = "<group>"; };
+		D33B00000000000000000012 /* AppleAds/KeywordResearchMetricsWorkflow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/KeywordResearchMetricsWorkflow.swift; sourceTree = "<group>"; };
+		D33B00000000000000000013 /* KeywordResearchMetricsWorkflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchMetricsWorkflowTests.swift; sourceTree = "<group>"; };
 		D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/EstimatedKeywordDifficultyStore.swift; sourceTree = "<group>"; };
 		D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyStoreTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* KeywordTableCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTableCells.swift; sourceTree = "<group>"; };
@@ -553,6 +559,7 @@
 				D32A00000000000000000014 /* KeywordResearchPersistenceTests.swift */,
 				D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */,
 				D33A00000000000000000012 /* KeywordResearchRankingWorkflowTests.swift */,
+				D33B00000000000000000013 /* KeywordResearchMetricsWorkflowTests.swift */,
 				D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */,
 				D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */,
 				D02000000000000000000004 /* v0.3.2-v1 */,
@@ -646,6 +653,7 @@
 				0A1B2C3D4E5F678901234514 /* RatingsReviews/AppStorefrontReviewService.swift */,
 				A30000000000000000000002 /* Persistence/BackgroundModelStore.swift */,
 				D32C00000000000000000011 /* Persistence/KeywordResearchProjectStore.swift */,
+				D33B00000000000000000011 /* Persistence/KeywordResearchTargetResolver.swift */,
 				D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */,
 				A0D71B4C0000000000000014 /* Persistence/DailyRefreshScheduler.swift */,
 				D35A00000000000000000012 /* Persistence/DailyRefreshPlanLoader.swift */,
@@ -671,6 +679,7 @@
 				C15A00000000000000000001 /* MCP/OpenASOMCPMain.swift */,
 				A0D71B4C0000000000000012 /* SearchRanking/KeywordInsightsService.swift */,
 				04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */,
+				D33B00000000000000000012 /* AppleAds/KeywordResearchMetricsWorkflow.swift */,
 				04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */,
 				A30000000000000000000004 /* Persistence/ModelContainerFactory.swift */,
 				9838D42ED1A3EA1E6DDDD68C /* OpenASOError.swift */,
@@ -1103,6 +1112,8 @@
 				0A1B2C3D4E5F678901234513 /* RatingsReviews/AppStorefrontReviewService.swift in Sources */,
 				A30000000000000000000001 /* Persistence/BackgroundModelStore.swift in Sources */,
 				D32C00000000000000000001 /* Persistence/KeywordResearchProjectStore.swift in Sources */,
+				D33B00000000000000000001 /* Persistence/KeywordResearchTargetResolver.swift in Sources */,
+				D33B00000000000000000002 /* AppleAds/KeywordResearchMetricsWorkflow.swift in Sources */,
 				D20B00000000000000000007 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */,
 				04E8C4E18F1A4D519C0A1136 /* CodableAppStorage.swift in Sources */,
 				C5A400000000000000000001 /* CSVFormats.swift in Sources */,
@@ -1232,6 +1243,7 @@
 				D32A00000000000000000007 /* KeywordResearchPersistenceTests.swift in Sources */,
 				D32C00000000000000000003 /* KeywordResearchProjectStoreTests.swift in Sources */,
 				D33A00000000000000000002 /* KeywordResearchRankingWorkflowTests.swift in Sources */,
+				D33B00000000000000000003 /* KeywordResearchMetricsWorkflowTests.swift in Sources */,
 				D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */,
 				D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */,
 				D14000000000000000000002 /* AppMetadataRefreshProgressStoreTests.swift in Sources */,

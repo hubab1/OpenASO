@@ -61,6 +61,89 @@ final class KeywordMetricsService: Sendable {
         return Dictionary(uniqueKeysWithValues: metrics.map { ($0.queryKey, $0) })
     }
 
+    /// Fetches Apple Ads popularity evidence for app-independent query scopes.
+    /// Query keys are opaque identities supplied by the owning workflow; that
+    /// workflow revalidates their persisted scalars after this suspension and
+    /// calls `persistPopularityMetrics(_:in:)` inside its own transaction.
+    func fetchPopularityMetrics(
+        for targets: [KeywordResearchTarget],
+        contextAppStoreID: Int64,
+        webSession: AppleAdsWebSession,
+        now: @Sendable () -> Date = { Date() }
+    ) async throws -> [KeywordPopularityMetricEvidence] {
+        try Task.checkCancellation()
+        guard contextAppStoreID > 0 else {
+            throw OpenASOError.invalidAppStoreID
+        }
+        guard webSession.isComplete else {
+            throw AppleAdsWebSessionExpiredError()
+        }
+
+        let orderedTargets = Self.orderedUniquePopularityTargets(targets)
+        guard !orderedTargets.isEmpty else { return [] }
+
+        let popularityClient = AppleAdsCMPopularityClient(httpClient: httpClient)
+        var popularityByQueryKey: [String: Int] = [:]
+        let targetsByStorefront = Dictionary(grouping: orderedTargets, by: \.storefront)
+
+        do {
+            for storefront in targetsByStorefront.keys.sorted() {
+                guard let storefrontTargets = targetsByStorefront[storefront] else { continue }
+                try Task.checkCancellation()
+                // The shared CM client performs deterministic sequential
+                // chunks of at most `maxTermsPerRequest` terms.
+                let popularities = try await popularityClient.keywordPopularities(
+                    for: storefrontTargets.map(\.term),
+                    storefrontCode: storefront,
+                    adamId: contextAppStoreID,
+                    session: webSession
+                )
+                try Task.checkCancellation()
+
+                for target in storefrontTargets {
+                    let normalizedTerm = AppleAdsCMPopularityClient.normalizedKeywordKey(
+                        target.term
+                    )
+                    guard let popularity = popularities[normalizedTerm] else { continue }
+                    popularityByQueryKey[target.queryKey] = min(100, max(1, popularity))
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        }
+
+        try Task.checkCancellation()
+        let observedAt = now()
+        return orderedTargets.map { target in
+            KeywordPopularityMetricEvidence(
+                target: target,
+                popularityScore: popularityByQueryKey[target.queryKey],
+                observedAt: observedAt
+            )
+        }
+    }
+
+    /// Applies fetched evidence to shared query metrics without touching
+    /// tracked apps, tracks, refresh statuses, or `AppKeywordStats`. The caller
+    /// owns the surrounding transaction and must first revalidate any project
+    /// or keyword generation that authorized the fetch. Evidence is the
+    /// deterministic, query-unique output of `fetchPopularityMetrics`.
+    func persistPopularityMetrics(
+        _ evidence: [KeywordPopularityMetricEvidence],
+        in modelContext: ModelContext
+    ) throws -> [KeywordPopularityMetricOutcome] {
+        try Task.checkCancellation()
+        guard !evidence.isEmpty else { return [] }
+        let outcomes = try Self.upsertPopularityMetrics(
+            evidence: evidence,
+            in: modelContext
+        )
+        try Task.checkCancellation()
+        return outcomes
+    }
+
     private func freshnessMetricsMap(
         for queryKeys: [String],
         in modelContext: ModelContext
@@ -711,6 +794,110 @@ final class KeywordMetricsService: Sendable {
         return metric.popularityScore == nil || Date.now.timeIntervalSince(metric.updatedAt) >= metricsTTL
     }
 
+    private static func orderedUniquePopularityTargets(
+        _ targets: [KeywordResearchTarget]
+    ) -> [KeywordResearchTarget] {
+        let ordered = targets.sorted {
+            if $0.storefront != $1.storefront {
+                return $0.storefront < $1.storefront
+            }
+            if $0.queryKey != $1.queryKey {
+                return $0.queryKey < $1.queryKey
+            }
+            return $0.term < $1.term
+        }
+        var seenQueryKeys: Set<String> = []
+        return ordered.filter { seenQueryKeys.insert($0.queryKey).inserted }
+    }
+
+    private static func upsertPopularityMetrics(
+        evidence: [KeywordPopularityMetricEvidence],
+        in modelContext: ModelContext
+    ) throws -> [KeywordPopularityMetricOutcome] {
+        let queryKeys = evidence.map(\.target.queryKey)
+        let descriptor = FetchDescriptor<KeywordDailyMetric>(
+            predicate: #Predicate { metric in
+                queryKeys.contains(metric.queryKey)
+            }
+        )
+        let existingMetrics = try modelContext.fetch(descriptor)
+        var metricsByQueryKey = Dictionary(
+            uniqueKeysWithValues: existingMetrics.map { ($0.queryKey, $0) }
+        )
+        var outcomes: [KeywordPopularityMetricOutcome] = []
+        outcomes.reserveCapacity(evidence.count)
+
+        for item in evidence {
+            let target = item.target
+            guard let popularityScore = item.popularityScore else {
+                outcomes.append(KeywordPopularityMetricOutcome(
+                    target: target,
+                    popularityScore: nil,
+                    observedAt: item.observedAt,
+                    disposition: .notFound
+                ))
+                continue
+            }
+
+            let disposition: KeywordPopularityMetricPersistenceDisposition
+            if let metric = metricsByQueryKey[target.queryKey] {
+                // A difficulty-only or failed-popularity row does not contain
+                // popularity evidence, so its generic row timestamp must not
+                // suppress the first successful popularity observation.
+                guard metric.popularityScore == nil || item.observedAt > metric.updatedAt else {
+                    outcomes.append(KeywordPopularityMetricOutcome(
+                        target: target,
+                        popularityScore: popularityScore,
+                        observedAt: item.observedAt,
+                        disposition: .ignoredNotNewer
+                    ))
+                    continue
+                }
+
+                metric.keyword = target.term
+                metric.storefront = target.storefront
+                metric.platform = target.platform
+                metric.popularityScore = popularityScore
+                metric.source = .appleAdsPopularity
+                metric.popularityDate = nil
+                metric.submissionCount = 1
+                metric.winningCount = 1
+                metric.confidenceRaw = "single_source"
+                // `updatedAt` is shared by every field on the legacy row.
+                // Applying first popularity evidence must not move a newer
+                // difficulty-only row timestamp backwards.
+                metric.updatedAt = max(metric.updatedAt, item.observedAt)
+                disposition = .updated
+            } else {
+                let metric = KeywordDailyMetric(
+                    queryKey: target.queryKey,
+                    keyword: target.term,
+                    storefront: target.storefront,
+                    platform: target.platform,
+                    popularityScore: popularityScore,
+                    difficultyScore: nil,
+                    source: .appleAdsPopularity,
+                    submissionCount: 1,
+                    winningCount: 1,
+                    confidence: "single_source",
+                    updatedAt: item.observedAt
+                )
+                modelContext.insert(metric)
+                metricsByQueryKey[target.queryKey] = metric
+                disposition = .inserted
+            }
+
+            outcomes.append(KeywordPopularityMetricOutcome(
+                target: target,
+                popularityScore: popularityScore,
+                observedAt: item.observedAt,
+                disposition: disposition
+            ))
+        }
+
+        return outcomes
+    }
+
     private static func fetchMetrics(queryKey: String, in modelContext: ModelContext) throws -> KeywordDailyMetric? {
         let targetQueryKey = queryKey
         let descriptor = FetchDescriptor<KeywordDailyMetric>(
@@ -874,6 +1061,26 @@ enum KeywordMetricsRefreshDisposition: String, Sendable {
     case upToDate
     case failed
     case skipped
+}
+
+struct KeywordPopularityMetricEvidence: Equatable, Sendable {
+    let target: KeywordResearchTarget
+    let popularityScore: Int?
+    let observedAt: Date
+}
+
+enum KeywordPopularityMetricPersistenceDisposition: String, Equatable, Sendable {
+    case inserted
+    case updated
+    case ignoredNotNewer
+    case notFound
+}
+
+struct KeywordPopularityMetricOutcome: Equatable, Sendable {
+    let target: KeywordResearchTarget
+    let popularityScore: Int?
+    let observedAt: Date
+    let disposition: KeywordPopularityMetricPersistenceDisposition
 }
 
 struct KeywordMetricsRefreshOutcome: Sendable {
