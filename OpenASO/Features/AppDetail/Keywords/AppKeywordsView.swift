@@ -155,6 +155,7 @@ struct AppKeywordsView: View {
                     track: track,
                     storefront: storefrontLookup[track.storefront],
                     metrics: loadedRow?.metrics,
+                    estimatedDifficulty: loadedRow?.estimatedDifficulty,
                     refreshStatus: TrackedKeywordRefreshStatusStore.snapshot(
                         for: track,
                         persisted: refreshStatusesByIdentityKey[track.identityKey]

@@ -583,49 +583,48 @@ struct RootSidebarView: View {
     }
 
     private func deleteApp(_ trackedApp: TrackedApp) {
-        let trackedKeywords: [TrackedAppKeyword]
-        do {
-            trackedKeywords = try fetchTrackedKeywords(for: trackedApp)
-        } catch {
+        guard let backgroundModelStore = services.backgroundModelStore else {
             currentAlert = SidebarAlertContext(
                 title: "Delete Failed",
-                message: OpenASOError.map(error).localizedDescription
+                message: OpenASOError.providerUnavailable(
+                    "OpenASO’s data store is not ready."
+                ).localizedDescription
             )
             return
         }
 
-        let keywordCount = trackedKeywords.count
-        if selectedApp?.persistentModelID == trackedApp.persistentModelID {
+        let request = TrackedAppDeletionRequest(app: trackedApp)
+        let wasSelected = selectedApp?.persistentModelID == trackedApp.persistentModelID
+        if wasSelected {
             selectedApp = trackedApps.first { $0.persistentModelID != trackedApp.persistentModelID }
         }
+        appPendingDeletion = nil
 
-        do {
-            try TrackedKeywordRefreshStatusStore.deleteStatuses(
-                for: trackedKeywords.map(\.identityKey),
-                in: modelContext
-            )
-            for track in trackedKeywords {
-                modelContext.delete(track)
+        Task { @MainActor in
+            do {
+                let result = try await TrackedKeywordDeletionService.deleteApp(
+                    request,
+                    using: backgroundModelStore
+                )
+                if result.deletedApp {
+                    services.analyticsService.capture(
+                        .trackedAppRemoved(keywordCount: result.deletedTrackCount)
+                    )
+                } else if wasSelected {
+                    selectedApp = trackedApps.first { $0.appStoreID == request.appStoreID }
+                        ?? selectedApp
+                }
+            } catch {
+                if wasSelected {
+                    selectedApp = trackedApps.first { $0.appStoreID == request.appStoreID }
+                        ?? selectedApp
+                }
+                currentAlert = SidebarAlertContext(
+                    title: "Delete Failed",
+                    message: OpenASOError.map(error).localizedDescription
+                )
             }
-            modelContext.delete(trackedApp)
-            try modelContext.save()
-            services.analyticsService.capture(.trackedAppRemoved(keywordCount: keywordCount))
-        } catch {
-            currentAlert = SidebarAlertContext(
-                title: "Delete Failed",
-                message: OpenASOError.map(error).localizedDescription
-            )
         }
-    }
-
-    private func fetchTrackedKeywords(for trackedApp: TrackedApp) throws -> [TrackedAppKeyword] {
-        let appStoreID = trackedApp.appStoreID
-        let descriptor = FetchDescriptor<TrackedAppKeyword>(
-            predicate: #Predicate { track in
-                track.appStoreID == appStoreID
-            }
-        )
-        return try modelContext.fetch(descriptor)
     }
 }
 

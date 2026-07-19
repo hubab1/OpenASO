@@ -6,6 +6,7 @@ final class KeywordInsightsService {
     struct Workspace: Sendable {
         struct Row: Sendable {
             let metrics: KeywordMetricsSnapshot?
+            let estimatedDifficulty: EstimatedKeywordDifficultySummary?
             let latestSnapshot: KeywordRankingCrawlSummary?
             let trendSnapshots: [KeywordRankingCrawlSummary]
             let rankingApps: [KeywordRankingAppSummary]
@@ -126,6 +127,10 @@ final class KeywordInsightsService {
             queryKeys: queryKeys,
             in: modelContext
         )
+        let estimatedDifficultyByQueryKey = try EstimatedKeywordDifficultyStore.summaries(
+            queryKeys: queryKeys,
+            in: modelContext
+        )
         let crawlRecords = try fetchCrawls(
             queryKeys: queryKeys,
             in: modelContext
@@ -171,6 +176,7 @@ final class KeywordInsightsService {
                     track.identityKey,
                     Workspace.Row(
                         metrics: metricsByQueryKey[track.queryKey],
+                        estimatedDifficulty: estimatedDifficultyByQueryKey[track.queryKey],
                         latestSnapshot: latestSnapshot,
                         trendSnapshots: trendByIdentityKey[track.identityKey] ?? [],
                         rankingApps: latestSnapshot.flatMap {

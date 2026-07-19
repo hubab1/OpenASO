@@ -255,7 +255,7 @@ enum MetricFilterRange {
         case .popularity:
             return "Popularity"
         case .difficulty:
-            return "Difficulty"
+            return "Estimated Difficulty"
         case .position:
             return "Position"
         case .change:

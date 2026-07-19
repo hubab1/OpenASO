@@ -256,25 +256,20 @@ struct KeywordMetricsSnapshot: Sendable {
         for queryKeys: [String],
         in modelContext: ModelContext
     ) throws -> [String: KeywordMetricsSnapshot] {
-        guard !queryKeys.isEmpty else {
+        let selectedQueryKeys = Array(Set(queryKeys))
+        guard !selectedQueryKeys.isEmpty else {
             return [:]
         }
 
-        var snapshotsByQueryKey: [String: KeywordMetricsSnapshot] = [:]
-        snapshotsByQueryKey.reserveCapacity(queryKeys.count)
-
-        for queryKey in Set(queryKeys) {
-            let targetQueryKey = queryKey
-            var descriptor = FetchDescriptor<KeywordDailyMetric>(
-                predicate: #Predicate { metrics in
-                    metrics.queryKey == targetQueryKey
-                }
-            )
-            descriptor.fetchLimit = 1
-
-            if let metrics = try modelContext.fetch(descriptor).first {
-                snapshotsByQueryKey[metrics.queryKey] = KeywordMetricsSnapshot(metrics)
+        let descriptor = FetchDescriptor<KeywordDailyMetric>(
+            predicate: #Predicate { metrics in
+                selectedQueryKeys.contains(metrics.queryKey)
             }
+        )
+        var snapshotsByQueryKey: [String: KeywordMetricsSnapshot] = [:]
+        snapshotsByQueryKey.reserveCapacity(selectedQueryKeys.count)
+        for metrics in try modelContext.fetch(descriptor) {
+            snapshotsByQueryKey[metrics.queryKey] = KeywordMetricsSnapshot(metrics)
         }
 
         return snapshotsByQueryKey
@@ -287,6 +282,7 @@ struct KeywordWorkspaceRow: Identifiable {
     let track: TrackedAppKeyword
     let storefront: StorefrontDefinition?
     let metrics: KeywordMetricsSnapshot?
+    let estimatedDifficulty: EstimatedKeywordDifficultySummary?
     let refreshStatus: KeywordRefreshStatusSnapshot
     let latestSnapshot: KeywordRankingCrawlSummary?
     let trendSnapshots: [KeywordRankingCrawlSummary]
@@ -300,6 +296,7 @@ struct KeywordWorkspaceRow: Identifiable {
         track: TrackedAppKeyword,
         storefront: StorefrontDefinition?,
         metrics: KeywordMetricsSnapshot?,
+        estimatedDifficulty: EstimatedKeywordDifficultySummary? = nil,
         refreshStatus: KeywordRefreshStatusSnapshot = .empty,
         latestSnapshot: KeywordRankingCrawlSummary?,
         trendSnapshots: [KeywordRankingCrawlSummary],
@@ -309,6 +306,7 @@ struct KeywordWorkspaceRow: Identifiable {
         self.track = track
         self.storefront = storefront
         self.metrics = metrics
+        self.estimatedDifficulty = estimatedDifficulty
         self.refreshStatus = refreshStatus
         self.latestSnapshot = latestSnapshot
         self.currentRank = latestSnapshot?.rank
@@ -334,6 +332,7 @@ struct KeywordWorkspaceRow: Identifiable {
         track: TrackedAppKeyword,
         storefront: StorefrontDefinition?,
         metrics: KeywordDailyMetric?,
+        estimatedDifficulty: EstimatedKeywordDifficultySummary? = nil,
         refreshStatus: KeywordRefreshStatusSnapshot = .empty,
         latestSnapshot: KeywordRankingCrawlSummary?,
         trendSnapshots: [KeywordRankingCrawlSummary],
@@ -344,6 +343,7 @@ struct KeywordWorkspaceRow: Identifiable {
             track: track,
             storefront: storefront,
             metrics: metrics.map(KeywordMetricsSnapshot.init),
+            estimatedDifficulty: estimatedDifficulty,
             refreshStatus: refreshStatus,
             latestSnapshot: latestSnapshot,
             trendSnapshots: trendSnapshots,
@@ -356,6 +356,7 @@ struct KeywordWorkspaceRow: Identifiable {
         track: TrackedAppKeyword,
         storefront: StorefrontDefinition?,
         metrics: KeywordDailyMetric?,
+        estimatedDifficulty: EstimatedKeywordDifficultySummary? = nil,
         refreshStatus: KeywordRefreshStatusSnapshot = .empty,
         latestSnapshot: TrackedKeywordDailyRanking?,
         trendSnapshots: [TrackedKeywordDailyRanking],
@@ -365,6 +366,7 @@ struct KeywordWorkspaceRow: Identifiable {
             track: track,
             storefront: storefront,
             metrics: metrics.map(KeywordMetricsSnapshot.init),
+            estimatedDifficulty: estimatedDifficulty,
             refreshStatus: refreshStatus,
             latestSnapshot: latestSnapshot.map(KeywordRankingCrawlSummary.init),
             trendSnapshots: trendSnapshots.map(KeywordRankingCrawlSummary.init),
@@ -384,6 +386,15 @@ struct KeywordWorkspaceRow: Identifiable {
     }
 
     var popularitySortValue: Int { metrics?.popularityScore ?? -1 }
+
+    var estimatedDifficultyScore: Int? {
+        guard estimatedDifficulty?.state == .estimated else { return nil }
+        return estimatedDifficulty?.score
+    }
+
+    var estimatedDifficultySortValue: Int {
+        estimatedDifficultyScore ?? Int.max
+    }
 
     var positionSortValue: Int { currentRank ?? Int.max }
 

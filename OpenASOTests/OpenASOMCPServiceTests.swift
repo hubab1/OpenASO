@@ -83,6 +83,113 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func keywordSummariesAndDetailedToolExposeEstimatedDifficultyCompatibly() async throws {
+        let asOf = isoDate("2026-05-07T12:00:00Z")
+        let context = try MCPTestContext(now: { asOf })
+        let storeApp = try context.insertTrackedApp(
+            appStoreID: 123,
+            name: "Focus Timer"
+        ).storeApp
+        let track = try context.insertKeyword(
+            "focus timer",
+            trackedApp: storeApp,
+            storefront: "us"
+        )
+        let legacyMetric = KeywordDailyMetric(
+            queryKey: track.queryKey,
+            keyword: track.term,
+            storefront: track.storefront,
+            platform: track.platform,
+            popularityScore: 61,
+            difficultyScore: 42,
+            source: .appleAdsPopularity,
+            updatedAt: asOf
+        )
+        context.modelContext.insert(legacyMetric)
+
+        let page = SearchRankingPage(
+            items: [
+                makeRankingItem(position: 1, appStoreID: 201, name: "Focus Keeper", ratingCount: 80_000),
+                makeRankingItem(position: 2, appStoreID: 202, name: "Deep Work", ratingCount: 15_000),
+                makeRankingItem(position: 3, appStoreID: 203, name: "Pomodoro Timer", ratingCount: 2_000),
+            ],
+            source: .iTunesFallback
+        )
+        let fetchedAt = asOf.addingTimeInterval(-(23 * 60 * 60))
+        let payload = try #require(EstimatedKeywordDifficultyPersistenceAdapter.payload(
+            request: RankingRefreshRequest(track: track),
+            page: page,
+            requestedResultLimit: 10,
+            rankingFetchedAt: fetchedAt,
+            calculationID: UUID(uuidString: "00000000-0000-0000-0000-000000002020")!,
+            now: { fetchedAt.addingTimeInterval(5) }
+        ))
+        _ = try EstimatedKeywordDifficultyStore.upsert(
+            payload,
+            in: context.modelContext
+        )
+        try context.modelContext.save()
+
+        let pageResult = try await context.service.listKeywords(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+        let summary = try #require(pageResult.items.first)
+        let expectedScore: Int
+        switch payload.result {
+        case .estimated(let score, _, _):
+            expectedScore = score
+        case .unavailable:
+            Issue.record("The three rated results should produce an estimate.")
+            return
+        }
+        #expect(summary.difficultyScore == 42)
+        #expect(summary.estimatedDifficulty?.state == "estimated")
+        #expect(summary.estimatedDifficulty?.score == expectedScore)
+        #expect(summary.estimatedDifficulty?.isStale == false)
+        #expect(summary.estimatedDifficulty?.rankingFetchedAt == fetchedAt)
+
+        let detail = try await context.service.getEstimatedKeywordDifficulty(
+            appStoreID: 123,
+            keyword: " focus timer ",
+            storefront: "US",
+            platform: "iphone",
+            evidenceLimit: 1
+        )
+        #expect(detail.state == "estimated")
+        #expect(detail.calculationID == payload.calculationID.uuidString.lowercased())
+        #expect(detail.isStale == false)
+        #expect(detail.rankingFetchedAt == fetchedAt)
+        #expect(detail.returnedEvidenceCount == 1)
+        #expect(detail.availableEvidenceCount == 3)
+        #expect(detail.evidenceTruncated)
+        #expect(detail.evidence.first?.appStoreID == "201")
+
+        let missing = try await context.service.getEstimatedKeywordDifficulty(
+            appStoreID: 456,
+            keyword: "focus timer",
+            storefront: "us"
+        )
+        #expect(missing.state == "missing")
+        #expect(missing.isStale == nil)
+        #expect(missing.evidence.isEmpty)
+
+        let encoded = try JSONEncoder().encode(summary)
+        var legacyObject = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        legacyObject.removeValue(forKey: "estimatedDifficulty")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        let decodedLegacy = try JSONDecoder().decode(
+            OpenASOMCPKeywordSummary.self,
+            from: legacyData
+        )
+        #expect(decodedLegacy.difficultyScore == 42)
+        #expect(decodedLegacy.estimatedDifficulty == nil)
+    }
+
+    @Test
     func listReviewsFiltersAndPaginatesNewestFirst() async throws {
         let context = try MCPTestContext()
         let service = context.service
@@ -897,6 +1004,24 @@ struct OpenASOMCPServiceTests {
         )
         #expect(listedKeywords.items.first?.latestRankingSource == RankingSource.iTunesFallback.rawValue)
         #expect(listedKeywords.items.first?.latestRankingObservedAt == rankingRefresh.outcomes.first?.rankingProvenance?.fetchedAt)
+        #expect(listedKeywords.items.first?.estimatedDifficulty?.state == "unavailable")
+        #expect(
+            listedKeywords.items.first?.estimatedDifficulty?.unavailableReason
+                == EstimatedKeywordDifficultyUnavailableReason.insufficientResults.rawValue
+        )
+
+        let estimatedDifficulty = try await context.service.getEstimatedKeywordDifficulty(
+            appStoreID: 123,
+            keyword: "calorie tracker",
+            storefront: "us",
+            platform: "iphone"
+        )
+        #expect(estimatedDifficulty.state == "unavailable")
+        #expect(estimatedDifficulty.rankingSource == RankingSource.iTunesFallback.rawValue)
+        #expect(estimatedDifficulty.fallback?.provider == RankingSource.appStoreWeb.rawValue)
+        #expect(estimatedDifficulty.fallback?.category == "httpStatus")
+        #expect(estimatedDifficulty.fallback?.httpStatus == 503)
+        #expect(estimatedDifficulty.availableEvidenceCount == 2)
 
         let competitors = try await context.service.listCompetitors(
             appStoreID: 123,
@@ -916,6 +1041,238 @@ struct OpenASOMCPServiceTests {
         #expect(metricsRefresh.outcomes.first?.rankingProvenance == nil)
         #expect(metricsRefresh.outcomes.first?.error?.code == "apple_ads_not_configured")
         #expect(metricsRefresh.outcomes.first?.track.statusMessage?.contains("Connect an Apple Ads") == true)
+    }
+
+    @Test
+    func refreshKeywordRankingsKeepsValidPeersWhenOptionalDifficultyConflicts() async throws {
+        let asOf = isoDate("2026-05-07T12:00:00Z")
+        let conflictingCalculationID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000002027"
+        )!
+        let successfulCalculationID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000002028"
+        )!
+        let conflictingPage = SearchRankingPage(items: [
+            makeRankingItem(position: 1, appStoreID: 123, name: "Target", ratingCount: 50_000),
+            makeRankingItem(position: 2, appStoreID: 201, name: "Peer", ratingCount: 10_000),
+            makeRankingItem(position: 3, appStoreID: 202, name: "Peer Two", ratingCount: 5_000),
+        ], source: .iTunesFallback)
+        let successfulPage = SearchRankingPage(items: [
+            makeRankingItem(position: 1, appStoreID: 301, name: "Other", ratingCount: 40_000),
+            makeRankingItem(position: 2, appStoreID: 123, name: "Target", ratingCount: 20_000),
+            makeRankingItem(position: 3, appStoreID: 302, name: "Other Two", ratingCount: 2_000),
+        ], source: .iTunesFallback)
+        let rankingProvider = StubMCPRankingProvider(pages: [
+            "conflict term::us::iphone": conflictingPage,
+            "valid term::us::iphone": successfulPage,
+        ])
+        let context = try MCPTestContext(
+            rankingProvider: rankingProvider,
+            estimatedDifficultyPayloadBuilder: { request, page, limit, fetchedAt in
+                EstimatedKeywordDifficultyPersistenceAdapter.payload(
+                    request: request,
+                    page: page,
+                    requestedResultLimit: limit,
+                    rankingFetchedAt: fetchedAt,
+                    calculationID: request.term == "conflict term"
+                        ? conflictingCalculationID
+                        : successfulCalculationID,
+                    now: { fetchedAt }
+                )
+            },
+            now: { asOf }
+        )
+        try context.insertTrackedApp(appStoreID: 123, name: "Target")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["conflict term", "valid term"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let seedContext = ModelContext(context.container)
+        let conflictIdentityKey = TrackedAppKeyword.makeIdentityKey(
+            appStoreID: 123,
+            term: "conflict term",
+            storefront: "us",
+            platform: .iphone
+        )
+        let conflictTrack = try #require(try seedContext.fetch(
+            FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    track.identityKey == conflictIdentityKey
+                }
+            )
+        ).first)
+        let priorFetchedAt = asOf.addingTimeInterval(-60)
+        let priorPayload = try #require(
+            EstimatedKeywordDifficultyPersistenceAdapter.payload(
+                request: RankingRefreshRequest(track: conflictTrack),
+                page: SearchRankingPage(items: [
+                    makeRankingItem(position: 1, appStoreID: 401, name: "Prior", ratingCount: 90_000),
+                    makeRankingItem(position: 2, appStoreID: 402, name: "Prior Two", ratingCount: 30_000),
+                    makeRankingItem(position: 3, appStoreID: 403, name: "Prior Three", ratingCount: 3_000),
+                ], source: .iTunesFallback),
+                requestedResultLimit: 25,
+                rankingFetchedAt: priorFetchedAt,
+                calculationID: conflictingCalculationID,
+                now: { priorFetchedAt }
+            )
+        )
+        _ = try EstimatedKeywordDifficultyStore.upsert(priorPayload, in: seedContext)
+        try seedContext.save()
+
+        let result = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        #expect(result.summary.refreshed == 2)
+        #expect(result.summary.failed == 0)
+        #expect(result.outcomes.count == 2)
+        #expect(result.outcomes.allSatisfy { $0.error == nil })
+        #expect(result.outcomes.first {
+            $0.track.keyword == "conflict term"
+        }?.track.estimatedDifficulty?.rankingFetchedAt == priorFetchedAt)
+        #expect(result.outcomes.first {
+            $0.track.keyword == "valid term"
+        }?.track.estimatedDifficulty?.rankingFetchedAt == asOf)
+
+        let verificationContext = ModelContext(context.container)
+        let rankings = try verificationContext.fetch(
+            FetchDescriptor<TrackedKeywordDailyRanking>()
+        )
+        #expect(rankings.count == 2)
+        let validQueryKey = KeywordQuery.makeQueryKey(
+            term: "valid term",
+            storefront: "us",
+            platform: .iphone
+        )
+        #expect(
+            try EstimatedKeywordDifficultyStore.snapshot(
+                queryKey: conflictTrack.queryKey,
+                in: verificationContext
+            )?.rankingFetchedAt == priorFetchedAt
+        )
+        #expect(
+            try EstimatedKeywordDifficultyStore.snapshot(
+                queryKey: validQueryKey,
+                in: verificationContext
+            )?.calculationID == successfulCalculationID
+        )
+    }
+
+    @Test
+    func postCommitReplacementRejectsOldDifficultyAndKeepsOutcomeGeneration() async throws {
+        let asOf = isoDate("2026-05-07T12:00:00Z")
+        let replacementCreatedAt = asOf.addingTimeInterval(1)
+        let appStoreID: Int64 = 123
+        let term = "generation term"
+        let identityKey = TrackedAppKeyword.makeIdentityKey(
+            appStoreID: appStoreID,
+            term: term,
+            storefront: "us",
+            platform: .iphone
+        )
+        let container = try ModelContainerFactory.makeModelContainer(
+            isStoredInMemoryOnly: true
+        )
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let rankingProvider = StubMCPRankingProvider(pages: [
+            "generation term::us::iphone": SearchRankingPage(items: [
+                makeRankingItem(position: 1, appStoreID: appStoreID, name: "Target", ratingCount: 50_000),
+                makeRankingItem(position: 2, appStoreID: 201, name: "Peer", ratingCount: 10_000),
+                makeRankingItem(position: 3, appStoreID: 202, name: "Peer Two", ratingCount: 5_000),
+            ], source: .iTunesFallback),
+        ])
+        let context = try MCPTestContext(
+            modelContainer: container,
+            backgroundModelStore: backgroundModelStore,
+            rankingProvider: rankingProvider,
+            rankingPersistenceDidCommit: {
+                do {
+                    _ = try await TrackedKeywordDeletionService.deleteTracks(
+                        [TrackedKeywordDeletionRequest(
+                            identityKey: identityKey,
+                            trackCreatedAt: asOf
+                        )],
+                        using: backgroundModelStore
+                    )
+                    try await backgroundModelStore.write { modelContext in
+                        let targetAppStoreID = appStoreID
+                        var descriptor = FetchDescriptor<TrackedApp>(
+                            predicate: #Predicate { app in
+                                app.appStoreID == targetAppStoreID
+                            }
+                        )
+                        descriptor.fetchLimit = 1
+                        guard let trackedApp = try modelContext.fetch(descriptor).first else {
+                            throw OpenASOError.appNotFound
+                        }
+                        let query = try KeywordQuery.fetchOrInsert(
+                            term: term,
+                            storefront: "us",
+                            platform: .iphone,
+                            in: modelContext
+                        )
+                        let replacement = TrackedAppKeyword(
+                            term: term,
+                            storefront: "us",
+                            platform: .iphone,
+                            trackedApp: trackedApp,
+                            query: query,
+                            createdAt: replacementCreatedAt
+                        )
+                        replacement.notes = "replacement generation"
+                        trackedApp.keywordTracks.append(replacement)
+                        modelContext.insert(replacement)
+                    }
+                } catch {
+                    // State assertions below make hook failures visible.
+                }
+            },
+            now: { asOf }
+        )
+        try context.insertTrackedApp(appStoreID: appStoreID, name: "Target")
+        _ = try await context.service.addKeywords(
+            appStoreID: appStoreID,
+            keywords: [term],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let result = try await context.service.refreshKeywordRankings(
+            appStoreID: appStoreID,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        #expect(result.summary.refreshed == 1)
+        #expect(result.summary.failed == 0)
+        let outcome = try #require(result.outcomes.first)
+        #expect(outcome.track.createdAt == asOf)
+        #expect(outcome.track.lastRefreshAt == asOf)
+        #expect(outcome.track.notes.isEmpty)
+
+        let verificationContext = ModelContext(container)
+        let replacement = try #require(try verificationContext.fetch(
+            FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    track.identityKey == identityKey
+                }
+            )
+        ).first)
+        #expect(replacement.createdAt == replacementCreatedAt)
+        #expect(replacement.lastRefreshAt == nil)
+        #expect(replacement.notes == "replacement generation")
+        #expect(try verificationContext.fetchCount(
+            FetchDescriptor<TrackedKeywordDailyRanking>()
+        ) == 0)
+        #expect(try EstimatedKeywordDifficultyStore.snapshot(
+            queryKey: replacement.queryKey,
+            in: verificationContext
+        ) == nil)
     }
 
     @Test
@@ -962,6 +1319,9 @@ struct OpenASOMCPServiceTests {
         )
 
         let tracks = try context.modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        for track in tracks {
+            track.createdAt = isoDate("2025-01-01T00:00:00Z")
+        }
         let tracksByTerm = Dictionary(uniqueKeysWithValues: tracks.map { ($0.term, $0) })
         tracksByTerm["alpha"]?.lastRefreshAt = isoDate("2026-01-01T00:00:00Z")
         tracksByTerm["beta"]?.lastRefreshAt = isoDate("2026-01-01T00:00:00Z")
@@ -1155,6 +1515,118 @@ struct OpenASOMCPServiceTests {
             FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
         )
         #expect(attempts.isEmpty)
+    }
+
+    @Test
+    func rankingAttemptPersistenceRejectsDeletedAndReaddedGenerationBeforeProviderCall() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let backgroundStore = BackgroundModelStore(modelContainer: container)
+        let rankingProvider = StubMCPRankingProvider(pages: [:])
+        let scheduler = OpenASOMCPRankingRefreshScheduler()
+        let context = try MCPTestContext(
+            modelContainer: container,
+            backgroundModelStore: backgroundStore,
+            rankingProvider: rankingProvider,
+            rankingRefreshScheduler: scheduler,
+            persistRankingRefreshAttempts: { requests, appStoreID, attemptedAt in
+                guard let request = requests.first,
+                      requests.count == 1,
+                      let trackCreatedAt = request.trackCreatedAt
+                else {
+                    throw InjectedRankingAttemptInterleavingError.invalidReservation
+                }
+                try await replaceTrackedKeywordGeneration(
+                    identityKey: request.identityKey,
+                    expectedCreatedAt: trackCreatedAt,
+                    using: backgroundStore
+                )
+                return try await backgroundStore.write { modelContext in
+                    try OpenASOMCPService.acceptRankingRefreshAttempts(
+                        requests,
+                        appStoreID: appStoreID,
+                        attemptedAt: attemptedAt,
+                        in: modelContext
+                    )
+                }
+            }
+        )
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let result = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 1
+        )
+
+        #expect(result.summary.skipped == 1)
+        #expect(result.summary.refreshed == 0)
+        #expect(result.summary.failed == 0)
+        #expect(result.outcomes.isEmpty)
+        #expect(await rankingProvider.searchedKeysSnapshot().isEmpty)
+        #expect(await scheduler.attemptCount() == 0)
+        let attempts = try ModelContext(container).fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(attempts.isEmpty)
+    }
+
+    @Test
+    func rankingResultPersistenceSkipsReaddedGenerationWithoutRollingBackValidPeer() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let backgroundStore = BackgroundModelStore(modelContainer: container)
+        let rankingProvider = ReaddingMCPRankingProvider(
+            backgroundStore: backgroundStore,
+            identityKeyToReplace: "123::alpha::us::iphone"
+        )
+        let context = try MCPTestContext(
+            modelContainer: container,
+            backgroundModelStore: backgroundStore,
+            rankingProvider: rankingProvider
+        )
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["alpha", "beta"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let result = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 2
+        )
+
+        #expect(await rankingProvider.searchedKeysSnapshot() == [
+            rankingQueryKey("alpha"),
+            rankingQueryKey("beta"),
+        ])
+        #expect(result.summary.skipped == 1)
+        #expect(result.summary.refreshed == 1)
+        #expect(result.summary.failed == 0)
+        #expect(result.outcomes.map(\.track.keyword) == ["beta"])
+        #expect(result.notes.contains { $0.contains("Skipped 1 ranking result") })
+        #expect(
+            result.summary.skipped + result.summary.refreshed + result.summary.failed == 2
+        )
+
+        let verificationContext = ModelContext(container)
+        let tracks = try verificationContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        let tracksByTerm = Dictionary(uniqueKeysWithValues: tracks.map { ($0.term, $0) })
+        #expect(tracksByTerm["alpha"]?.lastRefreshAt == nil)
+        #expect(tracksByTerm["beta"]?.lastRefreshAt != nil)
+        let attempts = try verificationContext.fetch(
+            FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+        )
+        #expect(attempts.map(\.trackIdentityKey) == ["123::beta::us::iphone"])
     }
 
     @Test
@@ -2982,11 +3454,14 @@ private struct MCPTestContext {
     @MainActor
     init(
         modelContainer: ModelContainer? = nil,
+        backgroundModelStore: BackgroundModelStore? = nil,
         resolver: StubMCPAppResolver = StubMCPAppResolver(),
         rankingProvider: (any SearchRankingProvider)? = nil,
         useRankingRefreshCoordinator: Bool = false,
         rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler(),
         persistRankingRefreshAttempts: OpenASOMCPService.RankingRefreshAttemptsPersistence? = nil,
+        estimatedDifficultyPayloadBuilder: OpenASOMCPService.EstimatedDifficultyPayloadBuilder? = nil,
+        rankingPersistenceDidCommit: (@Sendable () async -> Void)? = nil,
         includeReviewService: Bool = false,
         includeKeywordMetricsService: Bool = false,
         popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
@@ -3000,7 +3475,8 @@ private struct MCPTestContext {
         self.container = try modelContainer
             ?? ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         self.modelContext = ModelContext(container)
-        self.backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        self.backgroundModelStore = backgroundModelStore
+            ?? BackgroundModelStore(modelContainer: container)
         self.resolver = resolver
         let httpClient = MockHTTPClient(handler: httpHandler)
         let appCatalogService = AppCatalogService(appResolver: resolver)
@@ -3017,7 +3493,7 @@ private struct MCPTestContext {
                 : nil
         }
         self.service = OpenASOMCPService(
-            backgroundModelStore: backgroundModelStore,
+            backgroundModelStore: self.backgroundModelStore,
             appResolver: resolver,
             appCatalogService: appCatalogService,
             httpClient: httpClient,
@@ -3026,6 +3502,8 @@ private struct MCPTestContext {
             rankingRefreshCoordinator: rankingRefreshCoordinator,
             rankingRefreshScheduler: rankingRefreshScheduler,
             persistRankingRefreshAttempts: persistRankingRefreshAttempts,
+            estimatedDifficultyPayloadBuilder: estimatedDifficultyPayloadBuilder,
+            rankingPersistenceDidCommit: rankingPersistenceDidCommit,
             reviewService: includeReviewService ? AppStorefrontReviewService(httpClient: httpClient) : nil,
             keywordMetricsService: includeKeywordMetricsService
                 ? KeywordMetricsService(
@@ -3508,6 +3986,54 @@ private actor StubMCPRankingProvider: SearchRankingProvider {
     }
 }
 
+private actor ReaddingMCPRankingProvider: SearchRankingProvider {
+    private let backgroundStore: BackgroundModelStore
+    private let identityKeyToReplace: String
+    private var didReplaceGeneration = false
+    private var searchedKeys: [String] = []
+
+    init(
+        backgroundStore: BackgroundModelStore,
+        identityKeyToReplace: String
+    ) {
+        self.backgroundStore = backgroundStore
+        self.identityKeyToReplace = identityKeyToReplace
+    }
+
+    func searchedKeysSnapshot() -> [String] {
+        searchedKeys
+    }
+
+    func search(
+        keyword: String,
+        storefrontCode: String,
+        platform: AppPlatform,
+        limit _: Int
+    ) async throws -> SearchRankingPage {
+        let queryKey = TrackedAppKeyword.makeQueryKey(
+            term: keyword,
+            storefront: storefrontCode,
+            platform: platform
+        )
+        searchedKeys.append(queryKey)
+        let identityKey = TrackedAppKeyword.makeIdentityKey(
+            appStoreID: 123,
+            term: keyword,
+            storefront: storefrontCode,
+            platform: platform
+        )
+        if identityKey == identityKeyToReplace, !didReplaceGeneration {
+            didReplaceGeneration = true
+            try await replaceTrackedKeywordGeneration(
+                identityKey: identityKey,
+                expectedCreatedAt: nil,
+                using: backgroundStore
+            )
+        }
+        return SearchRankingPage(items: [], source: .iTunesFallback)
+    }
+}
+
 private actor GatedMCPRankingProvider: SearchRankingProvider {
     private var searchedKeys: [String] = []
     private var searchCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -3592,6 +4118,85 @@ private actor CancellationAwareMCPRankingProvider: SearchRankingProvider {
     }
 }
 
+private struct TrackedKeywordReplacementSeed: Sendable {
+    let appStoreID: Int64
+    let term: String
+    let storefront: String
+    let platform: AppPlatform
+    let replacementCreatedAt: Date
+}
+
+private func replaceTrackedKeywordGeneration(
+    identityKey: String,
+    expectedCreatedAt: Date?,
+    using backgroundStore: BackgroundModelStore
+) async throws {
+    let seed = try await backgroundStore.write { modelContext in
+        let targetIdentityKey = identityKey
+        var descriptor = FetchDescriptor<TrackedAppKeyword>(
+            predicate: #Predicate { track in
+                track.identityKey == targetIdentityKey
+            }
+        )
+        descriptor.fetchLimit = 1
+        guard let track = try modelContext.fetch(descriptor).first,
+              expectedCreatedAt.map({ $0 == track.createdAt }) ?? true
+        else {
+            throw InjectedRankingAttemptInterleavingError.missingExpectedGeneration
+        }
+        let seed = TrackedKeywordReplacementSeed(
+            appStoreID: track.appStoreID,
+            term: track.term,
+            storefront: track.storefront,
+            platform: track.platform,
+            replacementCreatedAt: track.createdAt.addingTimeInterval(1)
+        )
+        let deletion = try TrackedKeywordDeletionService.deleteTracks(
+            [TrackedKeywordDeletionRequest(track: track)],
+            in: modelContext
+        )
+        guard deletion.deletedTrackCount == 1 else {
+            throw InjectedRankingAttemptInterleavingError.missingExpectedGeneration
+        }
+        return seed
+    }
+
+    try await backgroundStore.write { modelContext in
+        let appStoreID = seed.appStoreID
+        var appDescriptor = FetchDescriptor<TrackedApp>(
+            predicate: #Predicate { app in
+                app.appStoreID == appStoreID
+            }
+        )
+        appDescriptor.fetchLimit = 1
+        guard let trackedApp = try modelContext.fetch(appDescriptor).first else {
+            throw InjectedRankingAttemptInterleavingError.missingTrackedApp
+        }
+        let query = try KeywordQuery.fetchOrInsert(
+            term: seed.term,
+            storefront: seed.storefront,
+            platform: seed.platform,
+            in: modelContext
+        )
+        let replacement = TrackedAppKeyword(
+            term: seed.term,
+            storefront: seed.storefront,
+            platform: seed.platform,
+            trackedApp: trackedApp,
+            query: query,
+            createdAt: seed.replacementCreatedAt
+        )
+        trackedApp.keywordTracks.append(replacement)
+        modelContext.insert(replacement)
+    }
+}
+
+private enum InjectedRankingAttemptInterleavingError: Error {
+    case invalidReservation
+    case missingExpectedGeneration
+    case missingTrackedApp
+}
+
 private enum InjectedRankingAttemptPersistenceError: Error {
     case expected
 }
@@ -3603,7 +4208,7 @@ private actor FailingRankingAttemptPersistenceProbe {
         _ requests: [RankingRefreshRequest],
         appStoreID _: Int64,
         attemptedAt _: Date
-    ) throws {
+    ) throws -> [RankingRefreshRequest] {
         batches.append(requests.map(\.identityKey))
         throw InjectedRankingAttemptPersistenceError.expected
     }

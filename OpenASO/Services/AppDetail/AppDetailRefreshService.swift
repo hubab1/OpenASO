@@ -576,6 +576,7 @@ final class AppDetailRefreshService: Sendable {
             outcomes.append(contentsOf: batchOutcome.outcomes)
             statsRebuildRequests.formUnion(batchOutcome.statsRebuildRequests)
             failureCount += batchOutcome.failureCount
+            try await persistEstimatedDifficulty(for: batchOutcome.successfulPageResults)
             for pageResult in batchOutcome.successfulPageResults {
                 try Task.checkCancellation()
                 refreshCoordinator.scheduleTopRankingMetadataEnrichment(for: pageResult)
@@ -631,6 +632,7 @@ final class AppDetailRefreshService: Sendable {
                                 try Task.checkCancellation()
                                 _ = try refreshCoordinator.recordRefreshFailure(
                                     identityKey: targetRequest.identityKey,
+                                    trackCreatedAt: targetRequest.trackCreatedAt,
                                     error: error,
                                     in: modelContext,
                                     saveChanges: false
@@ -714,35 +716,21 @@ final class AppDetailRefreshService: Sendable {
                 var successfulPageResults: [RankingRefreshPageResult] = []
 
                 for pageResult in pageResults {
-                    do {
-                        _ = try refreshCoordinator.persistRankingPage(
-                            pageResult,
-                            in: modelContext,
-                            rebuildDerivedStats: false,
-                            saveChanges: false,
-                            scheduleMetadataEnrichment: false
-                        )
-                        if let statsRebuildRequest = RankingStatsRebuildRequest(pageRequest: pageResult.request) {
-                            statsRebuildRequests.insert(statsRebuildRequest)
-                        }
-                        successfulPageResults.append(pageResult)
-                        outcomes.append(KeywordBackgroundRefreshOutcome(
-                            trackIdentityKey: pageResult.request.identityKey,
-                            error: nil
-                        ))
-                    } catch {
-                        let mappedError = OpenASOError.map(error)
-                        _ = try? refreshCoordinator.recordRefreshFailure(
-                            identityKey: pageResult.request.identityKey,
-                            error: mappedError,
-                            in: modelContext,
-                            saveChanges: false
-                        )
-                        outcomes.append(KeywordBackgroundRefreshOutcome(
-                            trackIdentityKey: pageResult.request.identityKey,
-                            error: mappedError
-                        ))
+                    _ = try refreshCoordinator.persistRankingPage(
+                        pageResult,
+                        in: modelContext,
+                        rebuildDerivedStats: false,
+                        saveChanges: false,
+                        scheduleMetadataEnrichment: false
+                    )
+                    if let statsRebuildRequest = RankingStatsRebuildRequest(pageRequest: pageResult.request) {
+                        statsRebuildRequests.insert(statsRebuildRequest)
                     }
+                    successfulPageResults.append(pageResult)
+                    outcomes.append(KeywordBackgroundRefreshOutcome(
+                        trackIdentityKey: pageResult.request.identityKey,
+                        error: nil
+                    ))
                 }
 
                 return RankingPersistenceBatchOutcome(
@@ -757,32 +745,120 @@ final class AppDetailRefreshService: Sendable {
             if Task.isCancelled {
                 throw CancellationError()
             }
-            let mappedError = OpenASOError.map(error)
+            return try await persistRankingPagesIndividually(pageResults)
+        }
+    }
+
+    private func persistRankingPagesIndividually(
+        _ pageResults: [RankingRefreshPageResult]
+    ) async throws -> RankingPersistenceBatchOutcome {
+        var outcomes: [KeywordBackgroundRefreshOutcome] = []
+        var statsRebuildRequests = Set<RankingStatsRebuildRequest>()
+        var successfulPageResults: [RankingRefreshPageResult] = []
+
+        for pageResult in pageResults {
+            try Task.checkCancellation()
             do {
                 try await backgroundModelStore.write { modelContext in
                     try Task.checkCancellation()
-                    for pageResult in pageResults {
-                        _ = try? refreshCoordinator.recordRefreshFailure(
+                    _ = try refreshCoordinator.persistRankingPage(
+                        pageResult,
+                        in: modelContext,
+                        rebuildDerivedStats: false,
+                        saveChanges: false,
+                        scheduleMetadataEnrichment: false
+                    )
+                }
+                try Task.checkCancellation()
+                if let statsRebuildRequest = RankingStatsRebuildRequest(pageRequest: pageResult.request) {
+                    statsRebuildRequests.insert(statsRebuildRequest)
+                }
+                successfulPageResults.append(pageResult)
+                outcomes.append(KeywordBackgroundRefreshOutcome(
+                    trackIdentityKey: pageResult.request.identityKey,
+                    error: nil
+                ))
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                let mappedError = OpenASOError.map(error)
+                do {
+                    try await backgroundModelStore.write { modelContext in
+                        try Task.checkCancellation()
+                        _ = try refreshCoordinator.recordRefreshFailure(
                             identityKey: pageResult.request.identityKey,
+                            trackCreatedAt: pageResult.request.trackCreatedAt,
                             error: mappedError,
                             in: modelContext,
                             saveChanges: false
                         )
                     }
+                    try Task.checkCancellation()
+                } catch {
+                    if Task.isCancelled {
+                        throw CancellationError()
+                    }
                 }
-                try Task.checkCancellation()
-            } catch {
-                if Task.isCancelled {
-                    throw CancellationError()
+                outcomes.append(KeywordBackgroundRefreshOutcome(
+                    trackIdentityKey: pageResult.request.identityKey,
+                    error: mappedError
+                ))
+            }
+        }
+
+        return RankingPersistenceBatchOutcome(
+            outcomes: outcomes,
+            statsRebuildRequests: statsRebuildRequests,
+            successfulPageResults: successfulPageResults
+        )
+    }
+
+    /// Difficulty is optional derived data, so it is committed only after the
+    /// corresponding rankings. A failed batch is retried payload-by-payload to
+    /// preserve valid peers without changing any ranking outcome or status.
+    private func persistEstimatedDifficulty(
+        for pageResults: [RankingRefreshPageResult]
+    ) async throws {
+        let pageResults = pageResults.filter { $0.estimatedDifficultyPayload != nil }
+        guard !pageResults.isEmpty else { return }
+
+        try Task.checkCancellation()
+        do {
+            try await backgroundModelStore.write { modelContext in
+                for pageResult in pageResults {
+                    try Task.checkCancellation()
+                    try EstimatedKeywordDifficultyPersistenceAdapter.upsertIfCurrent(
+                        for: pageResult,
+                        in: modelContext
+                    )
                 }
             }
-            return RankingPersistenceBatchOutcome(
-                outcomes: pageResults.map {
-                    KeywordBackgroundRefreshOutcome(trackIdentityKey: $0.request.identityKey, error: mappedError)
-                },
-                statsRebuildRequests: [],
-                successfulPageResults: []
-            )
+            try Task.checkCancellation()
+        } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            for pageResult in pageResults {
+                try Task.checkCancellation()
+                do {
+                    _ = try await backgroundModelStore.write { modelContext in
+                        try Task.checkCancellation()
+                        try EstimatedKeywordDifficultyPersistenceAdapter.upsertIfCurrent(
+                            for: pageResult,
+                            in: modelContext
+                        )
+                    }
+                    try Task.checkCancellation()
+                } catch {
+                    if Task.isCancelled {
+                        throw CancellationError()
+                    }
+                    OpenASOLog.refresh.error(
+                        "Skipped optional estimated difficulty persistence: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                    )
+                }
+            }
         }
     }
 

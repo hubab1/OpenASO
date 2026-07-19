@@ -238,6 +238,51 @@ struct KeywordWorkspaceProjectionTests {
         modelContext.insert(latestCrawl)
         modelContext.insert(metric)
         rankings.forEach(modelContext.insert)
+        _ = try EstimatedKeywordDifficultyStore.upsert(
+            EstimatedKeywordDifficultyPersistencePayload(
+                queryKey: query.queryKey,
+                keyword: query.term,
+                storefront: query.storefront,
+                platform: query.platform,
+                result: .estimated(
+                    score: 64,
+                    confidenceScore: 80,
+                    confidence: .medium
+                ),
+                algorithmIdentifier: "top10-authority-saturation",
+                algorithmVersion: 1,
+                requestedResultLimit: 10,
+                providerResultCount: 3,
+                evidence: EstimatedKeywordDifficultyEvidence(
+                    consideredResultCount: 3,
+                    ratedResultCount: 3,
+                    weightedRatingCoveragePercentage: 100,
+                    maximumRatingCount: 3_000,
+                    medianRatingCount: 2_000,
+                    ratingAuthorityScore: 70,
+                    metadataSaturationScore: 60,
+                    resultEvidence: (1...3).map { position in
+                        EstimatedKeywordDifficultyResultEvidence(
+                            position: position,
+                            appStoreID: 201 + Int64(position),
+                            title: "Focus Timer \(position)",
+                            ratingCount: position * 1_000,
+                            ratingAuthorityScore: 70,
+                            titleTokenCoveragePercentage: 100,
+                            combinedTokenCoveragePercentage: 100,
+                            metadataMatchScore: 100,
+                            exactTitlePhraseMatch: position == 1,
+                            exactSubtitlePhraseMatch: false
+                        )
+                    }
+                ),
+                rankingSource: .appStoreWeb,
+                rankingFetchedAt: latestCrawl.observedAt,
+                computedAt: latestCrawl.observedAt.addingTimeInterval(1),
+                notes: ["Estimated locally from public ranking evidence."]
+            ),
+            in: modelContext
+        )
         try modelContext.save()
 
         let materializationID = KeywordWorkspaceProjection.MaterializationID(
@@ -269,10 +314,16 @@ struct KeywordWorkspaceProjectionTests {
 
         #expect(row.metrics?.popularityScore == 73)
         #expect(row.metrics?.difficultyScore == 41)
+        #expect(row.estimatedDifficulty?.score == 64)
         #expect(row.latestSnapshot?.rank == 3)
         #expect(row.trendSnapshots.map(\.rank) == [8, 3])
         #expect(row.rankingApps.map(\.position) == [1, 3])
-        #expect(service.cachedWorkspace(for: materializationID) != nil)
+        #expect(
+            service.cachedWorkspace(for: materializationID)?
+                .rowsByIdentityKey[track.identityKey]?
+                .estimatedDifficulty?
+                .score == 64
+        )
     }
 
     @Test

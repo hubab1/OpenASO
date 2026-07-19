@@ -194,6 +194,16 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "get_estimated_keyword_difficulty":
+            let result = try await service.getEstimatedKeywordDifficulty(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                keyword: try arguments.requiredString("keyword"),
+                storefront: try arguments.requiredString("storefront"),
+                platform: arguments.string("platform"),
+                evidenceLimit: arguments.int("evidence_limit")
+            )
+            return try Self.toolResult(result)
+
         case "score_keywords":
             let result = try await service.scoreKeywords(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
@@ -485,6 +495,16 @@ private extension OpenASOMCPServerFactory {
             tool("list_keywords", "List tracked keywords with latest rank and metrics.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "cursor": .string]) { current, _ in current }
+            ), readOnly: true),
+            tool("get_estimated_keyword_difficulty", "Read one stored local estimated-difficulty heuristic with bounded evidence and provenance. This does not call Apple or Apple Ads.", schema(
+                required: ["appStoreID", "keyword", "storefront"],
+                optional: [
+                    "appStoreID": .integer,
+                    "keyword": .string,
+                    "storefront": .string,
+                    "platform": .string,
+                    "evidence_limit": .integer
+                ]
             ), readOnly: true),
             tool("score_keywords", "Classify tracked keywords into defend, attack, long-tail, brand, experimental, or noisy buckets using rank, popularity, and phrase-quality heuristics.", schema(
                 required: ["appStoreID"],
