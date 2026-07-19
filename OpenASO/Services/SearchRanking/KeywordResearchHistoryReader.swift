@@ -1,14 +1,25 @@
 import Foundation
 import SwiftData
 
+/// The stable position immediately after one bounded history page.
+///
+/// Same-day crawls are updated in place, including their exact observation
+/// time. The persistence pipeline nevertheless keeps their UTC-day/source slot
+/// fixed. Remembering consumed sources inside the boundary day therefore keeps
+/// continuation stable across both newer inserts and same-day updates.
+struct KeywordResearchRankingHistoryCursor: Equatable, Hashable, Sendable {
+    let dayBucket: Int
+    let consumedSourceIDs: Set<String>
+}
+
 /// One bounded page of app-independent search-result observations.
 ///
-/// `nextOffset` is present only when the store returned a lookahead row. The
+/// `nextCursor` is present only when the store returned a lookahead row. The
 /// observations deliberately contain search-result positions, not a rank for
 /// any particular app.
 struct KeywordResearchRankingHistoryPage: Equatable, Sendable {
     let observations: [KeywordResearchRankingObservationSnapshot]
-    let nextOffset: Int?
+    let nextCursor: KeywordResearchRankingHistoryCursor?
 }
 
 /// Reads shared ranking observations for one exact research membership.
@@ -34,10 +45,10 @@ struct KeywordResearchHistoryReader: Sendable {
     func page(
         projectGeneration: KeywordResearchProjectGeneration,
         keywordGeneration: KeywordResearchKeywordGeneration,
-        offset: Int = 0,
+        after cursor: KeywordResearchRankingHistoryCursor? = nil,
         limit: Int = 50
     ) async throws -> KeywordResearchRankingHistoryPage {
-        try Self.validatePagination(offset: offset, limit: limit)
+        try Self.validateLimit(limit)
         try Task.checkCancellation()
 
         let targetResolver = targetResolver
@@ -50,26 +61,15 @@ struct KeywordResearchHistoryReader: Sendable {
             )
 
             let queryKey = target.queryKey
-            var descriptor = FetchDescriptor<KeywordRankingCrawl>(
-                predicate: #Predicate { crawl in
-                    crawl.queryKey == queryKey
-                },
-                sortBy: [
-                    SortDescriptor(\.observedAt, order: .reverse),
-                    SortDescriptor(
-                        \.observationKey,
-                        comparator: .lexical,
-                        order: .forward
-                    ),
-                ]
+            let rowsWithLookahead = try Self.rowsWithLookahead(
+                queryKey: queryKey,
+                after: cursor,
+                limit: limit,
+                in: modelContext
             )
-            descriptor.fetchOffset = offset
-            descriptor.fetchLimit = limit + 1
-
-            let rowsWithLookahead = try modelContext.fetch(descriptor)
             try Task.checkCancellation()
             let hasMore = rowsWithLookahead.count > limit
-            let rows = rowsWithLookahead.prefix(limit)
+            let rows = Array(rowsWithLookahead.prefix(limit))
             let observations = rows.map {
                 Self.snapshot(
                     $0,
@@ -81,7 +81,9 @@ struct KeywordResearchHistoryReader: Sendable {
 
             return KeywordResearchRankingHistoryPage(
                 observations: observations,
-                nextOffset: hasMore ? offset + observations.count : nil
+                nextCursor: hasMore
+                    ? Self.cursor(after: cursor, returnedRows: rows)
+                    : nil
             )
         }
 
@@ -91,16 +93,98 @@ struct KeywordResearchHistoryReader: Sendable {
 }
 
 private extension KeywordResearchHistoryReader {
-    static func validatePagination(offset: Int, limit: Int) throws {
-        guard offset >= 0 else {
-            throw KeywordResearchProjectStoreError.invalidOffset
-        }
+    static func validateLimit(_ limit: Int) throws {
         guard (1...maximumPageLimit).contains(limit) else {
             throw KeywordResearchProjectStoreError.invalidLimit
         }
-        guard offset <= Int.max - limit else {
-            throw KeywordResearchProjectStoreError.invalidOffset
+    }
+
+    static func rowsWithLookahead(
+        queryKey: String,
+        after cursor: KeywordResearchRankingHistoryCursor?,
+        limit: Int,
+        in modelContext: ModelContext
+    ) throws -> [KeywordRankingCrawl] {
+        guard let cursor else {
+            var descriptor = FetchDescriptor<KeywordRankingCrawl>(
+                predicate: #Predicate { crawl in
+                    crawl.queryKey == queryKey
+                },
+                sortBy: sortDescriptors
+            )
+            descriptor.fetchLimit = limit + 1
+            return try modelContext.fetch(descriptor)
         }
+
+        let boundaryStart = Date(
+            timeIntervalSince1970: TimeInterval(cursor.dayBucket) * 86_400
+        )
+        let boundaryEnd = boundaryStart.addingTimeInterval(86_400)
+        var boundaryDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+            predicate: #Predicate { crawl in
+                crawl.queryKey == queryKey
+                    && crawl.observedAt >= boundaryStart
+                    && crawl.observedAt < boundaryEnd
+            },
+            sortBy: sortDescriptors
+        )
+        // The write pipeline has at most one crawl per query/day/source slot.
+        boundaryDescriptor.fetchLimit = RankingSource.allCases.count
+        var rows = try modelContext.fetch(boundaryDescriptor).filter {
+            !cursor.consumedSourceIDs.contains($0.sourceRaw)
+        }
+
+        let remainingLookahead = limit + 1 - rows.count
+        guard remainingLookahead > 0 else {
+            return Array(rows.prefix(limit + 1))
+        }
+
+        var olderDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+            predicate: #Predicate { crawl in
+                crawl.queryKey == queryKey
+                    && crawl.observedAt < boundaryStart
+            },
+            sortBy: sortDescriptors
+        )
+        olderDescriptor.fetchLimit = remainingLookahead
+        rows.append(contentsOf: try modelContext.fetch(olderDescriptor))
+        return rows
+    }
+
+    static var sortDescriptors: [SortDescriptor<KeywordRankingCrawl>] {
+        [
+            SortDescriptor(\KeywordRankingCrawl.observedAt, order: .reverse),
+            SortDescriptor(
+                \KeywordRankingCrawl.observationKey,
+                comparator: .lexical,
+                order: .forward
+            ),
+        ]
+    }
+
+    static func cursor(
+        after previous: KeywordResearchRankingHistoryCursor?,
+        returnedRows: [KeywordRankingCrawl]
+    ) -> KeywordResearchRankingHistoryCursor? {
+        guard let boundaryRow = returnedRows.last else { return nil }
+        let dayBucket = KeywordRankingCrawl.utcDayBucket(
+            for: boundaryRow.observedAt
+        )
+        var consumedSourceIDs = previous?.dayBucket == dayBucket
+            ? previous?.consumedSourceIDs ?? []
+            : []
+        consumedSourceIDs.formUnion(
+            returnedRows.lazy
+                .filter {
+                    KeywordRankingCrawl.utcDayBucket(for: $0.observedAt)
+                        == dayBucket
+                }
+                .map(\.sourceRaw)
+        )
+        return KeywordResearchRankingHistoryCursor(
+            dayBucket: dayBucket,
+            consumedSourceIDs: consumedSourceIDs
+        )
     }
 
     static func snapshot(

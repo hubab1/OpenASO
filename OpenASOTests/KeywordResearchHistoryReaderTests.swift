@@ -23,26 +23,140 @@ struct KeywordResearchHistoryReaderTests {
         let first = try await fixture.reader.page(
             projectGeneration: fixture.project.generation,
             keywordGeneration: fixture.keyword.generation,
-            offset: 0,
             limit: 2
         )
         let second = try await fixture.reader.page(
             projectGeneration: fixture.project.generation,
             keywordGeneration: fixture.keyword.generation,
-            offset: try #require(first.nextOffset),
+            after: first.nextCursor,
             limit: 2
         )
 
         #expect(first.observations.map(\.id) == [keys[0], keys[2]].sorted())
         #expect(first.observations.map(\.observedAt) == [tiedDate, tiedDate])
-        #expect(first.nextOffset == 2)
+        #expect(first.nextCursor == KeywordResearchRankingHistoryCursor(
+            dayBucket: KeywordRankingCrawl.utcDayBucket(for: tiedDate),
+            consumedSourceIDs: Set([
+                RankingSource.appStoreWeb.rawValue,
+                RankingSource.iTunesFallback.rawValue,
+            ])
+        ))
         #expect(second.observations.map(\.id) == [keys[1]])
-        #expect(second.nextOffset == nil)
+        #expect(second.nextCursor == nil)
         #expect(Set(first.observations.map(\.id) + second.observations.map(\.id)).count == 3)
     }
 
     @Test
-    func exactFullFinalPageDoesNotInventAnotherOffset() async throws {
+    func continuationRemainsStableWhenANewerSharedObservationIsInserted() async throws {
+        let fixture = try await makeFixture()
+        let originalKeys = try await seedObservations(
+            [4, 3, 2, 1].map {
+                ObservationSeed(
+                    observedAt: researchHistoryDate(day: $0),
+                    source: .appStoreWeb
+                )
+            },
+            for: fixture.keyword,
+            in: fixture.backgroundStore
+        )
+
+        let first = try await fixture.reader.page(
+            projectGeneration: fixture.project.generation,
+            keywordGeneration: fixture.keyword.generation,
+            limit: 2
+        )
+        let insertedKeys = try await seedObservations(
+            [
+                ObservationSeed(
+                    observedAt: researchHistoryDate(day: 5),
+                    source: .appStoreWeb
+                )
+            ],
+            for: fixture.keyword,
+            in: fixture.backgroundStore
+        )
+        let insertedKey = try #require(insertedKeys.first)
+        let second = try await fixture.reader.page(
+            projectGeneration: fixture.project.generation,
+            keywordGeneration: fixture.keyword.generation,
+            after: first.nextCursor,
+            limit: 2
+        )
+
+        let continuedIDs = first.observations.map(\.id) + second.observations.map(\.id)
+        #expect(continuedIDs == originalKeys)
+        #expect(!continuedIDs.contains(insertedKey))
+        #expect(Set(continuedIDs).count == originalKeys.count)
+        #expect(second.nextCursor == nil)
+
+        let reloaded = try await fixture.reader.page(
+            projectGeneration: fixture.project.generation,
+            keywordGeneration: fixture.keyword.generation,
+            limit: 2
+        )
+        #expect(reloaded.observations.first?.id == insertedKey)
+    }
+
+    @Test
+    func continuationKeepsAnUnseenSameDayRowThatMovesAcrossTheBoundary() async throws {
+        let fixture = try await makeFixture()
+        let firstDate = researchHistoryDate(day: 3, hour: 10)
+        let unseenDate = researchHistoryDate(day: 3, hour: 9)
+        let movedDate = researchHistoryDate(day: 3, hour: 11)
+        let olderDate = researchHistoryDate(day: 2)
+        let originalKeys = try await seedObservations(
+            [
+                ObservationSeed(
+                    observedAt: firstDate,
+                    source: .appStoreWeb
+                ),
+                ObservationSeed(
+                    observedAt: unseenDate,
+                    source: .iTunesFallback
+                ),
+                ObservationSeed(
+                    observedAt: olderDate,
+                    source: .appStoreWeb
+                ),
+            ],
+            for: fixture.keyword,
+            in: fixture.backgroundStore
+        )
+
+        let first = try await fixture.reader.page(
+            projectGeneration: fixture.project.generation,
+            keywordGeneration: fixture.keyword.generation,
+            limit: 1
+        )
+        #expect(first.observations.map(\.id) == [originalKeys[0]])
+
+        let movedID = try await moveObservation(
+            id: originalKeys[1],
+            to: movedDate,
+            changingIDTo: "moved-\(originalKeys[1])",
+            in: fixture.backgroundStore
+        )
+        let second = try await fixture.reader.page(
+            projectGeneration: fixture.project.generation,
+            keywordGeneration: fixture.keyword.generation,
+            after: first.nextCursor,
+            limit: 1
+        )
+        let third = try await fixture.reader.page(
+            projectGeneration: fixture.project.generation,
+            keywordGeneration: fixture.keyword.generation,
+            after: second.nextCursor,
+            limit: 1
+        )
+
+        #expect(second.observations.map(\.id) == [movedID])
+        #expect(second.observations.map(\.observedAt) == [movedDate])
+        #expect(third.observations.map(\.id) == [originalKeys[2]])
+        #expect(third.nextCursor == nil)
+    }
+
+    @Test
+    func exactFullFinalPageDoesNotInventAnotherCursor() async throws {
         let fixture = try await makeFixture()
         _ = try await seedObservations(
             [
@@ -66,7 +180,7 @@ struct KeywordResearchHistoryReaderTests {
         )
 
         #expect(page.observations.count == 2)
-        #expect(page.nextOffset == nil)
+        #expect(page.nextCursor == nil)
     }
 
     @Test
@@ -273,16 +387,9 @@ struct KeywordResearchHistoryReaderTests {
     }
 
     @Test
-    func rejectsInvalidPaginationBeforeReadingTheStore() async throws {
+    func rejectsInvalidLimitBeforeReadingTheStore() async throws {
         let fixture = try await makeFixture()
 
-        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
-            _ = try await fixture.reader.page(
-                projectGeneration: fixture.project.generation,
-                keywordGeneration: fixture.keyword.generation,
-                offset: -1
-            )
-        }
         for invalidLimit in [0, KeywordResearchHistoryReader.maximumPageLimit + 1] {
             await #expect(throws: KeywordResearchProjectStoreError.invalidLimit) {
                 _ = try await fixture.reader.page(
@@ -291,14 +398,6 @@ struct KeywordResearchHistoryReaderTests {
                     limit: invalidLimit
                 )
             }
-        }
-        await #expect(throws: KeywordResearchProjectStoreError.invalidOffset) {
-            _ = try await fixture.reader.page(
-                projectGeneration: fixture.project.generation,
-                keywordGeneration: fixture.keyword.generation,
-                offset: Int.max,
-                limit: 1
-            )
         }
     }
 
@@ -433,6 +532,31 @@ private func seedObservations(
             }
             return observation.observationKey
         }
+    }
+}
+
+private func moveObservation(
+    id: String,
+    to observedAt: Date,
+    changingIDTo replacementID: String,
+    in store: BackgroundModelStore
+) async throws -> String {
+    try await store.write { modelContext in
+        var descriptor = FetchDescriptor<KeywordRankingCrawl>(
+            predicate: #Predicate { observation in
+                observation.observationKey == id
+            }
+        )
+        descriptor.fetchLimit = 1
+        guard let observation = try modelContext.fetch(descriptor).first else {
+            throw OpenASOError.unexpectedResponse
+        }
+        observation.observedAt = observedAt
+        observation.observedHour = KeywordRankingCrawl.utcHourBucket(
+            for: observedAt
+        )
+        observation.observationKey = replacementID
+        return replacementID
     }
 }
 
