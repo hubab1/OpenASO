@@ -3,6 +3,7 @@ import Foundation
 enum OpenASOMCPValidation {
     static let maximumStorefrontCount = 250
     static let maximumStorefrontLength = 16
+    static let maximumPlatformLength = 16
     static let maximumHistoryKeywordLength = 200
     static let maximumHistoryKeyLength = 512
 
@@ -31,9 +32,16 @@ enum OpenASOMCPValidation {
 
     static func platform(_ value: String?) throws -> AppPlatform {
         guard let value else { return .iphone }
+        guard value.utf8.count <= maximumPlatformLength else {
+            throw OpenASOError.providerUnavailable(
+                "Platform must not exceed \(maximumPlatformLength) bytes."
+            )
+        }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let platform = AppPlatform(rawValue: normalized) else {
-            throw OpenASOError.providerUnavailable("Unsupported platform '\(value)'.")
+            throw OpenASOError.providerUnavailable(
+                "Unsupported platform. Use iphone, ipad, or mac."
+            )
         }
         return platform
     }

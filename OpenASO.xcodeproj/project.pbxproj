@@ -114,6 +114,7 @@
 		D20C00000000000000000001 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000011 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift */; };
 		D20C00000000000000000032 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000011 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift */; };
 		D22000000000000000000001 /* SearchRanking/KeywordMarketInsightsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */; };
+		D22000000000000000000002 /* SearchRanking/KeywordMarketInsightsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */; };
 		D22000000000000000000003 /* KeywordMarketInsightsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000012 /* KeywordMarketInsightsServiceTests.swift */; };
 		D20C00000000000000000002 /* Persistence/EstimatedKeywordDifficultyPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */; };
 		D20C00000000000000000003 /* Persistence/EstimatedKeywordDifficultyPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */; };
@@ -1292,6 +1293,7 @@
 				C15A00000000000000000120 /* SearchRanking/SearchModels.swift in Sources */,
 				D20A00000000000000000002 /* SearchRanking/KeywordDifficultyEstimator.swift in Sources */,
 				D20C00000000000000000032 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift in Sources */,
+				D22000000000000000000002 /* SearchRanking/KeywordMarketInsightsService.swift in Sources */,
 				C15A00000000000000000121 /* SearchRanking/DefaultAppResolver.swift in Sources */,
 				C15A00000000000000000122 /* Storefront/AppCatalogService.swift in Sources */,
 				C15A00000000000000000123 /* Storefront/AppStoreWebMetadataProvider.swift in Sources */,

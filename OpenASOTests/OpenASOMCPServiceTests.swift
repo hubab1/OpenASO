@@ -938,6 +938,200 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func listKeywordMarketRankingsMapsSharedStoredEvidenceWithoutNetworkWork() async throws {
+        let rankingProvider = StubMCPRankingProvider(pages: [
+            "focus timer::us::iphone": SearchRankingPage(items: [
+                makeRankingItem(
+                    position: 1,
+                    appStoreID: 456,
+                    name: "Competitor",
+                    ratingCount: 1_000
+                ),
+                makeRankingItem(
+                    position: 4,
+                    appStoreID: 123,
+                    name: "Focus Timer",
+                    ratingCount: 100
+                ),
+            ], source: .appStoreWeb),
+            "focus timer::gb::iphone": SearchRankingPage(
+                items: [makeRankingItem(
+                    position: 1,
+                    appStoreID: 456,
+                    name: "Competitor",
+                    ratingCount: 1_000
+                )],
+                source: .appStoreWeb
+            ),
+        ])
+        let context = try MCPTestContext(rankingProvider: rankingProvider)
+        try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["Focus Timer"],
+            storefronts: ["US", "gb"],
+            platform: "iphone"
+        )
+        _ = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us", "gb"],
+            platform: "iphone",
+            limit: 2
+        )
+        let searchCountBeforeRead = (await rankingProvider.searchedKeysSnapshot()).count
+
+        let result = try await context.service.listKeywordMarketRankings(
+            appStoreID: 123,
+            storefronts: ["US", "gb"],
+            platform: "iphone",
+            keyword: " focus timer ",
+            limit: 10,
+            marketEvidenceLimit: 2
+        )
+
+        #expect((await rankingProvider.searchedKeysSnapshot()).count == searchCountBeforeRead)
+        #expect(result.appStoreID == "123")
+        #expect(result.storefronts == ["gb", "us"])
+        #expect(result.platform == "iphone")
+        #expect(result.items.count == 1)
+        #expect(result.items.first?.summary.bestMarket?.storefront == "us")
+        #expect(result.items.first?.summary.bestMarket?.rank == 4)
+        #expect(result.items.first?.summary.notRankedMarketCount == 1)
+        #expect(result.items.first?.markets.map { $0.state } == ["not_ranked", "ranked"])
+        #expect(result.items.first?.markets.last?.rankingEvidence?.source == "appStoreWeb")
+        #expect(result.items.first?.markets.last?.estimatedDifficulty != nil)
+        #expect(result.returnedMarketEvidenceCount == 2)
+        #expect(result.nextCursor == nil)
+    }
+
+    @Test
+    func listKeywordMarketRankingsBoundsPathologicalStoredStrings() async throws {
+        let context = try MCPTestContext()
+        let trackedApp = try context.insertTrackedApp(
+            appStoreID: 123,
+            name: "Focus Timer"
+        )
+        let longKeywordPrefix = String(repeating: "🧪", count: 10_000)
+        for suffix in ["alpha", "beta"] {
+            let keyword = longKeywordPrefix + suffix
+            let query = try KeywordQuery.fetchOrInsert(
+                term: keyword,
+                storefront: "us",
+                platform: .iphone,
+                in: context.modelContext
+            )
+            let track = TrackedAppKeyword(
+                term: keyword,
+                storefront: "us",
+                platform: .iphone,
+                trackedApp: trackedApp,
+                query: query
+            )
+            trackedApp.keywordTracks.append(track)
+            context.modelContext.insert(track)
+            guard suffix == "alpha" else { continue }
+
+            let snapshot = TrackedKeywordDailyRanking(
+                rank: 4,
+                searchedAt: isoDate("2026-05-07T10:00:00Z"),
+                source: .appStoreWeb,
+                resultCount: 20,
+                keywordTrack: track
+            )
+            track.snapshots.append(snapshot)
+            context.modelContext.insert(snapshot)
+            context.modelContext.insert(TrackedKeywordRefreshStatus(
+                trackIdentityKey: track.identityKey,
+                trackCreatedAt: track.createdAt,
+                appStoreID: track.appStoreID,
+                domain: .ranking,
+                message: String(repeating: "Failure details. ", count: 10_000),
+                updatedAt: isoDate("2026-05-07T11:00:00Z")
+            ))
+        }
+        try context.modelContext.save()
+
+        let result = try await context.service.listKeywordMarketRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            limit: 2,
+            marketEvidenceLimit: 2
+        )
+        let item = try #require(result.items.first {
+            $0.markets.contains { $0.rankingFailure != nil }
+        })
+        let market = try #require(item.markets.first)
+        let failure = try #require(market.rankingFailure)
+
+        #expect(result.items.count == 2)
+        #expect(Set(result.items.map(\.keyword)).count == 1)
+        #expect(Set(result.items.map(\.normalizedKeyword)).count == 1)
+        #expect(Set(result.items.map(\.keywordDigest)).count == 2)
+        #expect(result.items.allSatisfy { $0.keywordDigest.utf8.count == 64 })
+        #expect(
+            item.keyword.utf8.count
+                <= OpenASOMCPKeywordMarketOutputLimits.maximumKeywordUTF8Bytes
+        )
+        #expect(
+            item.normalizedKeyword.utf8.count
+                <= OpenASOMCPKeywordMarketOutputLimits.maximumKeywordUTF8Bytes
+        )
+        #expect(
+            failure.message.utf8.count
+                <= OpenASOMCPKeywordMarketOutputLimits.maximumFailureMessageUTF8Bytes
+        )
+        #expect(result.outputWasTruncated)
+        #expect(item.outputWasTruncated)
+        #expect(market.outputWasTruncated)
+        #expect(failure.outputWasTruncated)
+        #expect(result.partialReasons.contains("output_truncated"))
+        #expect(market.state == "failed_with_cached_evidence")
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        let encoded = try encoder.encode(result)
+        let json = String(decoding: encoded, as: UTF8.self)
+        #expect(
+            encoded.count
+                <= OpenASOMCPKeywordMarketOutputLimits.maximumEncodedJSONBytes
+        )
+        #expect(!json.contains("\"trackIdentityKey\""))
+        #expect(!json.contains("\"snapshotKey\""))
+        #expect(json.contains("\"keywordDigest\""))
+    }
+
+    @Test
+    func keywordMarketOutputLimitPreservesValidUnicodeWithinUTF8Budget() {
+        let result = OpenASOMCPKeywordMarketOutputLimits.bounded(
+            String(repeating: "🧪", count: 100),
+            maximumUTF8Bytes: 17
+        )
+
+        #expect(result.wasTruncated)
+        #expect(result.value == "🧪🧪🧪…")
+        #expect(result.value.utf8.count == 15)
+    }
+
+    @Test
+    func platformValidationBoundsInputAndDoesNotEchoInvalidValues() {
+        for value in [
+            "secret",
+            String(repeating: "x", count: 10_000),
+        ] {
+            do {
+                _ = try OpenASOMCPValidation.platform(value)
+                Issue.record("Expected invalid platform input to be rejected")
+            } catch {
+                let message = String(describing: error)
+                #expect(message.utf8.count < 256)
+                #expect(!message.contains(value))
+            }
+        }
+    }
+
+    @Test
     func suggestKeywordsStopsVerificationBeforeToolTimeoutBudget() async throws {
         let rankingProvider = StubMCPRankingProvider(pages: [:])
         let context = try MCPTestContext(rankingProvider: rankingProvider)

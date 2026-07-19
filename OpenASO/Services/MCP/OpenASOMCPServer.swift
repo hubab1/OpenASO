@@ -194,6 +194,30 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "list_keyword_market_rankings":
+            guard
+                let storefronts = try arguments.optionalStringArray("storefronts"),
+                !storefronts.isEmpty
+            else {
+                throw MCPError.invalidParams(
+                    "Missing required string array argument: storefronts"
+                )
+            }
+            let result = try await service.listKeywordMarketRankings(
+                appStoreID: try arguments.requiredInt64("appStoreID"),
+                storefronts: storefronts,
+                platform: try arguments.requiredString("platform"),
+                keyword: try arguments.optionalString("keyword"),
+                limit: try arguments.optionalInt("limit"),
+                marketEvidenceLimit: try arguments.optionalInt("market_evidence_limit"),
+                cursor: try arguments.optionalString("cursor")
+            )
+            return try Self.toolResult(
+                result,
+                maximumJSONByteCount:
+                    OpenASOMCPKeywordMarketOutputLimits.maximumEncodedJSONBytes
+            )
+
         case "get_estimated_keyword_difficulty":
             let result = try await service.getEstimatedKeywordDifficulty(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
@@ -427,8 +451,17 @@ struct OpenASOMCPServerFactory: Sendable {
 private extension OpenASOMCPServerFactory {
     static let jsonMimeType = "application/json"
 
-    static func toolResult<T: Codable>(_ value: T) throws -> CallTool.Result {
+    static func toolResult<T: Codable>(
+        _ value: T,
+        maximumJSONByteCount: Int? = nil
+    ) throws -> CallTool.Result {
         let json = try jsonString(value)
+        if let maximumJSONByteCount,
+           json.utf8.count > maximumJSONByteCount {
+            throw OpenASOError.providerUnavailable(
+                "The bounded MCP response exceeded its encoded byte limit. Narrow the request scope."
+            )
+        }
         let structuredContent = try structuredValue(value)
         return CallTool.Result(
             content: [.text(text: json, annotations: nil, _meta: nil)],
@@ -495,6 +528,18 @@ private extension OpenASOMCPServerFactory {
             tool("list_keywords", "List tracked keywords with latest rank and metrics.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "cursor": .string]) { current, _ in current }
+            ), readOnly: true),
+            tool("list_keyword_market_rankings", "Compare stored local keyword-ranking evidence across an explicit storefront and platform scope. Returns row- and byte-bounded cursor pages from a capped local track scan, with source, freshness, missing-market, failure, cached-evidence, and partial-data states; it does not make network requests.", schema(
+                required: ["appStoreID", "storefronts", "platform"],
+                optional: [
+                    "appStoreID": .integer,
+                    "storefronts": .stringArray,
+                    "platform": .string,
+                    "keyword": .string,
+                    "limit": .integer,
+                    "market_evidence_limit": .integer,
+                    "cursor": .string
+                ]
             ), readOnly: true),
             tool("get_estimated_keyword_difficulty", "Read one stored local estimated-difficulty heuristic with bounded evidence and provenance. This does not call Apple or Apple Ads.", schema(
                 required: ["appStoreID", "keyword", "storefront"],

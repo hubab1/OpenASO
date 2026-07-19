@@ -46,6 +46,12 @@ struct OpenASOMCPServerTests {
         )
         #expect(difficultyTool.annotations.readOnlyHint == true)
         #expect(difficultyTool.description?.contains("local") == true)
+        let marketRankingsTool = try #require(
+            tools.first { $0.name == "list_keyword_market_rankings" }
+        )
+        #expect(marketRankingsTool.annotations.readOnlyHint == true)
+        #expect(marketRankingsTool.annotations.openWorldHint == false)
+        #expect(marketRankingsTool.description?.contains("does not make network requests") == true)
         let rankingRefreshTool = try #require(tools.first { $0.name == "refresh_keyword_rankings" })
         let rankingRefreshDescription = try #require(rankingRefreshTool.description)
         #expect(rankingRefreshDescription.contains("defaults to 20"))
@@ -80,6 +86,33 @@ struct OpenASOMCPServerTests {
         )
         #expect(difficulty.state == "missing")
         #expect(difficulty.evidence.isEmpty)
+
+        let marketRankingsResult = try await client.callTool(
+            name: "list_keyword_market_rankings",
+            arguments: [
+                "appStoreID": 123,
+                "storefronts": ["us", "gb"],
+                "platform": "iphone",
+                "keyword": "focus timer",
+                "market_evidence_limit": 2,
+            ]
+        )
+        #expect(marketRankingsResult.isError == nil)
+        let marketRankingsJSON = try #require(
+            marketRankingsResult.content.first?.textValue
+        )
+        let marketRankings = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPKeywordMarketRankingsResult.self,
+            from: Data(marketRankingsJSON.utf8)
+        )
+        #expect(marketRankings.appStoreID == "123")
+        #expect(marketRankings.storefronts == ["gb", "us"])
+        #expect(marketRankings.items.count == 1)
+        #expect(marketRankings.items.first?.markets.map(\.state) == [
+            "not_tracked", "never_refreshed",
+        ])
+        #expect(marketRankings.returnedMarketEvidenceCount == 2)
+        #expect(marketRankings.isPartial)
 
         let resources = try await client.listResources().resources
         #expect(resources.map(\.uri).contains("openaso://workspace/summary"))
@@ -337,6 +370,39 @@ struct OpenASOMCPServerTests {
             (
                 "list_rating_history",
                 ["appStoreID": 123, "date_from": .int(0)]
+            ),
+            (
+                "list_keyword_market_rankings",
+                [
+                    "appStoreID": 123,
+                    "storefronts": .array([.string("us")]),
+                    "platform": .int(7),
+                ]
+            ),
+            (
+                "list_keyword_market_rankings",
+                [
+                    "appStoreID": 123,
+                    "storefronts": .array([.string("us"), .int(7)]),
+                    "platform": .string("iphone"),
+                ]
+            ),
+            (
+                "list_keyword_market_rankings",
+                [
+                    "appStoreID": 123,
+                    "storefronts": .array([.string("us")]),
+                    "platform": .string("iphone"),
+                    "limit": .string("10"),
+                ]
+            ),
+            (
+                "list_keyword_market_rankings",
+                [
+                    "appStoreID": 123,
+                    "storefronts": .array([.string("us")]),
+                    "platform": .string(String(repeating: "x", count: 10_000)),
+                ]
             ),
         ]
 

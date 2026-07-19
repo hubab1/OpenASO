@@ -967,6 +967,46 @@ final class OpenASOMCPService: Sendable {
     }
   }
 
+  func listKeywordMarketRankings(
+    appStoreID: Int64,
+    storefronts: [String],
+    platform: String,
+    keyword: String? = nil,
+    limit: Int? = nil,
+    marketEvidenceLimit: Int? = nil,
+    cursor: String? = nil
+  ) async throws -> OpenASOMCPKeywordMarketRankingsResult {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let storefronts = try OpenASOMCPValidation.storefronts(storefronts)
+    guard !storefronts.isEmpty else {
+      throw OpenASOError.providerUnavailable(
+        "Market insights require at least one explicit storefront."
+      )
+    }
+    let platform = try OpenASOMCPValidation.platform(platform)
+    let keyword = try keyword.map {
+      try OpenASOMCPValidation.nonEmpty(
+        $0,
+        fieldName: "keyword",
+        maximumLength: OpenASOMCPValidation.maximumHistoryKeywordLength
+      )
+    }
+    let request = try KeywordMarketInsightsRequest(
+      appStoreID: appStoreID,
+      storefronts: storefronts,
+      platform: platform,
+      keyword: keyword,
+      limit: limit,
+      marketEvidenceLimit: marketEvidenceLimit,
+      cursor: cursor
+    )
+    let page = try await KeywordMarketInsightsService(
+      backgroundModelStore: backgroundModelStore,
+      now: now
+    ).insights(for: request)
+    return OpenASOMCPKeywordMarketRankingsResult(page)
+  }
+
   func getEstimatedKeywordDifficulty(
     appStoreID: Int64,
     keyword: String,

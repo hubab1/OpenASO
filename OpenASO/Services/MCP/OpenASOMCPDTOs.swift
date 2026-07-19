@@ -305,6 +305,340 @@ struct OpenASOMCPEstimatedKeywordDifficulty: Codable, Equatable, Sendable {
     let evidence: [OpenASOMCPEstimatedKeywordDifficultyEvidence]
 }
 
+enum OpenASOMCPKeywordMarketOutputLimits {
+    static let maximumEncodedJSONBytes = 2_000_000
+    static let maximumKeywordUTF8Bytes = 200
+    static let maximumFailureMessageUTF8Bytes = 512
+    static let maximumProvenanceUTF8Bytes = 128
+    static let maximumReasonUTF8Bytes = 256
+
+    static func bounded(
+        _ value: String,
+        maximumUTF8Bytes: Int
+    ) -> (value: String, wasTruncated: Bool) {
+        guard value.utf8.count > maximumUTF8Bytes else {
+            return (value, false)
+        }
+        guard maximumUTF8Bytes > 0 else { return ("", true) }
+
+        let suffix = "…"
+        let suffixBytes = suffix.utf8.count
+        let contentLimit = max(maximumUTF8Bytes - suffixBytes, 0)
+        var output = ""
+        var outputBytes = 0
+        for character in value {
+            let fragment = String(character)
+            let fragmentBytes = fragment.utf8.count
+            guard outputBytes + fragmentBytes <= contentLimit else { break }
+            output.append(character)
+            outputBytes += fragmentBytes
+        }
+        if suffixBytes <= maximumUTF8Bytes {
+            output.append(suffix)
+        }
+        return (output, true)
+    }
+
+    static func partialReasons(
+        _ reasons: [String],
+        outputWasTruncated: Bool
+    ) -> [String] {
+        guard outputWasTruncated, !reasons.contains("output_truncated") else {
+            return reasons
+        }
+        return (reasons + ["output_truncated"]).sorted()
+    }
+}
+
+private struct OpenASOMCPKeywordMarketProjection {
+    private(set) var wasTruncated = false
+
+    mutating func string(_ value: String, maximumUTF8Bytes: Int) -> String {
+        let result = OpenASOMCPKeywordMarketOutputLimits.bounded(
+            value,
+            maximumUTF8Bytes: maximumUTF8Bytes
+        )
+        wasTruncated = wasTruncated || result.wasTruncated
+        return result.value
+    }
+
+    mutating func optionalString(
+        _ value: String?,
+        maximumUTF8Bytes: Int
+    ) -> String? {
+        value.map { string($0, maximumUTF8Bytes: maximumUTF8Bytes) }
+    }
+}
+
+struct OpenASOMCPKeywordMarketRankingEvidence: Codable, Equatable, Sendable {
+    let rank: Int?
+    let searchedAt: Date
+    let source: String
+    let resultCount: Int
+}
+
+struct OpenASOMCPKeywordMarketRankingFailure: Codable, Equatable, Sendable {
+    let message: String
+    let updatedAt: Date
+    let outputWasTruncated: Bool
+}
+
+struct OpenASOMCPKeywordMarketDifficulty: Codable, Equatable, Sendable {
+    let state: String
+    let score: Int?
+    let confidenceScore: Int?
+    let confidence: String?
+    let unavailableReason: String?
+    let estimationSource: String
+    let algorithmIdentifier: String
+    let algorithmVersion: Int
+    let rankingSource: String
+    let rankingFetchedAt: Date
+    let computedAt: Date
+    let isStale: Bool
+    let outputWasTruncated: Bool
+}
+
+struct OpenASOMCPKeywordMarket: Codable, Equatable, Identifiable, Sendable {
+    var id: String { storefront }
+
+    let storefront: String
+    let state: String
+    let rankingEvidence: OpenASOMCPKeywordMarketRankingEvidence?
+    let rankingFailure: OpenASOMCPKeywordMarketRankingFailure?
+    let estimatedDifficulty: OpenASOMCPKeywordMarketDifficulty?
+    let isStale: Bool
+    let isPartial: Bool
+    let outputWasTruncated: Bool
+}
+
+struct OpenASOMCPKeywordMarketRankSummary: Codable, Equatable, Sendable {
+    let storefront: String
+    let rank: Int
+    let searchedAt: Date
+    let source: String
+    let state: String
+    let isStale: Bool
+}
+
+struct OpenASOMCPKeywordMarketSummary: Codable, Equatable, Sendable {
+    let requestedMarketCount: Int
+    let trackedMarketCount: Int
+    let availableRankingEvidenceCount: Int
+    let rankedEvidenceMarketCount: Int
+    let freshRankedMarketCount: Int
+    let notRankedMarketCount: Int
+    let neverRefreshedMarketCount: Int
+    let failedWithCachedEvidenceMarketCount: Int
+    let failedWithoutEvidenceMarketCount: Int
+    let notTrackedMarketCount: Int
+    let unavailableMarketCount: Int
+    let staleMarketCount: Int
+    let bestMarket: OpenASOMCPKeywordMarketRankSummary?
+    let worstMarket: OpenASOMCPKeywordMarketRankSummary?
+    let averageRank: Double?
+    let rankSpread: Int?
+}
+
+struct OpenASOMCPKeywordMarketRankings: Codable, Equatable, Identifiable, Sendable {
+    var id: String { [keywordDigest, platform].joined(separator: "::") }
+
+    let keyword: String
+    let normalizedKeyword: String
+    let keywordDigest: String
+    let platform: String
+    let markets: [OpenASOMCPKeywordMarket]
+    let summary: OpenASOMCPKeywordMarketSummary
+    let isPartial: Bool
+    let partialReasons: [String]
+    let outputWasTruncated: Bool
+}
+
+struct OpenASOMCPKeywordMarketRankingsResult: Codable, Equatable, Sendable {
+    let appStoreID: String
+    let storefronts: [String]
+    let platform: String
+    let keyword: String?
+    let items: [OpenASOMCPKeywordMarketRankings]
+    let nextCursor: String?
+    let requestedKeywordLimit: Int
+    let effectiveKeywordLimit: Int
+    let marketEvidenceLimit: Int
+    let returnedMarketEvidenceCount: Int
+    let isPartial: Bool
+    let partialReasons: [String]
+    let staleMarketCount: Int
+    let outputWasTruncated: Bool
+}
+
+extension OpenASOMCPKeywordMarketRankingsResult {
+    init(_ page: KeywordMarketInsightsPage) {
+        let projectedItems = page.items.map(OpenASOMCPKeywordMarketRankings.init)
+        let wasTruncated = projectedItems.contains(where: \.outputWasTruncated)
+        appStoreID = String(page.scope.appStoreID)
+        storefronts = page.scope.storefronts
+        platform = page.scope.platform.rawValue
+        keyword = page.scope.keyword
+        items = projectedItems
+        nextCursor = page.nextCursor
+        requestedKeywordLimit = page.requestedKeywordLimit
+        effectiveKeywordLimit = page.effectiveKeywordLimit
+        marketEvidenceLimit = page.marketEvidenceLimit
+        returnedMarketEvidenceCount = page.returnedMarketEvidenceCount
+        isPartial = page.isPartial || wasTruncated
+        partialReasons = OpenASOMCPKeywordMarketOutputLimits.partialReasons(
+            page.partialReasons.map(\.rawValue),
+            outputWasTruncated: wasTruncated
+        )
+        staleMarketCount = page.staleMarketCount
+        outputWasTruncated = wasTruncated
+    }
+}
+
+private extension OpenASOMCPKeywordMarketRankings {
+    init(_ insight: KeywordMarketInsight) {
+        var projection = OpenASOMCPKeywordMarketProjection()
+        let projectedKeyword = projection.string(
+            insight.keyword,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumKeywordUTF8Bytes
+        )
+        let projectedNormalizedKeyword = projection.string(
+            insight.normalizedKeyword,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumKeywordUTF8Bytes
+        )
+        let projectedMarkets = insight.markets.map(OpenASOMCPKeywordMarket.init)
+        let wasTruncated = projection.wasTruncated
+            || projectedMarkets.contains(where: \.outputWasTruncated)
+        keyword = projectedKeyword
+        normalizedKeyword = projectedNormalizedKeyword
+        keywordDigest = KeywordMarketInsightsStableIdentity.keywordDigest(
+            insight.normalizedKeyword
+        )
+        platform = insight.platform.rawValue
+        markets = projectedMarkets
+        summary = OpenASOMCPKeywordMarketSummary(insight.summary)
+        isPartial = insight.isPartial || wasTruncated
+        partialReasons = OpenASOMCPKeywordMarketOutputLimits.partialReasons(
+            insight.partialReasons.map(\.rawValue),
+            outputWasTruncated: wasTruncated
+        )
+        outputWasTruncated = wasTruncated
+    }
+}
+
+private extension OpenASOMCPKeywordMarket {
+    init(_ market: KeywordMarketInsightMarket) {
+        let projectedFailure = market.rankingFailure.map(
+            OpenASOMCPKeywordMarketRankingFailure.init
+        )
+        let projectedDifficulty = market.estimatedDifficulty.map(
+            OpenASOMCPKeywordMarketDifficulty.init
+        )
+        let wasTruncated = projectedFailure?.outputWasTruncated == true
+            || projectedDifficulty?.outputWasTruncated == true
+        storefront = market.storefront
+        state = market.state.rawValue
+        rankingEvidence = market.rankingEvidence.map(
+            OpenASOMCPKeywordMarketRankingEvidence.init
+        )
+        rankingFailure = projectedFailure
+        estimatedDifficulty = projectedDifficulty
+        isStale = market.isStale
+        isPartial = market.isPartial || wasTruncated
+        outputWasTruncated = wasTruncated
+    }
+}
+
+private extension OpenASOMCPKeywordMarketRankingEvidence {
+    init(_ evidence: KeywordMarketInsightRankingEvidence) {
+        rank = evidence.rank
+        searchedAt = evidence.searchedAt
+        source = evidence.source.rawValue
+        resultCount = evidence.resultCount
+    }
+}
+
+private extension OpenASOMCPKeywordMarketRankingFailure {
+    init(_ failure: KeywordMarketInsightRankingFailure) {
+        let projection = OpenASOMCPKeywordMarketOutputLimits.bounded(
+            failure.message,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumFailureMessageUTF8Bytes
+        )
+        message = projection.value
+        updatedAt = failure.updatedAt
+        outputWasTruncated = projection.wasTruncated
+    }
+}
+
+private extension OpenASOMCPKeywordMarketDifficulty {
+    init(_ difficulty: KeywordMarketInsightDifficulty) {
+        var projection = OpenASOMCPKeywordMarketProjection()
+        state = projection.string(
+            difficulty.state,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumProvenanceUTF8Bytes
+        )
+        score = difficulty.score
+        confidenceScore = difficulty.confidenceScore
+        confidence = projection.optionalString(
+            difficulty.confidence,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumProvenanceUTF8Bytes
+        )
+        unavailableReason = projection.optionalString(
+            difficulty.unavailableReason,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumReasonUTF8Bytes
+        )
+        estimationSource = projection.string(
+            difficulty.estimationSource,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumProvenanceUTF8Bytes
+        )
+        algorithmIdentifier = projection.string(
+            difficulty.algorithmIdentifier,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumProvenanceUTF8Bytes
+        )
+        algorithmVersion = difficulty.algorithmVersion
+        rankingSource = projection.string(
+            difficulty.rankingSource,
+            maximumUTF8Bytes: OpenASOMCPKeywordMarketOutputLimits.maximumProvenanceUTF8Bytes
+        )
+        rankingFetchedAt = difficulty.rankingFetchedAt
+        computedAt = difficulty.computedAt
+        isStale = difficulty.isStale
+        outputWasTruncated = projection.wasTruncated
+    }
+}
+
+private extension OpenASOMCPKeywordMarketSummary {
+    init(_ summary: KeywordMarketInsightSummary) {
+        requestedMarketCount = summary.requestedMarketCount
+        trackedMarketCount = summary.trackedMarketCount
+        availableRankingEvidenceCount = summary.availableRankingEvidenceCount
+        rankedEvidenceMarketCount = summary.rankedEvidenceMarketCount
+        freshRankedMarketCount = summary.freshRankedMarketCount
+        notRankedMarketCount = summary.notRankedMarketCount
+        neverRefreshedMarketCount = summary.neverRefreshedMarketCount
+        failedWithCachedEvidenceMarketCount = summary.failedWithCachedEvidenceMarketCount
+        failedWithoutEvidenceMarketCount = summary.failedWithoutEvidenceMarketCount
+        notTrackedMarketCount = summary.notTrackedMarketCount
+        unavailableMarketCount = summary.unavailableMarketCount
+        staleMarketCount = summary.staleMarketCount
+        bestMarket = summary.bestMarket.map(OpenASOMCPKeywordMarketRankSummary.init)
+        worstMarket = summary.worstMarket.map(OpenASOMCPKeywordMarketRankSummary.init)
+        averageRank = summary.averageRank
+        rankSpread = summary.rankSpread
+    }
+}
+
+private extension OpenASOMCPKeywordMarketRankSummary {
+    init(_ summary: KeywordMarketInsightRankSummary) {
+        storefront = summary.storefront
+        rank = summary.rank
+        searchedAt = summary.searchedAt
+        source = summary.source.rawValue
+        state = summary.state.rawValue
+        isStale = summary.isStale
+    }
+}
+
 struct OpenASOMCPStoredRankedApp: Codable, Identifiable, Sendable {
     let id: String
     let position: Int
