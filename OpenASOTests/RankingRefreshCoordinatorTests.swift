@@ -396,6 +396,9 @@ struct RankingRefreshCoordinatorTests {
         let storeApp = try catalogService.upsertStoreApp(
             from: rankingItem,
             storefrontCode: "gb",
+            rankingSource: .iTunesFallback,
+            fetchedAt: .now,
+            requestedPlatform: .iphone,
             in: modelContext
         )
 
@@ -440,6 +443,651 @@ struct RankingRefreshCoordinatorTests {
         #expect(storefrontMetadata.first?.storefront == "gb")
         #expect(storefrontMetadata.first?.subtitle == "World's Fastest Delay Alerts")
         #expect(screenshots.first?.urlString == "https://example.com/flighty-iphone.png")
+    }
+
+    @Test
+    func rankingPersistenceKeepsProviderProvenanceTimestampsAndCanonicalPlatform() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let trackedApp = TrackedApp(
+            appStoreID: 100,
+            bundleID: "com.example.target",
+            name: "Target",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let macTrack = try makeTrackedAppKeyword(
+            term: "notes",
+            platform: .mac,
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        let ipadTrack = try makeTrackedAppKeyword(
+            term: "notepad",
+            platform: .ipad,
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        trackedApp.keywordTracks.append(contentsOf: [macTrack, ipadTrack])
+        modelContext.insert(trackedApp)
+        modelContext.insert(macTrack)
+        modelContext.insert(ipadTrack)
+        try modelContext.save()
+
+        let catalogService = AppCatalogService(appResolver: StubAppResolver())
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: StubRankingProvider(
+                page: SearchRankingPage(items: [], source: .iTunesFallback)
+            ),
+            appCatalogService: catalogService
+        )
+        let webDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let fallbackDate = webDate.addingTimeInterval(60)
+        let item = SearchRankingItem(
+            position: 1,
+            appStoreID: 200,
+            bundleID: "com.example.result",
+            name: "Result",
+            sellerName: "Example",
+            supportedLanguageCodes: ["EN"],
+            screenshotURLs: ["https://example.com/result.png"],
+            ipadScreenshotURLs: ["https://example.com/result-ipad.png"],
+            ratingCount: 42,
+            averageRating: 4.5,
+            platform: .mac
+        )
+
+        _ = try coordinator.persistRankingPage(
+            RankingRefreshPageResult(
+                request: RankingRefreshRequest(track: macTrack),
+                page: SearchRankingPage(items: [item], source: .appStoreWeb),
+                searchedAt: webDate,
+                observedHour: nil,
+                submissionCount: 1,
+                winningCount: 1,
+                confidence: "single_source"
+            ),
+            in: modelContext,
+            scheduleMetadataEnrichment: false
+        )
+
+        var storeApp = try #require(modelContext.fetch(FetchDescriptor<StoreApp>()).first {
+            $0.appStoreID == 200
+        })
+        var metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first {
+            $0.appStoreID == 200
+        })
+        var screenshot = try #require(modelContext.fetch(FetchDescriptor<AppStoreScreenshot>()).first {
+            $0.appStoreID == 200
+        })
+        var latestRating = try #require(modelContext.fetch(FetchDescriptor<LatestAppRating>()).first {
+            $0.appStoreID == 200
+        })
+        var dailyRating = try #require(modelContext.fetch(FetchDescriptor<AppDailyRating>()).first {
+            $0.appStoreID == 200
+        })
+
+        #expect(storeApp.defaultPlatform == .mac)
+        #expect(storeApp.supportedLanguageCodesSource == .appStoreWebSearch)
+        #expect(storeApp.supportedLanguageCodesFetchedAt == webDate)
+        #expect(storeApp.lastMetadataRefreshAt == webDate)
+        #expect(metadata.defaultPlatform == .mac)
+        #expect(metadata.source == .appStoreWebSearch)
+        #expect(metadata.lastFetchedAt == webDate)
+        #expect(screenshot.source == .appStoreWebSearch)
+        #expect(screenshot.lastFetchedAt == webDate)
+        #expect(latestRating.source == .appStorePage)
+        #expect(latestRating.observedAt == webDate)
+        #expect(dailyRating.source == .appStorePage)
+        #expect(dailyRating.observedAt == webDate)
+        #expect(storeApp.storefrontLatest.contains { $0 === latestRating })
+        #expect(storeApp.ratingSnapshots.contains { $0 === dailyRating })
+
+        let fallbackItem = SearchRankingItem(
+            position: 1,
+            appStoreID: 200,
+            bundleID: "com.example.result",
+            name: "Result",
+            sellerName: "Example",
+            supportedLanguageCodes: ["FR"],
+            screenshotURLs: ["https://example.com/result.png"],
+            ratingCount: 43,
+            averageRating: 4.6,
+            platform: .ipad
+        )
+
+        _ = try coordinator.persistRankingPage(
+            RankingRefreshPageResult(
+                request: RankingRefreshRequest(track: ipadTrack),
+                page: SearchRankingPage(items: [fallbackItem], source: .iTunesFallback),
+                searchedAt: fallbackDate,
+                observedHour: nil,
+                submissionCount: 1,
+                winningCount: 1,
+                confidence: "single_source"
+            ),
+            in: modelContext,
+            scheduleMetadataEnrichment: false
+        )
+
+        storeApp = try #require(modelContext.fetch(FetchDescriptor<StoreApp>()).first { $0.appStoreID == 200 })
+        metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first { $0.appStoreID == 200 })
+        let screenshots = try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>()).filter {
+            $0.appStoreID == 200
+        }
+        screenshot = try #require(screenshots.first { $0.platformRaw == "iphone" })
+        let retainedIPadScreenshot = try #require(screenshots.first { $0.platformRaw == "ipad" })
+        latestRating = try #require(modelContext.fetch(FetchDescriptor<LatestAppRating>()).first { $0.appStoreID == 200 })
+        dailyRating = try #require(modelContext.fetch(FetchDescriptor<AppDailyRating>()).first { $0.appStoreID == 200 })
+
+        #expect(storeApp.defaultPlatform == .mac)
+        #expect(storeApp.supportedLanguageCodes == ["FR"])
+        #expect(storeApp.supportedLanguageCodesSource == .iTunesSearch)
+        #expect(storeApp.supportedLanguageCodesFetchedAt == fallbackDate)
+        #expect(metadata.defaultPlatform == .mac)
+        #expect(metadata.source == .iTunesSearch)
+        #expect(metadata.lastFetchedAt == fallbackDate)
+        #expect(screenshot.source == .iTunesSearch)
+        #expect(screenshot.lastFetchedAt == fallbackDate)
+        #expect(retainedIPadScreenshot.source == .appStoreWebSearch)
+        #expect(retainedIPadScreenshot.lastFetchedAt == webDate)
+        #expect(latestRating.source == .iTunesSearch)
+        #expect(latestRating.observedAt == fallbackDate)
+        #expect(latestRating.ratingCount == 43)
+        #expect(dailyRating.source == .iTunesSearch)
+        #expect(dailyRating.observedAt == fallbackDate)
+        #expect(dailyRating.ratingCount == 43)
+        #expect(storeApp.storefrontLatest.contains { $0 === latestRating })
+        #expect(storeApp.ratingSnapshots.contains { $0 === dailyRating })
+
+        let olderWebItem = SearchRankingItem(
+            position: 1,
+            appStoreID: 200,
+            bundleID: "com.example.result",
+            name: "Stale Result",
+            sellerName: "Example",
+            supportedLanguageCodes: ["DE"],
+            screenshotURLs: ["https://example.com/stale.png"],
+            ratingCount: 99,
+            averageRating: 1,
+            platform: .mac
+        )
+        _ = try coordinator.persistRankingPage(
+            RankingRefreshPageResult(
+                request: RankingRefreshRequest(track: macTrack),
+                page: SearchRankingPage(items: [olderWebItem], source: .appStoreWeb),
+                searchedAt: webDate.addingTimeInterval(30),
+                observedHour: nil,
+                submissionCount: 1,
+                winningCount: 1,
+                confidence: "single_source"
+            ),
+            in: modelContext,
+            scheduleMetadataEnrichment: false
+        )
+
+        storeApp = try #require(modelContext.fetch(FetchDescriptor<StoreApp>()).first { $0.appStoreID == 200 })
+        metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first { $0.appStoreID == 200 })
+        latestRating = try #require(modelContext.fetch(FetchDescriptor<LatestAppRating>()).first { $0.appStoreID == 200 })
+        dailyRating = try #require(modelContext.fetch(FetchDescriptor<AppDailyRating>()).first { $0.appStoreID == 200 })
+        #expect(storeApp.name == "Result")
+        #expect(storeApp.supportedLanguageCodes == ["FR"])
+        #expect(storeApp.supportedLanguageCodesSource == .iTunesSearch)
+        #expect(storeApp.supportedLanguageCodesFetchedAt == fallbackDate)
+        #expect(metadata.source == .iTunesSearch)
+        #expect(metadata.lastFetchedAt == fallbackDate)
+        #expect(latestRating.ratingCount == 43)
+        #expect(latestRating.source == .iTunesSearch)
+        #expect(latestRating.observedAt == fallbackDate)
+        #expect(dailyRating.ratingCount == 43)
+        #expect(dailyRating.source == .iTunesSearch)
+        #expect(dailyRating.observedAt == fallbackDate)
+    }
+
+    @Test
+    func rankingCatalogRejectsOlderMetadataEvidence() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let catalogService = AppCatalogService(appResolver: StubAppResolver())
+        let newerDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let olderDate = newerDate.addingTimeInterval(-60)
+        let newerItem = SearchRankingItem(
+            position: 1,
+            appStoreID: 300,
+            bundleID: "com.example.new",
+            name: "New Evidence",
+            sellerName: "Example",
+            screenshotURLs: ["https://example.com/new.png"],
+            platform: .iphone
+        )
+        let olderItem = SearchRankingItem(
+            position: 1,
+            appStoreID: 300,
+            bundleID: "com.example.old",
+            name: "Old Evidence",
+            sellerName: "Old Example",
+            screenshotURLs: ["https://example.com/old.png"],
+            platform: .ipad
+        )
+
+        _ = try catalogService.upsertStoreApp(
+            from: newerItem,
+            storefrontCode: "us",
+            rankingSource: .appStoreWeb,
+            fetchedAt: newerDate,
+            requestedPlatform: .iphone,
+            in: modelContext
+        )
+        _ = try catalogService.upsertStoreApp(
+            from: olderItem,
+            storefrontCode: "us",
+            rankingSource: .iTunesFallback,
+            fetchedAt: olderDate,
+            requestedPlatform: .ipad,
+            in: modelContext
+        )
+        try modelContext.save()
+
+        let storeApp = try #require(modelContext.fetch(FetchDescriptor<StoreApp>()).first { $0.appStoreID == 300 })
+        let metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first { $0.appStoreID == 300 })
+        let screenshots = try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>()).filter { $0.appStoreID == 300 }
+
+        #expect(storeApp.name == "New Evidence")
+        #expect(storeApp.defaultPlatform == .iphone)
+        #expect(storeApp.lastMetadataRefreshAt == newerDate)
+        #expect(metadata.name == "New Evidence")
+        #expect(metadata.source == .appStoreWebSearch)
+        #expect(metadata.defaultPlatform == .iphone)
+        #expect(metadata.lastFetchedAt == newerDate)
+        #expect(screenshots.map(\.urlString) == ["https://example.com/new.png"])
+        #expect(screenshots.first?.source == .appStoreWebSearch)
+        #expect(screenshots.first?.lastFetchedAt == newerDate)
+    }
+
+    @Test
+    func shallowWebRankingEvidenceDoesNotSuppressDetailEnrichment() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let catalogService = AppCatalogService(appResolver: StubAppResolver())
+        let detailDate = Date.now.addingTimeInterval(-60)
+        let richFallbackItem = SearchRankingItem(
+            position: 1,
+            appStoreID: 350,
+            bundleID: "com.example.rich",
+            name: "Rich Result",
+            subtitle: "Useful subtitle",
+            sellerName: "Example",
+            version: "1.0",
+            descriptionText: "A complete retained description.",
+            supportedLanguageCodes: ["EN"],
+            screenshotURLs: ["https://example.com/rich-phone.png"],
+            platform: .iphone
+        )
+        _ = try catalogService.upsertStoreApp(
+            from: richFallbackItem,
+            storefrontCode: "us",
+            rankingSource: .iTunesFallback,
+            fetchedAt: detailDate,
+            requestedPlatform: .iphone,
+            in: modelContext
+        )
+        let shallowWebItem = SearchRankingItem(
+            position: 1,
+            appStoreID: 350,
+            bundleID: "com.example.rich",
+            name: "Rich Result",
+            sellerName: "Example",
+            screenshotURLs: ["https://example.com/rich-phone.png"],
+            platform: .ipad
+        )
+        _ = try catalogService.upsertStoreApp(
+            from: shallowWebItem,
+            storefrontCode: "us",
+            rankingSource: .appStoreWeb,
+            fetchedAt: .now,
+            requestedPlatform: .ipad,
+            in: modelContext
+        )
+        try modelContext.save()
+
+        var metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first {
+            $0.appStoreID == 350
+        })
+        #expect(metadata.source == .iTunesSearch)
+        #expect(metadata.lastFetchedAt == detailDate)
+        #expect(try catalogService.shouldEnrichStorefrontMetadata(
+            appStoreID: 350,
+            storefrontCode: "us",
+            platform: .ipad,
+            freshnessInterval: 5 * 24 * 60 * 60,
+            in: modelContext
+        ))
+
+        _ = try catalogService.upsertStoreApp(
+            from: AppStoreWebMetadata(
+                appStoreID: 350,
+                storefront: "us",
+                name: "Rich Result",
+                subtitle: "Useful subtitle",
+                sellerName: "Example",
+                averageRating: nil,
+                ratingCount: nil,
+                screenshotGroups: [
+                    AppStoreWebScreenshotGroup(
+                        platformRaw: "ipad",
+                        displayTypeRaw: "tablet",
+                        screenshots: [
+                            AppStoreWebScreenshot(
+                                urlString: "https://example.com/rich-ipad.png",
+                                width: 2_048,
+                                height: 2_732
+                            )
+                        ]
+                    )
+                ]
+            ),
+            storefrontCode: "us",
+            in: modelContext
+        )
+        try modelContext.save()
+
+        metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first {
+            $0.appStoreID == 350
+        })
+        #expect(metadata.source == .appStoreWeb)
+        #expect(!(try catalogService.shouldEnrichStorefrontMetadata(
+            appStoreID: 350,
+            storefrontCode: "us",
+            platform: .ipad,
+            freshnessInterval: 5 * 24 * 60 * 60,
+            in: modelContext
+        )))
+    }
+
+    @Test
+    func pureWebDetailBoundsRetriesWhenOptionalFieldsAreUnavailable() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let catalogService = AppCatalogService(appResolver: StubAppResolver())
+
+        _ = try catalogService.upsertStoreApp(
+            from: AppStoreWebMetadata(
+                appStoreID: 351,
+                storefront: "us",
+                name: "Web-only Result",
+                subtitle: nil,
+                sellerName: "Example",
+                averageRating: nil,
+                ratingCount: nil,
+                screenshotGroups: []
+            ),
+            storefrontCode: "us",
+            in: modelContext
+        )
+        try modelContext.save()
+
+        let storeApp = try #require(modelContext.fetch(FetchDescriptor<StoreApp>()).first {
+            $0.appStoreID == 351
+        })
+        let metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first {
+            $0.appStoreID == 351
+        })
+        #expect(storeApp.supportedLanguageCodes.isEmpty)
+        #expect(storeApp.supportedLanguageCodesFetchedAt == nil)
+        #expect(metadata.subtitle == nil)
+        #expect(metadata.screenshots.isEmpty)
+        #expect(metadata.source == .appStoreWeb)
+        #expect(!(try catalogService.shouldEnrichStorefrontMetadata(
+            appStoreID: 351,
+            storefrontCode: "us",
+            platform: .ipad,
+            freshnessInterval: 5 * 24 * 60 * 60,
+            in: modelContext
+        )))
+    }
+
+    @Test
+    func sparseWebRankingDoesNotDowngradeRichSamePlatformScreenshots() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let catalogService = AppCatalogService(appResolver: StubAppResolver())
+
+        _ = try catalogService.upsertStoreApp(
+            from: AppStoreWebMetadata(
+                appStoreID: 352,
+                storefront: "us",
+                name: "Detailed Result",
+                subtitle: "Detailed subtitle",
+                sellerName: "Example",
+                averageRating: nil,
+                ratingCount: nil,
+                screenshotGroups: [
+                    AppStoreWebScreenshotGroup(
+                        platformRaw: "iphone",
+                        displayTypeRaw: "phone_6_9",
+                        screenshots: [
+                            AppStoreWebScreenshot(
+                                urlString: "https://example.com/detail-phone.png",
+                                width: 1_320,
+                                height: 2_868
+                            )
+                        ]
+                    )
+                ]
+            ),
+            storefrontCode: "us",
+            in: modelContext
+        )
+        try modelContext.save()
+
+        var metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first {
+            $0.appStoreID == 352
+        })
+        let detailDate = metadata.lastFetchedAt
+        let sparseDate = detailDate.addingTimeInterval(60)
+        _ = try catalogService.upsertStoreApp(
+            from: SearchRankingItem(
+                position: 1,
+                appStoreID: 352,
+                bundleID: "com.example.detail",
+                name: "Sparse Search Result",
+                sellerName: "Example",
+                screenshotURLs: ["https://example.com/sparse-phone.png"],
+                platform: .iphone
+            ),
+            storefrontCode: "us",
+            rankingSource: .appStoreWeb,
+            fetchedAt: sparseDate,
+            requestedPlatform: .iphone,
+            in: modelContext
+        )
+        try modelContext.save()
+
+        metadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first {
+            $0.appStoreID == 352
+        })
+        let screenshot = try #require(modelContext.fetch(FetchDescriptor<AppStoreScreenshot>()).first {
+            $0.appStoreID == 352 && $0.platformRaw == "iphone"
+        })
+        #expect(metadata.name == "Detailed Result")
+        #expect(metadata.subtitle == "Detailed subtitle")
+        #expect(metadata.source == .appStoreWeb)
+        #expect(metadata.lastFetchedAt == detailDate)
+        #expect(screenshot.urlString == "https://example.com/detail-phone.png")
+        #expect(screenshot.displayTypeRaw == "phone_6_9")
+        #expect(screenshot.width == 1_320)
+        #expect(screenshot.height == 2_868)
+        #expect(screenshot.source == .appStoreWeb)
+        #expect(screenshot.lastFetchedAt <= sparseDate)
+    }
+
+    @Test
+    func newerSparsePlatformScreenshotsRejectDelayedFallbackEvidence() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let catalogService = AppCatalogService(appResolver: StubAppResolver())
+
+        _ = try catalogService.upsertStoreApp(
+            from: AppStoreWebMetadata(
+                appStoreID: 353,
+                storefront: "us",
+                name: "Detailed Result",
+                subtitle: "Detailed subtitle",
+                sellerName: "Example",
+                averageRating: nil,
+                ratingCount: nil,
+                screenshotGroups: [
+                    AppStoreWebScreenshotGroup(
+                        platformRaw: "iphone",
+                        displayTypeRaw: "phone_6_9",
+                        screenshots: [
+                            AppStoreWebScreenshot(
+                                urlString: "https://example.com/detail-phone.png",
+                                width: 1_320,
+                                height: 2_868
+                            )
+                        ]
+                    )
+                ]
+            ),
+            storefrontCode: "us",
+            in: modelContext
+        )
+        try modelContext.save()
+
+        let detailMetadata = try #require(modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).first {
+            $0.appStoreID == 353
+        })
+        let sparseDate = detailMetadata.lastFetchedAt.addingTimeInterval(120)
+        let delayedFallbackDate = detailMetadata.lastFetchedAt.addingTimeInterval(60)
+        _ = try catalogService.upsertStoreApp(
+            from: SearchRankingItem(
+                position: 1,
+                appStoreID: 353,
+                bundleID: "com.example.detail",
+                name: "Sparse Search Result",
+                sellerName: "Example",
+                ipadScreenshotURLs: ["https://example.com/new-ipad.png"],
+                platform: .ipad
+            ),
+            storefrontCode: "us",
+            rankingSource: .appStoreWeb,
+            fetchedAt: sparseDate,
+            requestedPlatform: .ipad,
+            in: modelContext
+        )
+        _ = try catalogService.upsertStoreApp(
+            from: SearchRankingItem(
+                position: 1,
+                appStoreID: 353,
+                bundleID: "com.example.detail",
+                name: "Delayed Fallback Result",
+                sellerName: "Example",
+                ipadScreenshotURLs: ["https://example.com/old-ipad.png"],
+                platform: .ipad
+            ),
+            storefrontCode: "us",
+            rankingSource: .iTunesFallback,
+            fetchedAt: delayedFallbackDate,
+            requestedPlatform: .ipad,
+            in: modelContext
+        )
+        try modelContext.save()
+
+        let screenshots = try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>()).filter {
+            $0.appStoreID == 353
+        }
+        let ipadScreenshot = try #require(screenshots.first { $0.platformRaw == "ipad" })
+        let iphoneScreenshot = try #require(screenshots.first { $0.platformRaw == "iphone" })
+        #expect(ipadScreenshot.urlString == "https://example.com/new-ipad.png")
+        #expect(ipadScreenshot.source == .appStoreWebSearch)
+        #expect(ipadScreenshot.lastFetchedAt == sparseDate)
+        #expect(iphoneScreenshot.urlString == "https://example.com/detail-phone.png")
+        #expect(iphoneScreenshot.width == 1_320)
+        #expect(!screenshots.contains { $0.urlString == "https://example.com/old-ipad.png" })
+    }
+
+    @Test
+    func keywordSuggestionsUseTheNewestRankingEvidenceSource() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let trackedApp = TrackedApp(
+            appStoreID: 400,
+            bundleID: "com.example.target",
+            name: "Target",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+
+        func insertEvidence(
+            keyword: String,
+            source: RankingSource,
+            observedAt: Date,
+            position: Int
+        ) throws {
+            let query = try KeywordQuery.fetchOrInsert(
+                term: keyword,
+                storefront: "us",
+                platform: .iphone,
+                in: modelContext
+            )
+            let observation = KeywordRankingCrawl(
+                keyword: keyword,
+                storefront: "us",
+                platform: .iphone,
+                observedAt: observedAt,
+                source: source,
+                resultCount: 10,
+                query: query
+            )
+            let item = KeywordAppRanking(
+                position: position,
+                appStoreID: trackedApp.appStoreID,
+                bundleID: trackedApp.bundleID,
+                name: trackedApp.name,
+                sellerName: trackedApp.sellerName,
+                observation: observation
+            )
+            observation.items.append(item)
+            query.observations.append(observation)
+            modelContext.insert(observation)
+            modelContext.insert(item)
+        }
+
+        try insertEvidence(
+            keyword: "calendar",
+            source: .iTunesFallback,
+            observedAt: now.addingTimeInterval(-86_400),
+            position: 3
+        )
+        try insertEvidence(
+            keyword: "planner",
+            source: .iTunesFallback,
+            observedAt: now.addingTimeInterval(-2 * 86_400),
+            position: 2
+        )
+        try insertEvidence(
+            keyword: "planner",
+            source: .appStoreWeb,
+            observedAt: now.addingTimeInterval(-86_400),
+            position: 4
+        )
+        try modelContext.save()
+
+        let suggestions = try KeywordSuggestionService(now: { now }).suggestions(
+            for: trackedApp,
+            in: modelContext
+        )
+        let byKeyword = Dictionary(uniqueKeysWithValues: suggestions.keywordSuggestions.map {
+            ($0.keyword, $0)
+        })
+
+        #expect(byKeyword["calendar"]?.source == .iTunesFallback)
+        #expect(byKeyword["planner"]?.source == .appStoreWeb)
+        #expect(byKeyword["planner"]?.currentObservedRank == 4)
+        #expect(byKeyword["planner"]?.bestObservedRank == 2)
     }
 
     @Test

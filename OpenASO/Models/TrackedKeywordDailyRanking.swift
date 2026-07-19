@@ -48,7 +48,7 @@ final class TrackedKeywordDailyRanking {
     }
 
     var source: RankingSource {
-        get { RankingSource(rawValue: sourceRaw) ?? .appStoreWeb }
+        get { RankingSource(rawValue: sourceRaw) ?? .iTunesFallback }
         set { sourceRaw = newValue.rawValue }
     }
 

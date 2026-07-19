@@ -221,6 +221,77 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func appServicesUsesWebRankingFirstAndFallsBackWithObservedContext() async throws {
+        let defaults = Self.makeDefaults()
+        let observationClock = RefreshObservationClock(nowNanoseconds: { 1_000 })
+        let recorder = RefreshMetricsRecorder(clock: observationClock)
+        var requestedURLs: [String] = []
+        let transport = MockHTTPClient { request in
+            let url = try #require(request.url)
+            requestedURLs.append(url.absoluteString)
+
+            switch url.host() {
+            case "apps.apple.com":
+                #expect(url.absoluteString == "https://apps.apple.com/us/iphone/search?term=notes")
+                return (
+                    Data(),
+                    makeHTTPURLResponse(url: url, statusCode: 503)
+                )
+            case "itunes.apple.com":
+                #expect(url.absoluteString == "https://itunes.apple.com/search?term=notes&entity=software&country=us&limit=10")
+                return (
+                    Data(#"{"results":[{"trackId":321,"bundleId":"com.example.fallback","trackName":"Fallback App","sellerName":"Example"}]}"#.utf8),
+                    makeHTTPURLResponse(url: url, statusCode: 200)
+                )
+            default:
+                throw OpenASOError.providerUnavailable("Unexpected ranking URL.")
+            }
+        }
+        let services = AppServices(
+            httpClient: transport,
+            defaults: defaults,
+            keychain: InMemoryKeychainService(),
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false,
+            refreshObservationClock: observationClock,
+            refreshMetricsRecorder: recorder,
+            providerRequestGateMode: .disabled
+        )
+        let runID = await recorder.begin(
+            trigger: .manual,
+            workspace: .keywords,
+            requestedTrackCount: 1,
+            requestedStorefrontCount: 1
+        )
+
+        let page = try await RefreshObservationScope.$runID.withValue(runID) {
+            try await services.rankingProvider.search(
+                keyword: "notes",
+                storefrontCode: "US",
+                platform: .iphone,
+                limit: 10
+            )
+        }
+        let summary = try #require(await recorder.finish(runID: runID))
+        let webProvider = try #require(summary.providers[.appStoreWeb])
+        let fallbackProvider = try #require(summary.providers[.iTunesStore])
+
+        #expect(requestedURLs.count == 2)
+        #expect(page.items.map(\.appStoreID) == [321])
+        #expect(page.source == .iTunesFallback)
+        #expect(page.fallbackContext == SearchRankingFailureContext(
+            provider: .appStoreWeb,
+            category: .httpStatus(503)
+        ))
+        #expect(webProvider.requestCount == 1)
+        #expect(webProvider.endpointCounts[.rankingSearch] == 1)
+        #expect(webProvider.resultCounts[.serverFailure] == 1)
+        #expect(fallbackProvider.requestCount == 1)
+        #expect(fallbackProvider.endpointCounts[.rankingSearch] == 1)
+        #expect(fallbackProvider.resultCounts[.success] == 1)
+    }
+
+    @Test
     func savedKeychainItemsLoadWhenPresenceFlagsExist() throws {
         let defaults = Self.makeDefaults()
         let keychain = InMemoryKeychainService()
