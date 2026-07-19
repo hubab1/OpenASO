@@ -199,6 +199,7 @@ final class KeywordMetricsService: Sendable {
                 switch popularityResult {
                 case .success(let popularities):
                     for track in storefrontTracks {
+                        guard !Task.isCancelled else { return outcomes }
                         let result: AppleAdsPopularityResult
                         if let popularity = popularities[AppleAdsCMPopularityClient.normalizedKeywordKey(track.term)] {
                             result = .success(popularity)
@@ -215,13 +216,13 @@ final class KeywordMetricsService: Sendable {
                         )
                     }
                 case .missingCredentials:
-                    Self.applyPopularityResult(
+                    guard Self.applyPopularityResult(
                         .missingCredentials,
                         to: storefrontTracks,
                         tracksByQueryKey: tracksByQueryKey,
                         in: modelContext,
                         outcomes: &outcomes
-                    )
+                    ) else { return outcomes }
                 case .expiredSession(let attemptedSession):
                     webSessionStore.markReconnectRequired(for: attemptedSession)
                     let skippedTracks = storefrontGroups[groupIndex...].flatMap(\.tracks)
@@ -236,13 +237,13 @@ final class KeywordMetricsService: Sendable {
                 case .cancelled:
                     return outcomes
                 case .failure(let message):
-                    Self.applyPopularityResult(
+                    guard Self.applyPopularityResult(
                         .failure(message),
                         to: storefrontTracks,
                         tracksByQueryKey: tracksByQueryKey,
                         in: modelContext,
                         outcomes: &outcomes
-                    )
+                    ) else { return outcomes }
                 }
             }
         }
@@ -564,14 +565,16 @@ final class KeywordMetricsService: Sendable {
         }
     }
 
+    @discardableResult
     private static func applyPopularityResult(
         _ result: AppleAdsPopularityResult,
         to tracks: [TrackedAppKeyword],
         tracksByQueryKey: [String: [TrackedAppKeyword]],
         in modelContext: ModelContext,
         outcomes: inout [KeywordMetricsRefreshOutcome]
-    ) {
+    ) -> Bool {
         for track in tracks {
+            guard !Task.isCancelled else { return false }
             let payload = makeAppleAdsMetrics(popularityResult: result)
             applyMetricsPayloadSafely(
                 payload,
@@ -581,6 +584,7 @@ final class KeywordMetricsService: Sendable {
                 outcomes: &outcomes
             )
         }
+        return true
     }
 
     private static func applyMetricsPayload(
