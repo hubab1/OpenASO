@@ -16,12 +16,17 @@ final class AppStorefrontRatingService: Sendable {
         in modelContext: ModelContext,
         progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil
     ) async -> [AppStorefrontRatingRefreshOutcome] {
-        let outcomes = await fetchRatingOutcomes(
-            appStoreID: storeApp.appStoreID,
-            appName: storeApp.name,
-            storefronts: storefronts,
-            progress: progress
-        )
+        let outcomes: [AppStorefrontRatingRefreshOutcome]
+        do {
+            outcomes = try await fetchRatingOutcomes(
+                appStoreID: storeApp.appStoreID,
+                appName: storeApp.name,
+                storefronts: storefronts,
+                progress: progress
+            )
+        } catch {
+            return []
+        }
 
         for outcome in outcomes {
             persist(outcome, for: storeApp, in: modelContext)
@@ -38,7 +43,8 @@ final class AppStorefrontRatingService: Sendable {
         appName: String,
         storefronts: [String],
         progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil
-    ) async -> [AppStorefrontRatingRefreshOutcome] {
+    ) async throws -> [AppStorefrontRatingRefreshOutcome] {
+        try Task.checkCancellation()
         var outcomes: [AppStorefrontRatingRefreshOutcome] = []
         let targetStorefronts = Self.normalizedStorefronts(from: storefronts)
 
@@ -59,7 +65,9 @@ final class AppStorefrontRatingService: Sendable {
         var completedCount = 0
         var failureCount = 0
         await progress?(0, targetStorefronts.count, 0)
+        try Task.checkCancellation()
         for storefront in targetStorefronts {
+            try Task.checkCancellation()
             do {
                 OpenASOLog.ratings.debug(
                     "Refreshing ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public)"
@@ -68,11 +76,13 @@ final class AppStorefrontRatingService: Sendable {
                     appStoreID: appStoreID,
                     storefront: storefront
                 )
+                try Task.checkCancellation()
                 OpenASOLog.ratings.info(
                     "Fetched ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) ratingCount=\(result.ratingCount.map(String.init) ?? "nil", privacy: .public) averageRating=\(result.averageRating.map { String(format: "%.2f", $0) } ?? "nil", privacy: .public)"
                 )
                 outcomes.append(AppStorefrontRatingRefreshOutcome(storefront: storefront, result: result, error: nil))
             } catch let unavailable as AppStorefrontRatingStorefrontUnavailable {
+                try Task.checkCancellation()
                 OpenASOLog.ratings.info(
                     "Ratings unavailable in storefront storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) reason=\(unavailable.localizedDescription, privacy: .public)"
                 )
@@ -84,6 +94,7 @@ final class AppStorefrontRatingService: Sendable {
                     clearsStoredRatings: true
                 ))
             } catch let mismatch as AppStorefrontRatingStorefrontMismatch {
+                try Task.checkCancellation()
                 let mappedError = OpenASOError.providerUnavailable(mismatch.localizedDescription)
                 OpenASOLog.ratings.error(
                     "Ratings storefront mismatch storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) actualStorefront=\(mismatch.actual, privacy: .public) finalURL=\(mismatch.finalURL ?? "nil", privacy: .public)"
@@ -96,6 +107,9 @@ final class AppStorefrontRatingService: Sendable {
                 ))
                 failureCount += 1
             } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 let mappedError = OpenASOError.map(error)
                 OpenASOLog.ratings.error(
                     "Ratings refresh failed storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) error=\(mappedError.localizedDescription, privacy: .public)"
@@ -109,6 +123,7 @@ final class AppStorefrontRatingService: Sendable {
             }
             completedCount += 1
             await progress?(completedCount, targetStorefronts.count, failureCount)
+            try Task.checkCancellation()
         }
 
         return outcomes

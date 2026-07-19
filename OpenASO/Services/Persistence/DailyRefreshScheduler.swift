@@ -104,11 +104,22 @@ final class DailyRefreshScheduler {
                 refreshRatingsReviews: shouldRefreshRatingsReviews
             )
             var failureCount = 0
+            var refreshedCount = 0
             var didAttemptRatingsReviews = false
             var didRefreshRatingsReviewsSuccessfully = shouldRefreshRatingsReviews
 
             for request in requests {
                 let result = await appDetailRefresh(request)
+                refreshedCount += 1
+
+                if result.wasCancelled {
+                    failureCount += 1
+                    if request.refreshRatings || request.refreshReviews {
+                        didAttemptRatingsReviews = true
+                        didRefreshRatingsReviewsSuccessfully = false
+                    }
+                    break
+                }
                 if result.firstError != nil {
                     failureCount += 1
                 }
@@ -129,7 +140,7 @@ final class DailyRefreshScheduler {
 
             lastOutcome = DailyRefreshOutcome(
                 triggeredAt: now,
-                refreshedCount: requests.count,
+                refreshedCount: refreshedCount,
                 failureCount: failureCount
             )
         } catch {

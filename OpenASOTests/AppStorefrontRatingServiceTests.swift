@@ -485,6 +485,29 @@ struct AppStorefrontRatingServiceTests {
     }
 
     @Test
+    func providerCancellationIsAnOrdinaryStorefrontFailure() async throws {
+        var requestedURLs: [String] = []
+        let client = MockHTTPClient { request in
+            requestedURLs.append(try #require(request.url?.absoluteString))
+            throw URLError(.cancelled)
+        }
+        let service = AppStorefrontRatingService(httpClient: client)
+
+        let outcomes = try await service.fetchRatingOutcomes(
+            appStoreID: 6_448_311_069,
+            appName: "ChatGPT",
+            storefronts: ["US", "gb"]
+        )
+
+        #expect(outcomes.map(\.storefront) == ["gb", "us"])
+        #expect(outcomes.allSatisfy { $0.result == nil && $0.error != nil })
+        #expect(requestedURLs == [
+            "https://itunes.apple.com/lookup?id=6448311069&country=gb",
+            "https://itunes.apple.com/lookup?id=6448311069&country=us"
+        ])
+    }
+
+    @Test
     func refreshRatingsRejectsRedirectedStorefrontAndClearsStaleRows() async throws {
         let container = try makeRatingContainer()
         let modelContext = ModelContext(container)

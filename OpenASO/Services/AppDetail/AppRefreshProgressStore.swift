@@ -1,6 +1,10 @@
 import Foundation
 import Observation
 
+enum AppRefreshProgressScope {
+    @TaskLocal static var refreshID: UUID?
+}
+
 enum AppRefreshPhase: Sendable {
     case preparing
     case refreshingKeywords
@@ -169,15 +173,21 @@ final class AppRefreshProgressStore: Sendable {
         pendingAppRefreshCount = max(0, pendingAppRefreshCount - 1)
     }
 
-    func beginRefresh(_ request: AppDetailRefreshRequest) {
+    func cancelPendingAppRefresh() {
+        pendingAppRefreshCount = max(0, pendingAppRefreshCount - 1)
+    }
+
+    @discardableResult
+    func beginRefresh(_ request: AppDetailRefreshRequest) -> UUID {
         clearTask?.cancel()
         clearTask = nil
 
+        let refreshID = UUID()
         let storefrontCount = request.storefrontSelection.codes.count
         let usesAppStoreConnectReviews = request.appStoreConnectCredentials.isComplete
             && request.app.bundleID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         activeRefresh = AppRefreshProgress(
-            id: UUID(),
+            id: refreshID,
             appStoreID: request.app.appStoreID,
             appName: request.app.name,
             trigger: request.trigger,
@@ -190,14 +200,17 @@ final class AppRefreshProgressStore: Sendable {
             completedAt: nil,
             errorMessage: nil
         )
+        return refreshID
     }
 
-    func beginAppleAdsPopularityRefresh(total: Int) {
+    @discardableResult
+    func beginAppleAdsPopularityRefresh(total: Int) -> UUID {
         clearTask?.cancel()
         clearTask = nil
 
+        let refreshID = UUID()
         activeRefresh = AppRefreshProgress(
-            id: UUID(),
+            id: refreshID,
             appStoreID: 0,
             appName: "Apple Ads popularity",
             trigger: "apple_ads_connection",
@@ -210,10 +223,15 @@ final class AppRefreshProgressStore: Sendable {
             completedAt: nil,
             errorMessage: nil
         )
+        return refreshID
     }
 
-    func updatePhase(_ phase: AppRefreshPhase) {
+    func updatePhase(
+        _ phase: AppRefreshPhase,
+        refreshID: UUID? = AppRefreshProgressScope.refreshID
+    ) {
         guard var refresh = activeRefresh else { return }
+        guard let refreshID, refresh.id == refreshID else { return }
         refresh.phase = phase
         activeRefresh = refresh
     }
@@ -223,9 +241,11 @@ final class AppRefreshProgressStore: Sendable {
         status: AppRefreshStepStatus,
         completed: Int,
         total: Int,
-        failureCount: Int
+        failureCount: Int,
+        refreshID: UUID? = AppRefreshProgressScope.refreshID
     ) {
         guard var refresh = activeRefresh else { return }
+        guard let refreshID, refresh.id == refreshID else { return }
         let progress = AppRefreshStepProgress(
             status: status,
             completed: max(0, min(completed, total)),
@@ -245,8 +265,9 @@ final class AppRefreshProgressStore: Sendable {
         activeRefresh = refresh
     }
 
-    func finish(error: OpenASOError?) {
+    func finish(refreshID: UUID, error: OpenASOError?) {
         guard var refresh = activeRefresh else { return }
+        guard refresh.id == refreshID else { return }
         refresh.phase = error == nil ? .completed : .failed
         refresh.completedAt = .now
         refresh.errorMessage = error?.localizedDescription
@@ -256,6 +277,13 @@ final class AppRefreshProgressStore: Sendable {
         refresh.reviewsProgress = finalized(refresh.reviewsProgress)
         activeRefresh = refresh
         scheduleClear(refreshID: refresh.id)
+    }
+
+    func cancelRefresh(refreshID: UUID) {
+        guard activeRefresh?.id == refreshID else { return }
+        clearTask?.cancel()
+        clearTask = nil
+        activeRefresh = nil
     }
 
     private func finalized(_ progress: AppRefreshStepProgress) -> AppRefreshStepProgress {

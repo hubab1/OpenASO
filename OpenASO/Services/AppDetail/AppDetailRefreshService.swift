@@ -100,53 +100,80 @@ struct AppDetailRefreshResult: Sendable {
     let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
     let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
     let firstError: OpenASOError?
+    let wasCancelled: Bool
+
+    init(
+        keywordOutcomes: [KeywordBackgroundRefreshOutcome],
+        ratingOutcomes: [AppStorefrontRatingRefreshOutcome],
+        reviewOutcomes: [AppStorefrontReviewRefreshOutcome],
+        firstError: OpenASOError?,
+        wasCancelled: Bool = false
+    ) {
+        self.keywordOutcomes = keywordOutcomes
+        self.ratingOutcomes = ratingOutcomes
+        self.reviewOutcomes = reviewOutcomes
+        self.firstError = firstError
+        self.wasCancelled = wasCancelled
+    }
+
+    static let cancelled = AppDetailRefreshResult(
+        keywordOutcomes: [],
+        ratingOutcomes: [],
+        reviewOutcomes: [],
+        firstError: nil,
+        wasCancelled: true
+    )
 }
 
 private actor AppDetailRefreshQueue {
-    private struct Job: Sendable {
-        let request: AppDetailRefreshRequest
-        let operation: @Sendable (AppDetailRefreshRequest) async -> AppDetailRefreshResult
-        let continuation: CheckedContinuation<AppDetailRefreshResult, Never>
+    private struct Waiter: Sendable {
+        let jobID: UUID
+        let continuation: CheckedContinuation<Void, any Error>
     }
 
-    private var pendingJobs: [Job] = []
-    private var isDraining = false
+    private var activeJobID: UUID?
+    private var waiters: [Waiter] = []
 
-    func enqueue(
-        _ request: AppDetailRefreshRequest,
-        operation: @escaping @Sendable (AppDetailRefreshRequest) async -> AppDetailRefreshResult
-    ) async -> AppDetailRefreshResult {
-        await withCheckedContinuation { continuation in
-            pendingJobs.append(Job(
-                request: request,
-                operation: operation,
-                continuation: continuation
-            ))
-            startDrainingIfNeeded()
+    func acquire(jobID: UUID) async throws {
+        try Task.checkCancellation()
+        guard activeJobID != nil else {
+            activeJobID = jobID
+            return
+        }
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (
+                continuation: CheckedContinuation<Void, any Error>
+            ) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                waiters.append(Waiter(jobID: jobID, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelPending(jobID: jobID) }
         }
     }
 
-    private func startDrainingIfNeeded() {
-        guard !isDraining else { return }
-        isDraining = true
-        Task {
-            await drain()
+    func release(jobID: UUID) {
+        guard activeJobID == jobID else {
+            assertionFailure("Attempted to release a refresh queue permit owned by another job.")
+            return
         }
+        guard !waiters.isEmpty else {
+            activeJobID = nil
+            return
+        }
+        let next = waiters.removeFirst()
+        activeJobID = next.jobID
+        next.continuation.resume()
     }
 
-    private func nextJob() -> Job? {
-        guard !pendingJobs.isEmpty else {
-            isDraining = false
-            return nil
-        }
-        return pendingJobs.removeFirst()
-    }
-
-    private func drain() async {
-        while let job = nextJob() {
-            let result = await job.operation(job.request)
-            job.continuation.resume(returning: result)
-        }
+    private func cancelPending(jobID: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.jobID == jobID }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
     }
 }
 
@@ -188,16 +215,59 @@ final class AppDetailRefreshService: Sendable {
     }
 
     func refresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
-        await progressStore?.queuePendingAppRefresh()
-        return await refreshQueue.enqueue(request) { [self] request in
-            await progressStore?.beginPendingAppRefresh()
-            return await performObservedRefresh(request)
+        do {
+            return try await refreshCancellable(request)
+        } catch {
+            if Task.isCancelled {
+                return .cancelled
+            }
+            return AppDetailRefreshResult(
+                keywordOutcomes: [],
+                ratingOutcomes: [],
+                reviewOutcomes: [],
+                firstError: OpenASOError.map(error)
+            )
         }
     }
 
-    private func performObservedRefresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
+    func refreshCancellable(
+        _ request: AppDetailRefreshRequest
+    ) async throws -> AppDetailRefreshResult {
+        try Task.checkCancellation()
+        let jobID = UUID()
+        await progressStore?.queuePendingAppRefresh()
+
+        do {
+            try Task.checkCancellation()
+            try await refreshQueue.acquire(jobID: jobID)
+        } catch {
+            await progressStore?.cancelPendingAppRefresh()
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
+
+        await progressStore?.beginPendingAppRefresh()
+        do {
+            try Task.checkCancellation()
+            let result = try await performObservedRefresh(request)
+            await refreshQueue.release(jobID: jobID)
+            return result
+        } catch {
+            await refreshQueue.release(jobID: jobID)
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
+    }
+
+    private func performObservedRefresh(
+        _ request: AppDetailRefreshRequest
+    ) async throws -> AppDetailRefreshResult {
         guard let refreshMetricsRecorder else {
-            return await performRefresh(request)
+            return try await performRefresh(request)
         }
 
         let runID = await refreshMetricsRecorder.begin(
@@ -208,66 +278,110 @@ final class AppDetailRefreshService: Sendable {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             }.filter { !$0.isEmpty }).count
         )
-        return await RefreshObservationScope.$runID.withValue(runID) {
-            let result = await performRefresh(request)
+        do {
+            try Task.checkCancellation()
+            let result = try await RefreshObservationScope.$runID.withValue(runID) {
+                try await performRefresh(request)
+            }
             await refreshMetricsRecorder.finish(runID: runID)
             return result
+        } catch {
+            if Task.isCancelled {
+                await refreshMetricsRecorder.recordCancellation(runID: runID)
+            }
+            await refreshMetricsRecorder.finish(runID: runID)
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
         }
     }
 
-    private func performRefresh(_ request: AppDetailRefreshRequest) async -> AppDetailRefreshResult {
-        await progressStore?.beginRefresh(request)
-        let keywordRefreshResult: KeywordRefreshResult
-        let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
-        let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
+    private func performRefresh(
+        _ request: AppDetailRefreshRequest
+    ) async throws -> AppDetailRefreshResult {
+        let refreshID = await progressStore?.beginRefresh(request)
+        return try await AppRefreshProgressScope.$refreshID.withValue(refreshID) {
+            do {
+                try Task.checkCancellation()
+                let keywordRefreshResult: KeywordRefreshResult
+                let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
+                let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
 
-        switch request.workspace {
-        case .keywords:
-            keywordRefreshResult = await refreshKeywords(request)
-            if request.refreshRatings || request.refreshReviews {
-                (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
-            } else {
-                await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                ratingOutcomes = []
-                reviewOutcomes = []
+                switch request.workspace {
+                case .keywords:
+                    keywordRefreshResult = try await refreshKeywords(request)
+                    if request.refreshRatings || request.refreshReviews {
+                        (ratingOutcomes, reviewOutcomes) = try await refreshRatingsAndReviews(request)
+                    } else {
+                        await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                        await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                        ratingOutcomes = []
+                        reviewOutcomes = []
+                    }
+                case .ratings:
+                    if request.refreshRatings || request.refreshReviews {
+                        (ratingOutcomes, reviewOutcomes) = try await refreshRatingsAndReviews(request)
+                    } else {
+                        await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                        await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
+                        ratingOutcomes = []
+                        reviewOutcomes = []
+                    }
+                    keywordRefreshResult = try await refreshKeywords(request)
+                }
+
+                try Task.checkCancellation()
+                let firstError = firstRefreshError(
+                    workspace: request.workspace,
+                    keywordOutcomes: keywordRefreshResult.outcomes,
+                    keywordMetricsError: keywordRefreshResult.metricsError,
+                    ratingOutcomes: ratingOutcomes,
+                    reviewOutcomes: reviewOutcomes
+                )
+                await progressStore?.updatePhase(.finishing)
+                if let refreshID {
+                    await progressStore?.finish(refreshID: refreshID, error: firstError)
+                }
+
+                return AppDetailRefreshResult(
+                    keywordOutcomes: keywordRefreshResult.outcomes,
+                    ratingOutcomes: ratingOutcomes,
+                    reviewOutcomes: reviewOutcomes,
+                    firstError: firstError
+                )
+            } catch {
+                if Task.isCancelled {
+                    if let refreshID {
+                        await progressStore?.cancelRefresh(refreshID: refreshID)
+                    }
+                    throw CancellationError()
+                }
+
+                let mappedError = OpenASOError.map(error)
+                if let refreshID {
+                    await progressStore?.finish(refreshID: refreshID, error: mappedError)
+                }
+                return AppDetailRefreshResult(
+                    keywordOutcomes: [],
+                    ratingOutcomes: [],
+                    reviewOutcomes: [],
+                    firstError: mappedError
+                )
             }
-        case .ratings:
-            if request.refreshRatings || request.refreshReviews {
-                (ratingOutcomes, reviewOutcomes) = await refreshRatingsAndReviews(request)
-            } else {
-                await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                ratingOutcomes = []
-                reviewOutcomes = []
-            }
-            keywordRefreshResult = await refreshKeywords(request)
         }
-
-        let firstError = firstRefreshError(
-            workspace: request.workspace,
-            keywordOutcomes: keywordRefreshResult.outcomes,
-            keywordMetricsError: keywordRefreshResult.metricsError,
-            ratingOutcomes: ratingOutcomes,
-            reviewOutcomes: reviewOutcomes
-        )
-        await progressStore?.updatePhase(.finishing)
-        await progressStore?.finish(error: firstError)
-
-        return AppDetailRefreshResult(
-            keywordOutcomes: keywordRefreshResult.outcomes,
-            ratingOutcomes: ratingOutcomes,
-            reviewOutcomes: reviewOutcomes,
-            firstError: firstError
-        )
     }
 
-    private func refreshKeywords(_ request: AppDetailRefreshRequest) async -> KeywordRefreshResult {
+    private func refreshKeywords(
+        _ request: AppDetailRefreshRequest
+    ) async throws -> KeywordRefreshResult {
+        try Task.checkCancellation()
         guard request.refreshKeywords, !request.trackIdentityKeys.isEmpty else {
             await progressStore?.updateStep(.keywords, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await progressStore?.updateStep(.metrics, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await recordStage(.rankings, attemptedCount: 0, failureCount: 0, isSkipped: true)
             await recordStage(.keywordMetrics, attemptedCount: 0, failureCount: 0, isSkipped: true)
+            try Task.checkCancellation()
             return KeywordRefreshResult(outcomes: [], metricsError: nil)
         }
 
@@ -276,6 +390,7 @@ final class AppDetailRefreshService: Sendable {
         do {
             await progressStore?.updatePhase(.refreshingKeywords)
             let (rankingRequests, missingOutcomes) = try await backgroundModelStore.read { modelContext in
+                try Task.checkCancellation()
                 let targetIdentityKeys = request.trackIdentityKeys
                 let descriptor = FetchDescriptor<TrackedAppKeyword>(
                     predicate: #Predicate { track in
@@ -289,6 +404,7 @@ final class AppDetailRefreshService: Sendable {
                     .map { KeywordBackgroundRefreshOutcome(trackIdentityKey: $0, error: .appNotFound) }
                 return (tracks.map(RankingRefreshRequest.init), missingOutcomes)
             }
+            try Task.checkCancellation()
 
             let missingFailureCount = missingOutcomes.count
             let rankingRequestGroups = RankingRequestGroup.normalizedGroups(for: rankingRequests)
@@ -307,7 +423,7 @@ final class AppDetailRefreshService: Sendable {
                 )
             }
 
-            let keywordOutcomes = await refreshRankings(
+            let keywordOutcomes = try await refreshRankings(
                 rankingRequestGroups,
                 trigger: request.trigger,
                 missingFailureCount: missingFailureCount,
@@ -320,11 +436,13 @@ final class AppDetailRefreshService: Sendable {
                 failureCount: combinedKeywordOutcomes.filter { $0.error != nil }.count
             )
             didRecordRankingStage = true
+            try Task.checkCancellation()
 
             let metricsError: OpenASOError?
             if request.refreshMetrics {
                 await progressStore?.updatePhase(.refreshingMetrics)
                 do {
+                    try Task.checkCancellation()
                     let metricResult = try await keywordMetricsService.refreshMetricsBatch(
                         for: rankingRequests.map(\.identityKey),
                         popularityContextAppStoreID: request.popularityContextAppStoreID,
@@ -345,8 +463,12 @@ final class AppDetailRefreshService: Sendable {
                         attemptedCount: metricResult.outcomes.count,
                         failureCount: metricResult.failureCount
                     )
+                    try Task.checkCancellation()
                     metricsError = metricResult.firstErrorMessage.map(OpenASOError.providerUnavailable)
                 } catch {
+                    if Task.isCancelled {
+                        throw CancellationError()
+                    }
                     let mappedError = OpenASOError.map(error)
                     let attemptedCount = rankingRequests.count
                     await progressStore?.updateStep(
@@ -371,11 +493,15 @@ final class AppDetailRefreshService: Sendable {
                 metricsError = nil
             }
 
+            try Task.checkCancellation()
             return KeywordRefreshResult(
                 outcomes: combinedKeywordOutcomes,
                 metricsError: metricsError
             )
         } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             let mappedError = OpenASOError.map(error)
             await progressStore?.updateStep(
                 .keywords,
@@ -413,7 +539,8 @@ final class AppDetailRefreshService: Sendable {
         trigger: String,
         missingFailureCount: Int,
         totalRequestedCount: Int
-    ) async -> [KeywordBackgroundRefreshOutcome] {
+    ) async throws -> [KeywordBackgroundRefreshOutcome] {
+        try Task.checkCancellation()
         guard !requestGroups.isEmpty else { return [] }
 
         let resolvedTrackCount = requestGroups.reduce(into: 0) { count, group in
@@ -439,21 +566,25 @@ final class AppDetailRefreshService: Sendable {
         var completedCount = 0
         var failureCount = 0
 
-        func flushPendingPageResults() async {
+        func flushPendingPageResults() async throws {
             guard !pendingPageResults.isEmpty else { return }
 
+            try Task.checkCancellation()
             let pageResults = pendingPageResults
             pendingPageResults.removeAll(keepingCapacity: true)
-            let batchOutcome = await persistRankingPageBatch(pageResults)
+            let batchOutcome = try await persistRankingPageBatch(pageResults)
             outcomes.append(contentsOf: batchOutcome.outcomes)
             statsRebuildRequests.formUnion(batchOutcome.statsRebuildRequests)
             failureCount += batchOutcome.failureCount
             for pageResult in batchOutcome.successfulPageResults {
+                try Task.checkCancellation()
                 refreshCoordinator.scheduleTopRankingMetadataEnrichment(for: pageResult)
             }
         }
 
-        await withTaskGroup(of: (RankingRequestGroup, Result<RankingRefreshPageResult, OpenASOError>).self) { group in
+        try await withThrowingTaskGroup(
+            of: (RankingRequestGroup, Result<RankingRefreshPageResult, OpenASOError>).self
+        ) { group in
             var nextRequestGroupIndex = 0
             var activeFetchCount = 0
 
@@ -464,19 +595,24 @@ final class AppDetailRefreshService: Sendable {
                 }
 
                 let requestGroup = requestGroups[nextRequestGroupIndex]
+                guard group.addTaskUnlessCancelled(operation: {
+                    try Task.checkCancellation()
+                    let result = await rankingPageFetcher(requestGroup.providerRequest)
+                    try Task.checkCancellation()
+                    return (requestGroup, result)
+                }) else {
+                    return
+                }
                 nextRequestGroupIndex += 1
                 activeFetchCount += 1
-                group.addTask {
-                    let result = await rankingPageFetcher(requestGroup.providerRequest)
-                    return (requestGroup, result)
-                }
             }
 
             for _ in 0..<min(Self.rankingFetchConcurrency, requestGroups.count) {
                 enqueueNextFetchIfPossible()
             }
 
-            while let (requestGroup, result) = await group.next() {
+            while let (requestGroup, result) = try await group.next() {
+                try Task.checkCancellation()
                 activeFetchCount -= 1
 
                 switch result {
@@ -484,18 +620,27 @@ final class AppDetailRefreshService: Sendable {
                     for targetPageResult in requestGroup.pageResults(fanningOut: pageResult) {
                         pendingPageResults.append(targetPageResult)
                         if pendingPageResults.count >= Self.rankingPersistenceBatchSize {
-                            await flushPendingPageResults()
+                            try await flushPendingPageResults()
                         }
                     }
                 case .failure(let error):
                     for targetRequest in requestGroup.targetRequests {
-                        try? await backgroundModelStore.write { modelContext in
-                            _ = try refreshCoordinator.recordRefreshFailure(
-                                identityKey: targetRequest.identityKey,
-                                error: error,
-                                in: modelContext,
-                                saveChanges: false
-                            )
+                        try Task.checkCancellation()
+                        do {
+                            try await backgroundModelStore.write { modelContext in
+                                try Task.checkCancellation()
+                                _ = try refreshCoordinator.recordRefreshFailure(
+                                    identityKey: targetRequest.identityKey,
+                                    error: error,
+                                    in: modelContext,
+                                    saveChanges: false
+                                )
+                            }
+                            try Task.checkCancellation()
+                        } catch {
+                            if Task.isCancelled {
+                                throw CancellationError()
+                            }
                         }
                         outcomes.append(KeywordBackgroundRefreshOutcome(
                             trackIdentityKey: targetRequest.identityKey,
@@ -515,12 +660,14 @@ final class AppDetailRefreshService: Sendable {
                     total: totalRequestedCount,
                     failureCount: failureCount + missingFailureCount
                 )
+                try Task.checkCancellation()
 
                 enqueueNextFetchIfPossible()
             }
         }
 
-        await flushPendingPageResults()
+        try Task.checkCancellation()
+        try await flushPendingPageResults()
         await progressStore?.updateStep(
             .keywords,
             status: failureCount + missingFailureCount > 0 ? .failed : .completed,
@@ -530,25 +677,38 @@ final class AppDetailRefreshService: Sendable {
         )
 
         if !statsRebuildRequests.isEmpty {
+            try Task.checkCancellation()
             let requests = statsRebuildRequests
-            try? await backgroundModelStore.write { modelContext in
-                refreshCoordinator.rebuildDerivedStats(for: requests, in: modelContext)
+            do {
+                try await backgroundModelStore.write { modelContext in
+                    try Task.checkCancellation()
+                    refreshCoordinator.rebuildDerivedStats(for: requests, in: modelContext)
+                }
+                try Task.checkCancellation()
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
             }
         }
 
+        try Task.checkCancellation()
         await refreshCoordinator.captureKeywordRefreshCompleted(
             trigger: trigger,
             trackCount: resolvedTrackCount,
             failureCount: outcomes.filter { $0.error != nil }.count
         )
+        try Task.checkCancellation()
         return outcomes
     }
 
     private func persistRankingPageBatch(
         _ pageResults: [RankingRefreshPageResult]
-    ) async -> RankingPersistenceBatchOutcome {
+    ) async throws -> RankingPersistenceBatchOutcome {
+        try Task.checkCancellation()
         do {
-            return try await backgroundModelStore.write { modelContext in
+            let outcome = try await backgroundModelStore.write { modelContext in
+                try Task.checkCancellation()
                 var outcomes: [KeywordBackgroundRefreshOutcome] = []
                 var statsRebuildRequests = Set<RankingStatsRebuildRequest>()
                 var successfulPageResults: [RankingRefreshPageResult] = []
@@ -591,16 +751,29 @@ final class AppDetailRefreshService: Sendable {
                     successfulPageResults: successfulPageResults
                 )
             }
+            try Task.checkCancellation()
+            return outcome
         } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             let mappedError = OpenASOError.map(error)
-            try? await backgroundModelStore.write { modelContext in
-                for pageResult in pageResults {
-                    _ = try? refreshCoordinator.recordRefreshFailure(
-                        identityKey: pageResult.request.identityKey,
-                        error: mappedError,
-                        in: modelContext,
-                        saveChanges: false
-                    )
+            do {
+                try await backgroundModelStore.write { modelContext in
+                    try Task.checkCancellation()
+                    for pageResult in pageResults {
+                        _ = try? refreshCoordinator.recordRefreshFailure(
+                            identityKey: pageResult.request.identityKey,
+                            error: mappedError,
+                            in: modelContext,
+                            saveChanges: false
+                        )
+                    }
+                }
+                try Task.checkCancellation()
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
                 }
             }
             return RankingPersistenceBatchOutcome(
@@ -615,7 +788,8 @@ final class AppDetailRefreshService: Sendable {
 
     private func refreshRatingsAndReviews(
         _ request: AppDetailRefreshRequest
-    ) async -> ([AppStorefrontRatingRefreshOutcome], [AppStorefrontReviewRefreshOutcome]) {
+    ) async throws -> ([AppStorefrontRatingRefreshOutcome], [AppStorefrontReviewRefreshOutcome]) {
+        try Task.checkCancellation()
         guard request.refreshRatings || request.refreshReviews else {
             await progressStore?.updateStep(.ratings, status: .skipped, completed: 0, total: 0, failureCount: 0)
             await progressStore?.updateStep(.reviews, status: .skipped, completed: 0, total: 0, failureCount: 0)
@@ -631,7 +805,7 @@ final class AppDetailRefreshService: Sendable {
             let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
             if request.refreshRatings {
                 await progressStore?.updatePhase(.refreshingRatings)
-                ratingOutcomes = await appStorefrontRatingService.fetchRatingOutcomes(
+                ratingOutcomes = try await appStorefrontRatingService.fetchRatingOutcomes(
                     appStoreID: request.app.appStoreID,
                     appName: request.app.name,
                     storefronts: storefrontCodes,
@@ -645,6 +819,7 @@ final class AppDetailRefreshService: Sendable {
                         )
                     }
                 )
+                try Task.checkCancellation()
                 try await persistRatingOutcomes(ratingOutcomes, for: request.app)
                 await recordStage(
                     .ratings,
@@ -652,6 +827,7 @@ final class AppDetailRefreshService: Sendable {
                     failureCount: ratingOutcomes.filter { $0.error != nil }.count
                 )
                 didRecordRatingsStage = true
+                try Task.checkCancellation()
             } else {
                 await progressStore?.updateStep(.ratings, status: .skipped, completed: 0, total: 0, failureCount: 0)
                 await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
@@ -661,6 +837,7 @@ final class AppDetailRefreshService: Sendable {
 
             let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
             if request.refreshReviews {
+                try Task.checkCancellation()
                 await progressStore?.updatePhase(.refreshingReviews)
                 reviewOutcomes = try await refreshReviews(
                     request: request,
@@ -680,10 +857,15 @@ final class AppDetailRefreshService: Sendable {
             }
             let outcomes = (ratingOutcomes, reviewOutcomes)
             if request.recordsRatingsReviewsRefresh, didSuccessfullyRefreshRatingsOrReviews(outcomes) {
+                try Task.checkCancellation()
                 await ratingsReviewsRefreshRecorder?(.now)
+                try Task.checkCancellation()
             }
             return outcomes
         } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             let mappedError = OpenASOError.map(error)
             let storefrontCount = Set(request.storefrontSelection.codes.map {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -736,6 +918,7 @@ final class AppDetailRefreshService: Sendable {
         request: AppDetailRefreshRequest,
         storefrontCodes: [String]
     ) async throws -> [AppStorefrontReviewRefreshOutcome] {
+        try Task.checkCancellation()
         guard
             request.appStoreConnectCredentials.isComplete,
             let bundleID = request.app.bundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -746,23 +929,30 @@ final class AppDetailRefreshService: Sendable {
 
         do {
             await progressStore?.updateStep(.reviews, status: .running, completed: 0, total: 1, failureCount: 0)
+            try Task.checkCancellation()
             let app = try await appStoreConnectReviewService.resolveApp(
                 bundleID: bundleID,
                 using: request.appStoreConnectCredentials
             )
+            try Task.checkCancellation()
             var storedCount = 0
+            try Task.checkCancellation()
             let fetchedCount = try await appStoreConnectReviewService.fetchReviewPages(
                 appStoreConnectAppID: app.id,
                 appStoreID: request.app.appStoreID,
                 credentials: request.appStoreConnectCredentials,
             ) { pageReviews in
+                try Task.checkCancellation()
                 let pageStoredCount = try await backgroundModelStore.write { modelContext in
+                    try Task.checkCancellation()
                     let storeApp = try storeApp(for: request.app, in: modelContext)
                     return try appStoreConnectReviewService.upsert(pageReviews, storeApp: storeApp, in: modelContext)
                 }
+                try Task.checkCancellation()
                 storedCount += pageStoredCount
                 return pageStoredCount == pageReviews.count
             }
+            try Task.checkCancellation()
             await progressStore?.updateStep(
                 .reviews,
                 status: .completed,
@@ -779,8 +969,12 @@ final class AppDetailRefreshService: Sendable {
                 )
             ]
         } catch OpenASOError.appNotFound {
+            try Task.checkCancellation()
             return try await refreshStorefrontReviews(request: request, storefrontCodes: storefrontCodes)
         } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             await progressStore?.updateStep(
                 .reviews,
                 status: .failed,
@@ -803,18 +997,22 @@ final class AppDetailRefreshService: Sendable {
         _ outcomes: [AppStorefrontRatingRefreshOutcome],
         for app: AppDetailRefreshAppSnapshot
     ) async throws {
+        try Task.checkCancellation()
         try await backgroundModelStore.write { modelContext in
+            try Task.checkCancellation()
             let storeApp = try storeApp(for: app, in: modelContext)
             for outcome in outcomes {
                 appStorefrontRatingService.persist(outcome, for: storeApp, in: modelContext)
             }
         }
+        try Task.checkCancellation()
     }
 
     private func refreshStorefrontReviews(
         request: AppDetailRefreshRequest,
         storefrontCodes: [String]
     ) async throws -> [AppStorefrontReviewRefreshOutcome] {
+        try Task.checkCancellation()
         let targetStorefronts = AppStorefrontReviewService.normalizedStorefronts(from: storefrontCodes)
         guard !targetStorefronts.isEmpty else {
             return [
@@ -833,13 +1031,16 @@ final class AppDetailRefreshService: Sendable {
         await progressStore?.updateStep(.reviews, status: .running, completed: 0, total: targetStorefronts.count, failureCount: 0)
 
         for storefront in targetStorefronts {
+            try Task.checkCancellation()
             do {
                 var storedCount = 0
                 let fetchedCount = try await appStorefrontReviewService.fetchReviewPages(
                     appStoreID: request.app.appStoreID,
                     storefront: storefront
                 ) { pageReviews in
+                    try Task.checkCancellation()
                     let pageStoredCount = try await backgroundModelStore.write { modelContext in
+                        try Task.checkCancellation()
                         let storeApp = try storeApp(for: request.app, in: modelContext)
                         return try appStorefrontReviewService.upsert(
                             pageReviews,
@@ -847,9 +1048,11 @@ final class AppDetailRefreshService: Sendable {
                             in: modelContext
                         )
                     }
+                    try Task.checkCancellation()
                     storedCount += pageStoredCount
                     return pageStoredCount == pageReviews.count
                 }
+                try Task.checkCancellation()
                 outcomes.append(AppStorefrontReviewRefreshOutcome(
                     storefront: storefront,
                     fetchedReviews: fetchedCount,
@@ -857,6 +1060,9 @@ final class AppDetailRefreshService: Sendable {
                     error: nil
                 ))
             } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 failureCount += 1
                 outcomes.append(AppStorefrontReviewRefreshOutcome(
                     storefront: storefront,
@@ -874,6 +1080,7 @@ final class AppDetailRefreshService: Sendable {
                 total: targetStorefronts.count,
                 failureCount: failureCount
             )
+            try Task.checkCancellation()
         }
 
         return outcomes
