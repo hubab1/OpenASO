@@ -164,6 +164,9 @@
 		D34H00000000000000000002 /* KeywordResearchHistoryPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34H00000000000000000012 /* KeywordResearchHistoryPresentationTests.swift */; };
 		D34J00000000000000000001 /* Persistence/KeywordResearchProjectCopyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34J00000000000000000011 /* Persistence/KeywordResearchProjectCopyService.swift */; };
 		D34J00000000000000000002 /* KeywordResearchProjectCopyServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34J00000000000000000012 /* KeywordResearchProjectCopyServiceTests.swift */; };
+		D34K00000000000000000001 /* KeywordResearchProjectCopyModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34K00000000000000000011 /* KeywordResearchProjectCopyModel.swift */; };
+		D34K00000000000000000002 /* KeywordResearchProjectCopySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34K00000000000000000012 /* KeywordResearchProjectCopySheet.swift */; };
+		D34K00000000000000000003 /* KeywordResearchProjectCopyModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34K00000000000000000013 /* KeywordResearchProjectCopyModelTests.swift */; };
 		D20B00000000000000000007 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
 		D20B00000000000000000008 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
 		D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */; };
@@ -455,6 +458,9 @@
 		D34H00000000000000000012 /* KeywordResearchHistoryPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchHistoryPresentationTests.swift; sourceTree = "<group>"; };
 		D34J00000000000000000011 /* Persistence/KeywordResearchProjectCopyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/KeywordResearchProjectCopyService.swift; sourceTree = "<group>"; };
 		D34J00000000000000000012 /* KeywordResearchProjectCopyServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchProjectCopyServiceTests.swift; sourceTree = "<group>"; };
+		D34K00000000000000000011 /* KeywordResearchProjectCopyModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchProjectCopyModel.swift; sourceTree = "<group>"; };
+		D34K00000000000000000012 /* KeywordResearchProjectCopySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchProjectCopySheet.swift; sourceTree = "<group>"; };
+		D34K00000000000000000013 /* KeywordResearchProjectCopyModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchProjectCopyModelTests.swift; sourceTree = "<group>"; };
 		D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/EstimatedKeywordDifficultyStore.swift; sourceTree = "<group>"; };
 		D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyStoreTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* KeywordTableCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTableCells.swift; sourceTree = "<group>"; };
@@ -614,6 +620,7 @@
 				D34G00000000000000000013 /* KeywordResearchKeywordSelectionTests.swift */,
 				D34H00000000000000000012 /* KeywordResearchHistoryPresentationTests.swift */,
 				D34J00000000000000000012 /* KeywordResearchProjectCopyServiceTests.swift */,
+				D34K00000000000000000013 /* KeywordResearchProjectCopyModelTests.swift */,
 				D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */,
 				D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */,
 				D02000000000000000000004 /* v0.3.2-v1 */,
@@ -692,6 +699,8 @@
 				D34G00000000000000000011 /* KeywordResearchProjectWorkspaceView.swift */,
 				D34G00000000000000000012 /* KeywordResearchKeywordEditorSheet.swift */,
 				D34H00000000000000000011 /* KeywordResearchHistorySheet.swift */,
+				D34K00000000000000000011 /* KeywordResearchProjectCopyModel.swift */,
+				D34K00000000000000000012 /* KeywordResearchProjectCopySheet.swift */,
 			);
 			path = KeywordResearch;
 			sourceTree = "<group>";
@@ -1282,6 +1291,8 @@
 				D34G00000000000000000001 /* KeywordResearchProjectWorkspaceView.swift in Sources */,
 				D34G00000000000000000002 /* KeywordResearchKeywordEditorSheet.swift in Sources */,
 				D34H00000000000000000001 /* KeywordResearchHistorySheet.swift in Sources */,
+				D34K00000000000000000001 /* KeywordResearchProjectCopyModel.swift in Sources */,
+				D34K00000000000000000002 /* KeywordResearchProjectCopySheet.swift in Sources */,
 				9A6937276AF0E3CAEDA90C36 /* RankingSource.swift in Sources */,
 				A40000000000000000000003 /* RatingsDetail.swift in Sources */,
 				A40000000000000000000001 /* RatingsDashboardSupport.swift in Sources */,
@@ -1340,6 +1351,7 @@
 				D34G00000000000000000003 /* KeywordResearchKeywordSelectionTests.swift in Sources */,
 				D34H00000000000000000002 /* KeywordResearchHistoryPresentationTests.swift in Sources */,
 				D34J00000000000000000002 /* KeywordResearchProjectCopyServiceTests.swift in Sources */,
+				D34K00000000000000000003 /* KeywordResearchProjectCopyModelTests.swift in Sources */,
 				D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */,
 				D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */,
 				D14000000000000000000002 /* AppMetadataRefreshProgressStoreTests.swift in Sources */,

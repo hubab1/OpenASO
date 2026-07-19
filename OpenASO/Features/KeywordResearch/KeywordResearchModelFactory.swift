@@ -6,13 +6,18 @@ import Foundation
 @MainActor
 struct KeywordResearchModelFactory {
     private let projectStore: KeywordResearchProjectStore
+    private let projectCopyService: KeywordResearchProjectCopyService
     private let rankingWorkflow: KeywordResearchRankingWorkflow
     private let metricsWorkflow: KeywordResearchMetricsWorkflow
     private let historyReader: KeywordResearchHistoryReader
+    private let refreshCopiedKeywords: @MainActor @Sendable (
+        KeywordResearchPostCopyRefreshPlan
+    ) async throws -> KeywordResearchPostCopyRefreshSummary
     private let markBackgroundStoreChanged: @MainActor @Sendable () -> Void
 
     init?(services: AppServices) {
         guard let projectStore = services.keywordResearchProjectStore,
+              let projectCopyService = services.keywordResearchProjectCopyService,
               let rankingWorkflow = services.keywordResearchRankingWorkflow,
               let metricsWorkflow = services.keywordResearchMetricsWorkflow,
               let backgroundModelStore = services.backgroundModelStore
@@ -20,11 +25,51 @@ struct KeywordResearchModelFactory {
 
         self.init(
             projectStore: projectStore,
+            projectCopyService: projectCopyService,
             rankingWorkflow: rankingWorkflow,
             metricsWorkflow: metricsWorkflow,
             historyReader: KeywordResearchHistoryReader(
                 backgroundModelStore: backgroundModelStore
             ),
+            refreshCopiedKeywords: { plan in
+                guard let refreshService = services.appDetailRefreshService else {
+                    throw OpenASOError.providerUnavailable(
+                        "Tracked keyword refresh is unavailable."
+                    )
+                }
+                let request = AppDetailRefreshRequest(
+                    app: AppDetailRefreshAppSnapshot(
+                        appStoreID: plan.target.appStoreID,
+                        bundleID: plan.target.bundleID,
+                        name: plan.target.name,
+                        subtitle: plan.target.subtitle,
+                        sellerName: plan.target.sellerName,
+                        defaultPlatform: plan.target.defaultPlatform
+                    ),
+                    workspace: .keywords,
+                    storefrontSelection: .all(codes: plan.storefronts),
+                    trackIdentityKeys: plan.trackIdentityKeys,
+                    trigger: "after_research_project_copy",
+                    refreshRatings: false,
+                    refreshReviews: false,
+                    recordsRatingsReviewsRefresh: false,
+                    popularityContextAppStoreID: services.settingsStore.popularityContextAppStoreID,
+                    appleAdsWebSession: services.appleAdsWebSessionStore.session,
+                    appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
+                )
+                let result = await refreshService.refresh(request)
+                services.markBackgroundModelStoreChanged()
+                return KeywordResearchPostCopyRefreshSummary(
+                    requestedTrackCount: plan.trackIdentityKeys.count,
+                    completedTrackCount: result.keywordOutcomes.count,
+                    failedTrackCount: result.keywordOutcomes.filter {
+                        $0.error != nil
+                    }.count,
+                    issue: result.firstError.map {
+                        KeywordResearchErrorPresentation.presenting($0)
+                    }
+                )
+            },
             markBackgroundStoreChanged: {
                 services.markBackgroundModelStoreChanged()
             }
@@ -33,15 +78,21 @@ struct KeywordResearchModelFactory {
 
     init(
         projectStore: KeywordResearchProjectStore,
+        projectCopyService: KeywordResearchProjectCopyService,
         rankingWorkflow: KeywordResearchRankingWorkflow,
         metricsWorkflow: KeywordResearchMetricsWorkflow,
         historyReader: KeywordResearchHistoryReader,
+        refreshCopiedKeywords: @escaping @MainActor @Sendable (
+            KeywordResearchPostCopyRefreshPlan
+        ) async throws -> KeywordResearchPostCopyRefreshSummary,
         markBackgroundStoreChanged: @escaping @MainActor @Sendable () -> Void = {}
     ) {
         self.projectStore = projectStore
+        self.projectCopyService = projectCopyService
         self.rankingWorkflow = rankingWorkflow
         self.metricsWorkflow = metricsWorkflow
         self.historyReader = historyReader
+        self.refreshCopiedKeywords = refreshCopiedKeywords
         self.markBackgroundStoreChanged = markBackgroundStoreChanged
     }
 
@@ -170,6 +221,47 @@ struct KeywordResearchModelFactory {
                     )
                     await markChanged()
                     return outcome
+                }
+            )
+        )
+    }
+
+    func makeProjectCopyModel(
+        project: KeywordResearchProjectSnapshot,
+        pageSize: Int = 50
+    ) -> KeywordResearchProjectCopyModel {
+        let projectStore = projectStore
+        let projectCopyService = projectCopyService
+        let refreshCopiedKeywords = refreshCopiedKeywords
+        let markChanged = markBackgroundStoreChanged
+        return KeywordResearchProjectCopyModel(
+            project: project,
+            pageSize: pageSize,
+            dependencies: KeywordResearchProjectCopyDependencies(
+                loadTargetsPage: { offset, limit in
+                    try await projectCopyService.listTargets(
+                        offset: offset,
+                        limit: limit
+                    )
+                },
+                loadAuthoritativeProject: { generation in
+                    try await projectStore.loadProject(generation: generation)
+                },
+                preview: { revision, targetAppStoreID in
+                    try await projectCopyService.preview(
+                        projectRevision: revision,
+                        targetAppStoreID: targetAppStoreID
+                    )
+                },
+                copy: { preview in
+                    let result = try await projectCopyService.copy(preview: preview)
+                    if result.insertedCount > 0 || result.convergedCompletedCopy {
+                        await markChanged()
+                    }
+                    return result
+                },
+                refreshCopiedKeywords: { plan in
+                    try await refreshCopiedKeywords(plan)
                 }
             )
         )

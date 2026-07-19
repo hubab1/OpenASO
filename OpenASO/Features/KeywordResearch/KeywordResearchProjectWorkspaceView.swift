@@ -14,12 +14,16 @@ struct KeywordResearchProjectWorkspaceView: View {
         KeywordResearchProjectGeneration,
         KeywordResearchKeywordSnapshot
     ) -> KeywordResearchHistoryModel
+    let makeCopyModel: @MainActor (
+        KeywordResearchProjectSnapshot
+    ) -> KeywordResearchProjectCopyModel
 
     @Binding private var blocksWorkspaceDismissal: Bool
     @State private var model: KeywordResearchProjectDetailModel
     @State private var selectedKeywordGeneration: KeywordResearchKeywordGeneration?
     @State private var editorContext: KeywordEditorContext?
     @State private var historyContext: KeywordResearchHistoryContext?
+    @State private var copyContext: KeywordResearchCopyContext?
     @State private var keywordPendingRemoval: KeywordResearchKeywordSnapshot?
     @State private var removingKeywordGeneration: KeywordResearchKeywordGeneration?
     @State private var operationError: KeywordResearchErrorPresentation?
@@ -36,13 +40,17 @@ struct KeywordResearchProjectWorkspaceView: View {
         makeHistoryModel: @escaping @MainActor (
             KeywordResearchProjectGeneration,
             KeywordResearchKeywordSnapshot
-        ) -> KeywordResearchHistoryModel
+        ) -> KeywordResearchHistoryModel,
+        makeCopyModel: @escaping @MainActor (
+            KeywordResearchProjectSnapshot
+        ) -> KeywordResearchProjectCopyModel
     ) {
         self.project = project
         self.storefronts = storefronts
         self.reconcileProject = reconcileProject
         self.resolveAuthoritativeProject = resolveAuthoritativeProject
         self.makeHistoryModel = makeHistoryModel
+        self.makeCopyModel = makeCopyModel
         _blocksWorkspaceDismissal = blocksWorkspaceDismissal
         _model = State(initialValue: model)
     }
@@ -81,6 +89,14 @@ struct KeywordResearchProjectWorkspaceView: View {
                     context.projectGeneration,
                     context.keyword
                 )
+            )
+            .id(context.id)
+        }
+        .sheet(item: $copyContext) { context in
+            KeywordResearchProjectCopySheet(
+                model: makeCopyModel(context.project),
+                blocksWorkspaceDismissal: $blocksWorkspaceDismissal,
+                reconcileProject: reconcileProject
             )
             .id(context.id)
         }
@@ -142,6 +158,14 @@ struct KeywordResearchProjectWorkspaceView: View {
                     ProgressView("Removing Keyword…")
                         .controlSize(.small)
                 }
+
+                Button("Copy to Tracked App…", systemImage: "doc.on.doc") {
+                    editorContext = nil
+                    historyContext = nil
+                    copyContext = KeywordResearchCopyContext(project: model.project)
+                }
+                .help("Copy this project's exact keyword scope to a tracked app")
+                .disabled(model.mutationState.isRunning)
 
                 Button("Reload Keywords", systemImage: "arrow.clockwise") {
                     Task { await reloadKeywords() }

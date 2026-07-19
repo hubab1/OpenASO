@@ -277,6 +277,9 @@ struct KeywordResearchWorkspaceView: View {
                         projectGeneration: projectGeneration,
                         keyword: keyword
                     )
+                },
+                makeCopyModel: { project in
+                    factory.makeProjectCopyModel(project: project)
                 }
             )
             .id(project.generation)
