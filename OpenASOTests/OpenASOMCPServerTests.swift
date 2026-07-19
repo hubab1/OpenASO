@@ -11,6 +11,12 @@ struct OpenASOMCPServerTests {
     func serverExposesToolsResourcesPromptsAndReturnsJSONToolContent() async throws {
         let context = try ServerTestContext()
         try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["focus timer"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
         let server = await OpenASOMCPServerFactory(service: context.service).makeServer()
         let client = Client(name: "OpenASO MCP Test Client", version: "1.0")
         let transports = await InMemoryTransport.createConnectedPair()
@@ -35,6 +41,11 @@ struct OpenASOMCPServerTests {
         #expect(tools.map(\.name).contains("list_competitors"))
         #expect(tools.map(\.name).contains("score_keywords"))
         #expect(tools.map(\.name).contains("get_localization_research_context"))
+        let difficultyTool = try #require(
+            tools.first { $0.name == "get_estimated_keyword_difficulty" }
+        )
+        #expect(difficultyTool.annotations.readOnlyHint == true)
+        #expect(difficultyTool.description?.contains("local") == true)
         let rankingRefreshTool = try #require(tools.first { $0.name == "refresh_keyword_rankings" })
         let rankingRefreshDescription = try #require(rankingRefreshTool.description)
         #expect(rankingRefreshDescription.contains("defaults to 20"))
@@ -51,6 +62,24 @@ struct OpenASOMCPServerTests {
         let toolJSON = try #require(toolResult.content.first?.textValue)
         let appPage = try JSONDecoder.openASOMCP.decode(OpenASOMCPPage<OpenASOMCPAppSummary>.self, from: Data(toolJSON.utf8))
         #expect(appPage.items.map(\.appStoreID) == ["123"])
+
+        let difficultyResult = try await client.callTool(
+            name: "get_estimated_keyword_difficulty",
+            arguments: [
+                "appStoreID": 123,
+                "keyword": "focus timer",
+                "storefront": "us",
+                "evidence_limit": 1,
+            ]
+        )
+        #expect(difficultyResult.isError == nil)
+        let difficultyJSON = try #require(difficultyResult.content.first?.textValue)
+        let difficulty = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPEstimatedKeywordDifficulty.self,
+            from: Data(difficultyJSON.utf8)
+        )
+        #expect(difficulty.state == "missing")
+        #expect(difficulty.evidence.isEmpty)
 
         let resources = try await client.listResources().resources
         #expect(resources.map(\.uri).contains("openaso://workspace/summary"))

@@ -519,3 +519,229 @@ enum KeywordRankingHistoryCSVFormat {
         ]
     }
 }
+
+/// One tracked-keyword scope paired with its latest independently persisted
+/// estimated-difficulty calculation. A missing snapshot is intentionally kept
+/// so exports can distinguish "not calculated" from a stored unavailable result.
+struct EstimatedKeywordDifficultyCSVItem: Equatable, Sendable {
+    let appName: String
+    let appStoreID: Int64
+    let keyword: String
+    let queryKey: String
+    let storefront: String
+    let platformRaw: String
+    let snapshot: EstimatedKeywordDifficultySnapshot?
+}
+
+/// Dedicated export-only format for estimated-difficulty provenance. This is
+/// deliberately separate from `TrackedKeywordCSVFormat`; it has no decoder and
+/// cannot import heuristic values into the legacy `Difficulty` field.
+enum EstimatedKeywordDifficultyCSVFormat {
+    static let evidenceExportType = "estimated_keyword_difficulty_evidence"
+    static let summaryExportType = "estimated_keyword_difficulty_summary"
+
+    static let headers = [
+        "OpenASO Export Type",
+        "App Name",
+        "App Id",
+        "Keyword",
+        "Query Key",
+        "Storefront",
+        "Platform",
+        "State",
+        "Estimated Difficulty",
+        "Confidence Score",
+        "Confidence",
+        "Unavailable Reason",
+        "Estimation Source",
+        "Algorithm Identifier",
+        "Algorithm Version",
+        "Requested Result Limit",
+        "Provider Result Count",
+        "Considered Result Count",
+        "Rated Result Count",
+        "Weighted Rating Coverage Percentage",
+        "Maximum Rating Count",
+        "Median Rating Count",
+        "Rating Authority Score",
+        "Metadata Saturation Score",
+        "Exact Title Phrase Match Count",
+        "Exact Subtitle Phrase Match Count",
+        "Ranking Source",
+        "Ranking Fetched At",
+        "Computed At",
+        "Stale At",
+        "Is Stale",
+        "Fallback Provider",
+        "Fallback Category",
+        "Fallback Transport Code",
+        "Fallback HTTP Status",
+        "Fallback Response Failure",
+        "Notes JSON",
+        "Evidence Position",
+        "Evidence App Store Id",
+        "Evidence Title",
+        "Evidence Subtitle",
+        "Evidence Rating Count",
+        "Evidence Rating Authority Score",
+        "Evidence Title Token Coverage Percentage",
+        "Evidence Combined Token Coverage Percentage",
+        "Evidence Metadata Match Score",
+        "Evidence Exact Title Phrase Match",
+        "Evidence Exact Subtitle Phrase Match"
+    ]
+
+    static func encode(items: [EstimatedKeywordDifficultyCSVItem], asOf date: Date) -> String {
+        let rows = items
+            .sorted(by: itemPrecedes)
+            .flatMap { item in
+                fields(for: item, asOf: date)
+            }
+        return CSVTable.encode(headers: headers, rows: rows)
+    }
+
+    private static func fields(
+        for item: EstimatedKeywordDifficultyCSVItem,
+        asOf date: Date
+    ) -> [[String]] {
+        guard let snapshot = item.snapshot else {
+            return [fields(for: item, snapshot: nil, evidence: nil, asOf: date)]
+        }
+
+        let evidence = snapshot.resultEvidence.sorted(by: evidencePrecedes)
+        guard !evidence.isEmpty else {
+            return [fields(for: item, snapshot: snapshot, evidence: nil, asOf: date)]
+        }
+
+        return evidence.map {
+            fields(for: item, snapshot: snapshot, evidence: $0, asOf: date)
+        }
+    }
+
+    private static func fields(
+        for item: EstimatedKeywordDifficultyCSVItem,
+        snapshot: EstimatedKeywordDifficultySnapshot?,
+        evidence: EstimatedKeywordDifficultyResultEvidence?,
+        asOf date: Date
+    ) -> [String] {
+        let rankingFetchedAt = snapshot?.rankingFetchedAt
+        let isStale = rankingFetchedAt.map {
+            EstimatedKeywordDifficultyFreshness.isStale(
+                rankingFetchedAt: $0,
+                asOf: date
+            )
+        }
+        let staleAt = rankingFetchedAt?.addingTimeInterval(
+            EstimatedKeywordDifficultyFreshness.maximumAge
+        )
+
+        return [
+            evidence == nil ? summaryExportType : evidenceExportType,
+            spreadsheetSafeExternalText(item.appName),
+            String(item.appStoreID),
+            spreadsheetSafeExternalText(snapshot?.keyword ?? item.keyword),
+            spreadsheetSafeExternalText(snapshot?.queryKey ?? item.queryKey),
+            spreadsheetSafeExternalText(snapshot?.storefront ?? item.storefront),
+            snapshot?.platformRaw ?? item.platformRaw,
+            snapshot?.stateRaw ?? "missing",
+            string(snapshot?.score),
+            string(snapshot?.confidenceScore),
+            snapshot?.confidenceRaw ?? "",
+            snapshot?.unavailableReasonRaw ?? "",
+            snapshot?.estimationSourceRaw ?? "",
+            snapshot?.algorithmIdentifier ?? "",
+            string(snapshot?.algorithmVersion),
+            string(snapshot?.requestedResultLimit),
+            string(snapshot?.providerResultCount),
+            string(snapshot?.consideredResultCount),
+            string(snapshot?.ratedResultCount),
+            string(snapshot?.weightedRatingCoveragePercentage),
+            string(snapshot?.maximumRatingCount),
+            string(snapshot?.medianRatingCount),
+            string(snapshot?.ratingAuthorityScore),
+            string(snapshot?.metadataSaturationScore),
+            string(snapshot?.exactTitlePhraseMatchCount),
+            string(snapshot?.exactSubtitlePhraseMatchCount),
+            snapshot?.rankingSourceRaw ?? "",
+            CSVTable.string(from: rankingFetchedAt),
+            CSVTable.string(from: snapshot?.computedAt),
+            CSVTable.string(from: staleAt),
+            isStale.map { String($0) } ?? "",
+            snapshot?.fallbackProviderRaw ?? "",
+            snapshot?.fallbackCategoryRaw ?? "",
+            string(snapshot?.fallbackTransportCode),
+            string(snapshot?.fallbackHTTPStatus),
+            snapshot?.fallbackResponseFailureRaw ?? "",
+            notesJSON(snapshot?.notes ?? []),
+            string(evidence?.position),
+            string(evidence?.appStoreID),
+            spreadsheetSafeExternalText(evidence?.title ?? ""),
+            spreadsheetSafeExternalText(evidence?.subtitle ?? ""),
+            string(evidence?.ratingCount),
+            string(evidence?.ratingAuthorityScore),
+            string(evidence?.titleTokenCoveragePercentage),
+            string(evidence?.combinedTokenCoveragePercentage),
+            string(evidence?.metadataMatchScore),
+            evidence.map { String($0.exactTitlePhraseMatch) } ?? "",
+            evidence.map { String($0.exactSubtitlePhraseMatch) } ?? ""
+        ]
+    }
+
+    private static func itemPrecedes(
+        _ left: EstimatedKeywordDifficultyCSVItem,
+        _ right: EstimatedKeywordDifficultyCSVItem
+    ) -> Bool {
+        let leftFields = [
+            left.keyword.lowercased(),
+            left.storefront.lowercased(),
+            left.platformRaw,
+            left.queryKey
+        ]
+        let rightFields = [
+            right.keyword.lowercased(),
+            right.storefront.lowercased(),
+            right.platformRaw,
+            right.queryKey
+        ]
+        return leftFields.lexicographicallyPrecedes(rightFields)
+    }
+
+    private static func evidencePrecedes(
+        _ left: EstimatedKeywordDifficultyResultEvidence,
+        _ right: EstimatedKeywordDifficultyResultEvidence
+    ) -> Bool {
+        if left.position != right.position {
+            return left.position < right.position
+        }
+        if left.appStoreID != right.appStoreID {
+            return left.appStoreID < right.appStoreID
+        }
+        if left.title != right.title {
+            return left.title < right.title
+        }
+        return (left.subtitle ?? "") < (right.subtitle ?? "")
+    }
+
+    private static func string<T>(_ value: T?) -> String where T: LosslessStringConvertible {
+        value.map { String($0) } ?? ""
+    }
+
+    private static func notesJSON(_ notes: [String]) -> String {
+        guard let data = try? JSONEncoder().encode(notes) else {
+            return "[]"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// CSV quoting does not stop spreadsheet applications from interpreting
+    /// externally controlled cells as formulas. Prefix only public/user text
+    /// in this dedicated export so legacy import-compatible CSV stays intact.
+    private static func spreadsheetSafeExternalText(_ value: String) -> String {
+        guard let first = value.unicodeScalars.first,
+              ["=", "+", "-", "@", "\t", "\n", "\r"].contains(String(first))
+        else {
+            return value
+        }
+        return "'\(value)"
+    }
+}

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import OSLog
 import SwiftData
 
 private enum OpenASOMCPHistoryKind: String, Codable, Equatable, Sendable {
@@ -344,11 +345,20 @@ actor OpenASOMCPRankingRefreshScheduler {
   private func schedulingRecency(for candidate: Candidate) -> (
     date: Date, sequence: UInt64?, identityKey: String
   )? {
-    let attempt = attemptsByIdentityKey[candidate.request.identityKey]
+    let generation = candidate.request.trackCreatedAt
+    func belongsToCurrentGeneration(_ date: Date) -> Bool {
+      generation.map { date >= $0 } ?? true
+    }
+    let attempt = attemptsByIdentityKey[candidate.request.identityKey].flatMap { attempt in
+      belongsToCurrentGeneration(attempt.attemptedAt) ? attempt : nil
+    }
     let persistedRecency = [
       candidate.lastSuccessfulRefreshAt,
       candidate.lastDurableAttemptAt,
-    ].compactMap { $0 }.max()
+    ].compactMap { (date: Date?) -> Date? in
+      guard let date, belongsToCurrentGeneration(date) else { return nil }
+      return date
+    }.max()
 
     switch (persistedRecency, attempt) {
     case (nil, nil):
@@ -402,7 +412,13 @@ final class OpenASOMCPService: Sendable {
     _ requests: [RankingRefreshRequest],
     _ appStoreID: Int64,
     _ attemptedAt: Date
-  ) async throws -> Void
+  ) async throws -> [RankingRefreshRequest]
+  typealias EstimatedDifficultyPayloadBuilder = @Sendable (
+    _ request: RankingRefreshRequest,
+    _ page: SearchRankingPage,
+    _ requestedResultLimit: Int,
+    _ rankingFetchedAt: Date
+  ) -> EstimatedKeywordDifficultyPersistencePayload?
 
   private enum ResponseLimits {
     static let overviewStorefrontMetadata = 8
@@ -457,6 +473,8 @@ final class OpenASOMCPService: Sendable {
   private let rankingRefreshCoordinator: RankingRefreshCoordinator?
   private let rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler
   private let persistRankingRefreshAttempts: RankingRefreshAttemptsPersistence
+  private let estimatedDifficultyPayloadBuilder: EstimatedDifficultyPayloadBuilder
+  private let rankingPersistenceDidCommit: (@Sendable () async -> Void)?
   private let reviewService: AppStorefrontReviewService?
   private let keywordMetricsService: KeywordMetricsService?
   private let popularityContextAppStoreIDProvider: @MainActor @Sendable () -> Int64?
@@ -473,6 +491,8 @@ final class OpenASOMCPService: Sendable {
     rankingRefreshCoordinator: RankingRefreshCoordinator? = nil,
     rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler(),
     persistRankingRefreshAttempts: RankingRefreshAttemptsPersistence? = nil,
+    estimatedDifficultyPayloadBuilder: EstimatedDifficultyPayloadBuilder? = nil,
+    rankingPersistenceDidCommit: (@Sendable () async -> Void)? = nil,
     reviewService: AppStorefrontReviewService? = nil,
     keywordMetricsService: KeywordMetricsService? = nil,
     popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
@@ -490,16 +510,28 @@ final class OpenASOMCPService: Sendable {
     self.persistRankingRefreshAttempts = persistRankingRefreshAttempts ?? {
       [backgroundModelStore] requests, appStoreID, attemptedAt in
       try await backgroundModelStore.write { modelContext in
-        for request in requests {
-          try Self.upsertRankingRefreshAttempt(
-            request: request,
-            appStoreID: appStoreID,
-            attemptedAt: attemptedAt,
-            in: modelContext
-          )
-        }
+        try Self.acceptRankingRefreshAttempts(
+          requests,
+          appStoreID: appStoreID,
+          attemptedAt: attemptedAt,
+          in: modelContext
+        )
       }
     }
+    self.estimatedDifficultyPayloadBuilder = estimatedDifficultyPayloadBuilder ?? {
+      request,
+      page,
+      requestedResultLimit,
+      rankingFetchedAt in
+      EstimatedKeywordDifficultyPersistenceAdapter.payload(
+        request: request,
+        page: page,
+        requestedResultLimit: requestedResultLimit,
+        rankingFetchedAt: rankingFetchedAt,
+        now: now
+      )
+    }
+    self.rankingPersistenceDidCommit = rankingPersistenceDidCommit
     self.reviewService = reviewService
     self.keywordMetricsService = keywordMetricsService
     self.popularityContextAppStoreIDProvider = popularityContextAppStoreIDProvider
@@ -884,6 +916,7 @@ final class OpenASOMCPService: Sendable {
     let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
     let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
     let platform = try platform.map(OpenASOMCPValidation.platform)
+    let asOf = now()
     return try await backgroundModelStore.read { modelContext in
       let descriptor = FetchDescriptor<TrackedAppKeyword>(
         predicate: #Predicate { track in
@@ -903,6 +936,10 @@ final class OpenASOMCPService: Sendable {
         queryKeys: Array(Set(tracks.map(\.queryKey))),
         in: modelContext
       )
+      let estimatedDifficultyByQueryKey = try EstimatedKeywordDifficultyStore.summaries(
+        queryKeys: Array(Set(tracks.map(\.queryKey))),
+        in: modelContext
+      )
       let refreshStatuses = try TrackedKeywordRefreshStatusStore.snapshots(
         for: tracks.map(\.identityKey),
         in: modelContext
@@ -912,7 +949,9 @@ final class OpenASOMCPService: Sendable {
         Self.keywordSummary(
           track: $0,
           metrics: metricsByQueryKey[$0.queryKey],
-          refreshStatus: refreshStatuses[$0.identityKey]
+          estimatedDifficulty: estimatedDifficultyByQueryKey[$0.queryKey],
+          refreshStatus: refreshStatuses[$0.identityKey],
+          asOf: asOf
         )
       }
       return OpenASOMCPPage(
@@ -924,6 +963,69 @@ final class OpenASOMCPService: Sendable {
           totalCount: total
         ),
         total: total
+      )
+    }
+  }
+
+  func getEstimatedKeywordDifficulty(
+    appStoreID: Int64,
+    keyword: String,
+    storefront: String,
+    platform: String? = nil,
+    evidenceLimit: Int? = nil
+  ) async throws -> OpenASOMCPEstimatedKeywordDifficulty {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let keyword = try OpenASOMCPValidation.nonEmpty(
+      keyword,
+      fieldName: "keyword",
+      maximumLength: OpenASOMCPValidation.maximumHistoryKeywordLength
+    )
+    let storefront = try OpenASOMCPValidation.storefront(storefront)
+    let platform = try OpenASOMCPValidation.platform(platform)
+    let evidenceLimit = OpenASOMCPValidation.cappedLimit(
+      evidenceLimit,
+      default: EstimatedKeywordDifficultyStore.maximumEvidenceResultCount,
+      maximum: EstimatedKeywordDifficultyStore.maximumEvidenceResultCount
+    )
+    let queryKey = KeywordQuery.makeQueryKey(
+      term: keyword,
+      storefront: storefront,
+      platform: platform
+    )
+    let identityKey = TrackedAppKeyword.makeIdentityKey(
+      appStoreID: appStoreID,
+      term: keyword,
+      storefront: storefront,
+      platform: platform
+    )
+    let asOf = now()
+
+    return try await backgroundModelStore.read { modelContext in
+      var trackDescriptor = FetchDescriptor<TrackedAppKeyword>(
+        predicate: #Predicate { track in
+          track.identityKey == identityKey
+        }
+      )
+      trackDescriptor.fetchLimit = 1
+      guard try modelContext.fetch(trackDescriptor).first != nil,
+        let snapshot = try EstimatedKeywordDifficultyStore.snapshot(
+          queryKey: queryKey,
+          in: modelContext
+        )
+      else {
+        return Self.missingEstimatedKeywordDifficulty(
+          appStoreID: appStoreID,
+          keyword: keyword,
+          queryKey: queryKey,
+          storefront: storefront,
+          platform: platform
+        )
+      }
+      return Self.estimatedKeywordDifficulty(
+        appStoreID: appStoreID,
+        snapshot: snapshot,
+        evidenceLimit: evidenceLimit,
+        asOf: asOf
       )
     }
   }
@@ -1321,6 +1423,7 @@ final class OpenASOMCPService: Sendable {
     guard !storefronts.isEmpty else {
       throw OpenASOError.providerUnavailable("Select at least one storefront.")
     }
+    let createdAt = now()
 
     return try await backgroundModelStore.write { modelContext in
       guard let trackedApp = try Self.fetchTrackedApp(appStoreID: appStoreID, in: modelContext)
@@ -1363,7 +1466,8 @@ final class OpenASOMCPService: Sendable {
             storefront: storefront,
             platform: platform,
             trackedApp: trackedApp,
-            query: query
+            query: query,
+            createdAt: createdAt
           )
           trackedApp.keywordTracks.append(track)
           modelContext.insert(track)
@@ -1426,11 +1530,17 @@ final class OpenASOMCPService: Sendable {
         for: track,
         in: modelContext
       )
+      let estimatedDifficulty = try EstimatedKeywordDifficultyStore.summary(
+        queryKey: track.queryKey,
+        in: modelContext
+      )
       return OpenASOMCPKeywordNotesResult(
         track: Self.keywordSummary(
           track: track,
           metrics: metrics[track.queryKey],
-          refreshStatus: refreshStatus
+          estimatedDifficulty: estimatedDifficulty,
+          refreshStatus: refreshStatus,
+          asOf: now()
         ),
         summary: OpenASOMCPMutationSummary(
           inserted: 0,
@@ -1797,18 +1907,20 @@ final class OpenASOMCPService: Sendable {
       limit: trackLimit
     )
 
+    let acceptedRequests: [RankingRefreshRequest]
     if !reservation.requests.isEmpty {
       do {
         try Task.checkCancellation()
         let attemptedAt = now()
-        // Commit the whole reservation before the first external call so a
-        // failed attempt-state transaction leaves the provider untouched.
-        try await persistRankingRefreshAttempts(
+        // Validate and commit the reservation before the first external call
+        // so stale generations and failed attempt-state transactions leave the
+        // provider untouched.
+        acceptedRequests = try await persistRankingRefreshAttempts(
           reservation.requests,
           appStoreID,
           attemptedAt
         )
-        for request in reservation.requests {
+        for request in acceptedRequests {
           try await rankingRefreshScheduler.markAttemptStarted(
             request,
             in: reservation,
@@ -1819,6 +1931,8 @@ final class OpenASOMCPService: Sendable {
         await rankingRefreshScheduler.release(reservation)
         throw error
       }
+    } else {
+      acceptedRequests = []
     }
 
     var fetched: [(
@@ -1828,7 +1942,7 @@ final class OpenASOMCPService: Sendable {
       error: OpenASOError?
     )] = []
     do {
-      for request in reservation.requests {
+      for request in acceptedRequests {
         try Task.checkCancellation()
         do {
           let page = try await Self.withRankingSearchTimeout {
@@ -1850,28 +1964,53 @@ final class OpenASOMCPService: Sendable {
       try Task.checkCancellation()
 
       let fetchedResults = fetched
-      let result = try await backgroundModelStore.write { modelContext in
+      let persistenceResult = try await backgroundModelStore.write { modelContext in
         var outcomes: [OpenASOMCPKeywordRefreshOutcome] = []
+        var enrichmentPageResults: [RankingRefreshPageResult] = []
+        var difficultyPageResults: [RankingRefreshPageResult] = []
+        var staleGenerationCount = 0
         for item in fetchedResults {
+          guard
+            let currentTrack = try Self.fetchTrackedKeyword(
+              identityKey: item.request.identityKey,
+              in: modelContext
+            ),
+            currentTrack.appStoreID == appStoreID,
+            item.request.matchesGeneration(of: currentTrack)
+          else {
+            staleGenerationCount += 1
+            continue
+          }
+
           if let page = item.page, let observedAt = item.fetchedAt {
+            let difficultyPayload = estimatedDifficultyPayloadBuilder(
+              item.request,
+              page,
+              resultLimit,
+              observedAt
+            )
+            let pageResult = RankingRefreshPageResult(
+              request: item.request,
+              page: page,
+              searchedAt: observedAt,
+              observedHour: nil,
+              submissionCount: 0,
+              winningCount: 0,
+              confidence: nil,
+              requestedResultLimit: resultLimit,
+              estimatedDifficultyPayload: difficultyPayload
+            )
+            difficultyPageResults.append(pageResult)
             let track: TrackedAppKeyword
             if let rankingRefreshCoordinator {
-              let pageResult = RankingRefreshPageResult(
-                request: item.request,
-                page: page,
-                searchedAt: observedAt,
-                observedHour: nil,
-                submissionCount: 0,
-                winningCount: 0,
-                confidence: nil
-              )
               track = try rankingRefreshCoordinator.persistRankingPage(
                 pageResult,
                 in: modelContext,
                 rebuildDerivedStats: true,
                 saveChanges: false,
-                scheduleMetadataEnrichment: true
+                scheduleMetadataEnrichment: false
               ).keywordTrack
+              enrichmentPageResults.append(pageResult)
             } else {
               track = try Self.persistRankingPage(
                 page,
@@ -1887,12 +2026,18 @@ final class OpenASOMCPService: Sendable {
               for: track,
               in: modelContext
             )
+            let estimatedDifficulty = try EstimatedKeywordDifficultyStore.summary(
+              queryKey: track.queryKey,
+              in: modelContext
+            )
             outcomes.append(
               OpenASOMCPKeywordRefreshOutcome(
                 track: Self.keywordSummary(
                   track: track,
                   metrics: metrics[track.queryKey],
-                  refreshStatus: refreshStatus
+                  estimatedDifficulty: estimatedDifficulty,
+                  refreshStatus: refreshStatus,
+                  asOf: now()
                 ),
                 rankingProvenance: Self.rankingProvenance(
                   request: item.request,
@@ -1901,10 +2046,8 @@ final class OpenASOMCPService: Sendable {
                 ),
                 error: nil
               ))
-          } else if let error = item.error,
-            let track = try Self.fetchTrackedKeyword(
-              identityKey: item.request.identityKey, in: modelContext)
-          {
+          } else if let error = item.error {
+            let track = currentTrack
             try TrackedKeywordRefreshStatusStore.set(
               "Ranking failed to refresh. \(error.localizedDescription)",
               domain: .ranking,
@@ -1917,12 +2060,18 @@ final class OpenASOMCPService: Sendable {
               for: track,
               in: modelContext
             )
+            let estimatedDifficulty = try EstimatedKeywordDifficultyStore.summary(
+              queryKey: track.queryKey,
+              in: modelContext
+            )
             outcomes.append(
               OpenASOMCPKeywordRefreshOutcome(
                 track: Self.keywordSummary(
                   track: track,
                   metrics: metrics[track.queryKey],
-                  refreshStatus: refreshStatus
+                  estimatedDifficulty: estimatedDifficulty,
+                  refreshStatus: refreshStatus,
+                  asOf: now()
                 ),
                 rankingProvenance: nil,
                 error: OpenASOMCPErrorDTO(error)
@@ -1930,26 +2079,146 @@ final class OpenASOMCPService: Sendable {
           }
         }
         let failures = outcomes.filter { $0.error != nil }.count
-        return OpenASOMCPKeywordRefreshResult(
-          summary: OpenASOMCPMutationSummary(
-            inserted: 0,
-            updated: 0,
-            skipped: max(0, candidateBatch.totalCount - reservation.requests.count),
-            refreshed: outcomes.count - failures,
-            failed: failures
+        return (
+          result: OpenASOMCPKeywordRefreshResult(
+            summary: OpenASOMCPMutationSummary(
+              inserted: 0,
+              updated: 0,
+              skipped: max(0, candidateBatch.totalCount - acceptedRequests.count)
+                + staleGenerationCount,
+              refreshed: outcomes.count - failures,
+              failed: failures
+            ),
+            outcomes: outcomes,
+            notes: Self.keywordRankingRefreshNotes(
+              requestedLimit: requestedLimit,
+              appliedLimit: trackLimit,
+              staleGenerationCount: staleGenerationCount
+            )
           ),
-          outcomes: outcomes,
-          notes: Self.keywordRankingRefreshNotes(
-            requestedLimit: requestedLimit,
-            appliedLimit: trackLimit
-          )
+          enrichmentPageResults: enrichmentPageResults,
+          difficultyPageResults: difficultyPageResults
         )
       }
+      await rankingPersistenceDidCommit?()
+      await persistEstimatedDifficulty(
+        for: persistenceResult.difficultyPageResults
+      )
+      let refreshedOutcomes = await refreshedKeywordOutcomes(
+        persistenceResult.result.outcomes
+      )
+      for pageResult in persistenceResult.enrichmentPageResults {
+        rankingRefreshCoordinator?.scheduleTopRankingMetadataEnrichment(for: pageResult)
+      }
       await rankingRefreshScheduler.release(reservation)
-      return result
+      return OpenASOMCPKeywordRefreshResult(
+        summary: persistenceResult.result.summary,
+        outcomes: refreshedOutcomes,
+        notes: persistenceResult.result.notes,
+        batchSummary: persistenceResult.result.batchSummary
+      )
     } catch {
       await rankingRefreshScheduler.release(reservation)
       throw error
+    }
+  }
+
+  /// Difficulty is optional derived data. Persist it only after ranking writes
+  /// commit, and retry a failed batch one payload at a time so a rejected
+  /// estimate cannot roll back valid peer estimates or ranking observations.
+  private func persistEstimatedDifficulty(
+    for pageResults: [RankingRefreshPageResult]
+  ) async {
+    let pageResults = pageResults.filter { $0.estimatedDifficultyPayload != nil }
+    guard !pageResults.isEmpty else { return }
+
+    do {
+      try await backgroundModelStore.write { modelContext in
+        for pageResult in pageResults {
+          try EstimatedKeywordDifficultyPersistenceAdapter.upsertIfCurrent(
+            for: pageResult,
+            in: modelContext
+          )
+        }
+      }
+    } catch {
+      for pageResult in pageResults {
+        do {
+          _ = try await backgroundModelStore.write { modelContext in
+            try EstimatedKeywordDifficultyPersistenceAdapter.upsertIfCurrent(
+              for: pageResult,
+              in: modelContext
+            )
+          }
+        } catch {
+          OpenASOLog.refresh.error(
+            "Skipped optional estimated difficulty persistence: \(String(reflecting: error), privacy: .private(mask: .hash))"
+          )
+        }
+      }
+    }
+  }
+
+  private func refreshedKeywordOutcomes(
+    _ outcomes: [OpenASOMCPKeywordRefreshOutcome]
+  ) async -> [OpenASOMCPKeywordRefreshOutcome] {
+    let identityKeys = Array(Set(outcomes.map(\.track.trackIdentityKey)))
+    guard !identityKeys.isEmpty else { return outcomes }
+    let asOf = now()
+
+    do {
+      return try await backgroundModelStore.read { modelContext in
+        let targetIdentityKeys = identityKeys
+        let descriptor = FetchDescriptor<TrackedAppKeyword>(
+          predicate: #Predicate { track in
+            targetIdentityKeys.contains(track.identityKey)
+          }
+        )
+        let tracks = try modelContext.fetch(descriptor)
+        let queryKeys = Array(Set(tracks.map(\.queryKey)))
+        let metrics = try Self.metricsByQueryKey(
+          queryKeys: queryKeys,
+          in: modelContext
+        )
+        let difficulties = try EstimatedKeywordDifficultyStore.summaries(
+          queryKeys: queryKeys,
+          in: modelContext
+        )
+        let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+          for: tracks.map(\.identityKey),
+          in: modelContext
+        )
+        let summaries = Dictionary(uniqueKeysWithValues: tracks.map { track in
+          (
+            track.identityKey,
+            (
+              createdAt: track.createdAt,
+              summary: Self.keywordSummary(
+                track: track,
+                metrics: metrics[track.queryKey],
+                estimatedDifficulty: difficulties[track.queryKey],
+                refreshStatus: statuses[track.identityKey],
+                asOf: asOf
+              )
+            )
+          )
+        })
+
+        return outcomes.map { outcome in
+          guard let current = summaries[outcome.track.trackIdentityKey],
+            current.createdAt == outcome.track.createdAt
+          else {
+            return outcome
+          }
+          return OpenASOMCPKeywordRefreshOutcome(
+            track: current.summary,
+            rankingProvenance: outcome.rankingProvenance,
+            error: outcome.error
+          )
+        }
+      }
+    } catch {
+      return outcomes
     }
   }
 
@@ -2040,6 +2309,10 @@ final class OpenASOMCPService: Sendable {
         try Self.fetchTrackedKeyword(identityKey: $0, in: modelContext)
       }
       let metrics = try Self.metricsByQueryKey(queryKeys: tracks.map(\.queryKey), in: modelContext)
+      let estimatedDifficulty = try EstimatedKeywordDifficultyStore.summaries(
+        queryKeys: tracks.map(\.queryKey),
+        in: modelContext
+      )
       let refreshStatuses = try TrackedKeywordRefreshStatusStore.snapshots(
         for: tracks.map(\.identityKey),
         in: modelContext
@@ -2058,7 +2331,9 @@ final class OpenASOMCPService: Sendable {
           track: Self.keywordSummary(
             track: track,
             metrics: metric,
-            refreshStatus: refreshStatus
+            estimatedDifficulty: estimatedDifficulty[track.queryKey],
+            refreshStatus: refreshStatus,
+            asOf: now()
           ),
           rankingProvenance: nil,
           error: error.map {
@@ -2703,6 +2978,38 @@ final class OpenASOMCPService: Sendable {
     return rankingProvider
   }
 
+  static func acceptRankingRefreshAttempts(
+    _ requests: [RankingRefreshRequest],
+    appStoreID: Int64,
+    attemptedAt: Date,
+    in modelContext: ModelContext
+  ) throws -> [RankingRefreshRequest] {
+    var acceptedRequests: [RankingRefreshRequest] = []
+    acceptedRequests.reserveCapacity(requests.count)
+
+    for request in requests {
+      guard
+        let track = try fetchTrackedKeyword(
+          identityKey: request.identityKey,
+          in: modelContext
+        ),
+        track.appStoreID == appStoreID,
+        request.matchesGeneration(of: track)
+      else {
+        continue
+      }
+      try upsertRankingRefreshAttempt(
+        request: request,
+        appStoreID: appStoreID,
+        attemptedAt: attemptedAt,
+        in: modelContext
+      )
+      acceptedRequests.append(request)
+    }
+
+    return acceptedRequests
+  }
+
   private static func upsertRankingRefreshAttempt(
     request: RankingRefreshRequest,
     appStoreID: Int64,
@@ -2735,13 +3042,19 @@ final class OpenASOMCPService: Sendable {
 
   private static func keywordRankingRefreshNotes(
     requestedLimit: Int?,
-    appliedLimit: Int
+    appliedLimit: Int,
+    staleGenerationCount: Int
   ) -> [String] {
     var notes = [
       "Candidates with neither a successful nor attempted refresh are selected first, then by least-recent activity using the latest successful, durable-attempt, and process-attempt times, with stable identity-key ties.",
       "Attempt recency persists across OpenASO relaunches, while in-flight reservations are shared across MCP connections for the current process; lastRefreshAt remains the time of the latest successful refresh.",
       "Separate OpenASO processes do not share in-flight reservations, so simultaneous stdio processes can make duplicate attempts even though later calls observe the durable attempt recency.",
     ]
+    if staleGenerationCount > 0 {
+      notes.append(
+        "Skipped \(staleGenerationCount) ranking result(s) because the tracked keyword changed while its refresh was in flight."
+      )
+    }
     if let requestedLimit, requestedLimit != appliedLimit {
       notes.append(
         "The requested track limit of \(requestedLimit) was clamped to \(appliedLimit); the supported range is 1...\(ResponseLimits.maximumKeywordRefreshTrackLimit)."
@@ -3028,40 +3341,57 @@ extension OpenASOMCPService {
             storefront: storefront,
             platform: platform
           )
-          try await backgroundModelStore.write { modelContext in
+          let persistedPageResult = try await backgroundModelStore.write { modelContext in
             let observedAt = now()
+            let track = try Self.ensureTrackedKeyword(
+              request: request,
+              appStoreID: appStoreID,
+              in: modelContext
+            )
+            let persistedRequest = RankingRefreshRequest(track: track)
+            let difficultyPayload = estimatedDifficultyPayloadBuilder(
+              persistedRequest,
+              page,
+              ResponseLimits.defaultRankingAppLimit,
+              observedAt
+            )
+            let pageResult = RankingRefreshPageResult(
+              request: persistedRequest,
+              page: page,
+              searchedAt: observedAt,
+              observedHour: nil,
+              submissionCount: 0,
+              winningCount: 0,
+              confidence: nil,
+              requestedResultLimit: ResponseLimits.defaultRankingAppLimit,
+              estimatedDifficultyPayload: difficultyPayload
+            )
             if let rankingRefreshCoordinator {
-              _ = try Self.ensureTrackedKeyword(
-                request: request,
-                appStoreID: appStoreID,
-                in: modelContext
-              )
-              let pageResult = RankingRefreshPageResult(
-                request: request,
-                page: page,
-                searchedAt: observedAt,
-                observedHour: nil,
-                submissionCount: 0,
-                winningCount: 0,
-                confidence: nil
-              )
               _ = try rankingRefreshCoordinator.persistRankingPage(
                 pageResult,
                 in: modelContext,
                 rebuildDerivedStats: true,
                 saveChanges: false,
-                scheduleMetadataEnrichment: true
+                scheduleMetadataEnrichment: false
               )
+              return pageResult
             } else {
               _ = try Self.persistRankingPage(
                 page,
-                request: request,
+                request: persistedRequest,
                 appStoreID: appStoreID,
                 observedAt: observedAt,
                 appCatalogService: appCatalogService,
                 in: modelContext
               )
             }
+            return pageResult
+          }
+          await persistEstimatedDifficulty(for: [persistedPageResult])
+          if rankingRefreshCoordinator != nil {
+            rankingRefreshCoordinator?.scheduleTopRankingMetadataEnrichment(
+              for: persistedPageResult
+            )
           }
           isTracked = true
         }
@@ -3977,7 +4307,9 @@ extension OpenASOMCPService {
   fileprivate static func keywordSummary(
     track: TrackedAppKeyword,
     metrics: KeywordDailyMetric?,
-    refreshStatus: KeywordRefreshStatusSnapshot? = nil
+    estimatedDifficulty: EstimatedKeywordDifficultySummary? = nil,
+    refreshStatus: KeywordRefreshStatusSnapshot? = nil,
+    asOf: Date = Date()
   )
     -> OpenASOMCPKeywordSummary
   {
@@ -4008,6 +4340,22 @@ extension OpenASOMCPService {
       resultCount: latest?.resultCount ?? track.rankingAppCount,
       popularityScore: metrics?.popularityScore,
       difficultyScore: metrics?.difficultyScore,
+      estimatedDifficulty: estimatedDifficulty.map {
+        OpenASOMCPEstimatedKeywordDifficultySummary(
+          state: $0.stateRaw,
+          score: $0.score,
+          confidenceScore: $0.confidenceScore,
+          confidence: $0.confidenceRaw,
+          unavailableReason: $0.unavailableReasonRaw,
+          estimationSource: $0.estimationSourceRaw,
+          algorithmIdentifier: $0.algorithmIdentifier,
+          algorithmVersion: $0.algorithmVersion,
+          rankingSource: $0.rankingSourceRaw,
+          rankingFetchedAt: $0.rankingFetchedAt,
+          computedAt: $0.computedAt,
+          isStale: $0.isStale(asOf: asOf)
+        )
+      },
       notes: track.notes,
       rankingStatusMessage: resolvedStatus.rankingMessage,
       popularityStatusMessage: resolvedStatus.popularityMessage,
@@ -4016,6 +4364,127 @@ extension OpenASOMCPService {
       latestRankingSource: latest?.source.rawValue,
       latestRankingObservedAt: latest?.searchedAt,
       createdAt: track.createdAt
+    )
+  }
+
+  private static func missingEstimatedKeywordDifficulty(
+    appStoreID: Int64,
+    keyword: String,
+    queryKey: String,
+    storefront: String,
+    platform: AppPlatform
+  ) -> OpenASOMCPEstimatedKeywordDifficulty {
+    OpenASOMCPEstimatedKeywordDifficulty(
+      appStoreID: String(appStoreID),
+      keyword: keyword,
+      queryKey: queryKey,
+      storefront: storefront,
+      platform: platform.rawValue,
+      state: "missing",
+      calculationID: nil,
+      score: nil,
+      confidenceScore: nil,
+      confidence: nil,
+      unavailableReason: nil,
+      estimationSource: nil,
+      algorithmIdentifier: nil,
+      algorithmVersion: nil,
+      requestedResultLimit: nil,
+      providerResultCount: nil,
+      consideredResultCount: nil,
+      ratedResultCount: nil,
+      weightedRatingCoveragePercentage: nil,
+      maximumRatingCount: nil,
+      medianRatingCount: nil,
+      ratingAuthorityScore: nil,
+      metadataSaturationScore: nil,
+      exactTitlePhraseMatchCount: nil,
+      exactSubtitlePhraseMatchCount: nil,
+      rankingSource: nil,
+      rankingFetchedAt: nil,
+      computedAt: nil,
+      isStale: nil,
+      fallback: nil,
+      notes: [],
+      availableEvidenceCount: 0,
+      returnedEvidenceCount: 0,
+      evidenceTruncated: false,
+      evidence: []
+    )
+  }
+
+  private static func estimatedKeywordDifficulty(
+    appStoreID: Int64,
+    snapshot: EstimatedKeywordDifficultySnapshot,
+    evidenceLimit: Int,
+    asOf: Date
+  ) -> OpenASOMCPEstimatedKeywordDifficulty {
+    let evidence = snapshot.resultEvidence.prefix(evidenceLimit).map {
+      OpenASOMCPEstimatedKeywordDifficultyEvidence(
+        position: $0.position,
+        appStoreID: String($0.appStoreID),
+        title: $0.title,
+        subtitle: $0.subtitle,
+        ratingCount: $0.ratingCount,
+        ratingAuthorityScore: $0.ratingAuthorityScore,
+        titleTokenCoveragePercentage: $0.titleTokenCoveragePercentage,
+        combinedTokenCoveragePercentage: $0.combinedTokenCoveragePercentage,
+        metadataMatchScore: $0.metadataMatchScore,
+        exactTitlePhraseMatch: $0.exactTitlePhraseMatch,
+        exactSubtitlePhraseMatch: $0.exactSubtitlePhraseMatch
+      )
+    }
+    let fallback: OpenASOMCPEstimatedKeywordDifficultyFallback?
+    if let provider = snapshot.fallbackProviderRaw,
+      let category = snapshot.fallbackCategoryRaw
+    {
+      fallback = OpenASOMCPEstimatedKeywordDifficultyFallback(
+        provider: provider,
+        category: category,
+        transportCode: snapshot.fallbackTransportCode,
+        httpStatus: snapshot.fallbackHTTPStatus,
+        responseFailure: snapshot.fallbackResponseFailureRaw
+      )
+    } else {
+      fallback = nil
+    }
+
+    return OpenASOMCPEstimatedKeywordDifficulty(
+      appStoreID: String(appStoreID),
+      keyword: snapshot.keyword,
+      queryKey: snapshot.queryKey,
+      storefront: snapshot.storefront,
+      platform: snapshot.platformRaw,
+      state: snapshot.stateRaw,
+      calculationID: snapshot.calculationID.uuidString.lowercased(),
+      score: snapshot.score,
+      confidenceScore: snapshot.confidenceScore,
+      confidence: snapshot.confidenceRaw,
+      unavailableReason: snapshot.unavailableReasonRaw,
+      estimationSource: snapshot.estimationSourceRaw,
+      algorithmIdentifier: snapshot.algorithmIdentifier,
+      algorithmVersion: snapshot.algorithmVersion,
+      requestedResultLimit: snapshot.requestedResultLimit,
+      providerResultCount: snapshot.providerResultCount,
+      consideredResultCount: snapshot.consideredResultCount,
+      ratedResultCount: snapshot.ratedResultCount,
+      weightedRatingCoveragePercentage: snapshot.weightedRatingCoveragePercentage,
+      maximumRatingCount: snapshot.maximumRatingCount,
+      medianRatingCount: snapshot.medianRatingCount,
+      ratingAuthorityScore: snapshot.ratingAuthorityScore,
+      metadataSaturationScore: snapshot.metadataSaturationScore,
+      exactTitlePhraseMatchCount: snapshot.exactTitlePhraseMatchCount,
+      exactSubtitlePhraseMatchCount: snapshot.exactSubtitlePhraseMatchCount,
+      rankingSource: snapshot.rankingSourceRaw,
+      rankingFetchedAt: snapshot.rankingFetchedAt,
+      computedAt: snapshot.computedAt,
+      isStale: snapshot.isStale(asOf: asOf),
+      fallback: fallback,
+      notes: snapshot.notes,
+      availableEvidenceCount: snapshot.resultEvidence.count,
+      returnedEvidenceCount: evidence.count,
+      evidenceTruncated: evidence.count < snapshot.resultEvidence.count,
+      evidence: evidence
     )
   }
 
@@ -4403,6 +4872,11 @@ extension OpenASOMCPService {
     }
     let track = try ensureTrackedKeyword(
       request: request, appStoreID: trackedApp.appStoreID, in: modelContext)
+    guard request.matchesGeneration(of: track) else {
+      throw OpenASOError.providerUnavailable(
+        "The keyword changed while its ranking refresh was in flight. Refresh it again."
+      )
+    }
     let query = track.query
 
     var catalogCache = try appCatalogService.makeSearchRankingPageCache(

@@ -285,6 +285,11 @@ enum EstimatedKeywordDifficultyStoreError: Error, Equatable {
 }
 
 enum EstimatedKeywordDifficultyStore {
+    private struct DifficultyRevisionKey: Hashable {
+        let queryKey: String
+        let calculationID: UUID
+    }
+
     static let maximumEvidenceResultCount = 10
     static let maximumRequestedResultCount = 200
     private static let maximumTextLength = 1_000
@@ -374,26 +379,69 @@ enum EstimatedKeywordDifficultyStore {
         return try snapshot(for: metric, in: modelContext)
     }
 
+    static func summary(
+        queryKey: String,
+        in modelContext: ModelContext
+    ) throws -> EstimatedKeywordDifficultySummary? {
+        try summaries(queryKeys: [queryKey], in: modelContext)[queryKey]
+    }
+
+    /// Loads scalar values only. Evidence rows are intentionally not fetched,
+    /// making this suitable for keyword lists and filter projections.
+    static func summaries(
+        queryKeys: [String],
+        in modelContext: ModelContext
+    ) throws -> [String: EstimatedKeywordDifficultySummary] {
+        let selectedMetrics = try latestMetrics(queryKeys: queryKeys, in: modelContext)
+        var result: [String: EstimatedKeywordDifficultySummary] = [:]
+        result.reserveCapacity(selectedMetrics.count)
+        for (queryKey, metric) in selectedMetrics {
+            result[queryKey] = summary(from: metric)
+        }
+        return result
+    }
+
     static func snapshots(
         queryKeys: [String],
         in modelContext: ModelContext
     ) throws -> [String: EstimatedKeywordDifficultySnapshot] {
-        let targetQueryKeys = Array(Set(queryKeys))
-        guard !targetQueryKeys.isEmpty else { return [:] }
+        let selectedMetrics = try latestMetrics(queryKeys: queryKeys, in: modelContext)
+        guard !selectedMetrics.isEmpty else { return [:] }
 
-        let descriptor = FetchDescriptor<EstimatedKeywordDifficultyMetric>(
-            predicate: #Predicate { metric in
-                targetQueryKeys.contains(metric.queryKey)
+        let selectedQueryKeys = Array(selectedMetrics.keys)
+        let evidenceDescriptor = FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>(
+            predicate: #Predicate { evidence in
+                selectedQueryKeys.contains(evidence.queryKey)
             }
         )
-        let groupedMetrics = Dictionary(
-            grouping: try modelContext.fetch(descriptor),
-            by: \.queryKey
-        )
+        var evidenceByRevision: [DifficultyRevisionKey: [EstimatedKeywordDifficultyResultEvidence]] = [:]
+        for record in try modelContext.fetch(evidenceDescriptor) {
+            guard selectedMetrics[record.queryKey]?.calculationID == record.calculationID else {
+                continue
+            }
+            let revisionKey = DifficultyRevisionKey(
+                queryKey: record.queryKey,
+                calculationID: record.calculationID
+            )
+            evidenceByRevision[revisionKey, default: []].append(evidence(from: record))
+        }
+
         var result: [String: EstimatedKeywordDifficultySnapshot] = [:]
-        for (queryKey, metrics) in groupedMetrics {
-            guard let metric = latestMetric(in: metrics) else { continue }
-            result[queryKey] = try snapshot(for: metric, in: modelContext)
+        result.reserveCapacity(selectedMetrics.count)
+        for (queryKey, metric) in selectedMetrics {
+            let revisionKey = DifficultyRevisionKey(
+                queryKey: queryKey,
+                calculationID: metric.calculationID
+            )
+            let evidence = (evidenceByRevision[revisionKey] ?? [])
+                .sorted { left, right in
+                    if left.position != right.position {
+                        return left.position < right.position
+                    }
+                    return left.appStoreID < right.appStoreID
+                }
+                .prefix(maximumEvidenceResultCount)
+            result[queryKey] = snapshot(from: metric, resultEvidence: Array(evidence))
         }
         return result
     }
@@ -615,9 +663,7 @@ enum EstimatedKeywordDifficultyStore {
         rankingSource: RankingSource
     ) throws {
         guard let fallback else {
-            guard rankingSource != .iTunesFallback else {
-                throw EstimatedKeywordDifficultyStoreError.invalidFallback
-            }
+            // A direct iTunes page has no fallback transition to describe.
             return
         }
         guard rankingSource == .iTunesFallback,
@@ -692,6 +738,31 @@ enum EstimatedKeywordDifficultyStore {
         metrics.max { left, right in
             compareRevision(left, to: right) == .orderedAscending
         }
+    }
+
+    private static func latestMetrics(
+        queryKeys: [String],
+        in modelContext: ModelContext
+    ) throws -> [String: EstimatedKeywordDifficultyMetric] {
+        let targetQueryKeys = Array(Set(queryKeys))
+        guard !targetQueryKeys.isEmpty else { return [:] }
+
+        let descriptor = FetchDescriptor<EstimatedKeywordDifficultyMetric>(
+            predicate: #Predicate { metric in
+                targetQueryKeys.contains(metric.queryKey)
+            }
+        )
+        let groupedMetrics = Dictionary(
+            grouping: try modelContext.fetch(descriptor),
+            by: \.queryKey
+        )
+        var result: [String: EstimatedKeywordDifficultyMetric] = [:]
+        result.reserveCapacity(groupedMetrics.count)
+        for (queryKey, metrics) in groupedMetrics {
+            guard let metric = latestMetric(in: metrics) else { continue }
+            result[queryKey] = metric
+        }
+        return result
     }
 
     private static func compareRevision(
@@ -913,6 +984,46 @@ enum EstimatedKeywordDifficultyStore {
             fallbackResponseFailureRaw: metric.fallbackResponseFailureRaw,
             notes: metric.notes,
             resultEvidence: resultEvidence
+        )
+    }
+
+    private static func summary(
+        from metric: EstimatedKeywordDifficultyMetric
+    ) -> EstimatedKeywordDifficultySummary {
+        EstimatedKeywordDifficultySummary(
+            queryKey: metric.queryKey,
+            calculationID: metric.calculationID,
+            keyword: metric.keyword,
+            storefront: metric.storefront,
+            platformRaw: metric.platformRaw,
+            stateRaw: metric.stateRaw,
+            score: metric.score,
+            confidenceScore: metric.confidenceScore,
+            confidenceRaw: metric.confidenceRaw,
+            unavailableReasonRaw: metric.unavailableReasonRaw,
+            estimationSourceRaw: metric.estimationSourceRaw,
+            algorithmIdentifier: metric.algorithmIdentifier,
+            algorithmVersion: metric.algorithmVersion,
+            requestedResultLimit: metric.requestedResultLimit,
+            providerResultCount: metric.providerResultCount,
+            consideredResultCount: metric.consideredResultCount,
+            ratedResultCount: metric.ratedResultCount,
+            weightedRatingCoveragePercentage: metric.weightedRatingCoveragePercentage,
+            maximumRatingCount: metric.maximumRatingCount,
+            medianRatingCount: metric.medianRatingCount,
+            ratingAuthorityScore: metric.ratingAuthorityScore,
+            metadataSaturationScore: metric.metadataSaturationScore,
+            exactTitlePhraseMatchCount: metric.exactTitlePhraseMatchCount,
+            exactSubtitlePhraseMatchCount: metric.exactSubtitlePhraseMatchCount,
+            rankingSourceRaw: metric.rankingSourceRaw,
+            rankingFetchedAt: metric.rankingFetchedAt,
+            computedAt: metric.computedAt,
+            fallbackProviderRaw: metric.fallbackProviderRaw,
+            fallbackCategoryRaw: metric.fallbackCategoryRaw,
+            fallbackTransportCode: metric.fallbackTransportCode,
+            fallbackHTTPStatus: metric.fallbackHTTPStatus,
+            fallbackResponseFailureRaw: metric.fallbackResponseFailureRaw,
+            notes: metric.notes
         )
     }
 

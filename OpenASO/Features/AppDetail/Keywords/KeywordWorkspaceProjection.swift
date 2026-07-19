@@ -65,7 +65,7 @@ enum KeywordWorkspaceProjection {
         return rows.filter { row in
             matchesSearch(row, searchText: searchText)
                 && matches(row.metrics?.popularityScore, in: filters.popularityRange, configuration: .popularity)
-                && matches(row.metrics?.difficultyScore, in: filters.difficultyRange, configuration: .difficulty)
+                && matches(row.estimatedDifficultyScore, in: filters.difficultyRange, configuration: .difficulty)
                 && matches(row.currentRank, in: filters.positionRange, configuration: .position)
                 && matches(row.trendDelta, in: filters.changeRange, configuration: .change)
                 && (!filters.showsOnlyChangedKeywords || row.trendDelta.map { $0 != 0 } == true)

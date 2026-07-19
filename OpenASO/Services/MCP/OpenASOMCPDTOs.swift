@@ -201,6 +201,21 @@ struct OpenASOMCPKeywordOverviewSummary: Codable, Sendable {
     let latestRefreshAt: Date?
 }
 
+struct OpenASOMCPEstimatedKeywordDifficultySummary: Codable, Equatable, Sendable {
+    let state: String
+    let score: Int?
+    let confidenceScore: Int?
+    let confidence: String?
+    let unavailableReason: String?
+    let estimationSource: String
+    let algorithmIdentifier: String
+    let algorithmVersion: Int
+    let rankingSource: String
+    let rankingFetchedAt: Date
+    let computedAt: Date
+    let isStale: Bool
+}
+
 struct OpenASOMCPKeywordSummary: Codable, Identifiable, Sendable {
     let id: String
     let trackIdentityKey: String
@@ -215,6 +230,7 @@ struct OpenASOMCPKeywordSummary: Codable, Identifiable, Sendable {
     let resultCount: Int?
     let popularityScore: Int?
     let difficultyScore: Int?
+    let estimatedDifficulty: OpenASOMCPEstimatedKeywordDifficultySummary?
     let notes: String
     let rankingStatusMessage: String?
     let popularityStatusMessage: String?
@@ -223,6 +239,70 @@ struct OpenASOMCPKeywordSummary: Codable, Identifiable, Sendable {
     let latestRankingSource: String?
     let latestRankingObservedAt: Date?
     let createdAt: Date
+}
+
+struct OpenASOMCPEstimatedKeywordDifficultyFallback: Codable, Equatable, Sendable {
+    let provider: String
+    let category: String
+    let transportCode: Int?
+    let httpStatus: Int?
+    let responseFailure: String?
+}
+
+struct OpenASOMCPEstimatedKeywordDifficultyEvidence: Codable, Equatable, Identifiable, Sendable {
+    var id: String { "\(position)::\(appStoreID)" }
+
+    let position: Int
+    let appStoreID: String
+    let title: String
+    let subtitle: String?
+    let ratingCount: Int?
+    let ratingAuthorityScore: Int?
+    let titleTokenCoveragePercentage: Int?
+    let combinedTokenCoveragePercentage: Int?
+    let metadataMatchScore: Int?
+    let exactTitlePhraseMatch: Bool
+    let exactSubtitlePhraseMatch: Bool
+}
+
+/// A read-only, app-scoped view of the stored local heuristic and its bounded
+/// evidence. `state == "missing"` is distinct from an unavailable estimate.
+struct OpenASOMCPEstimatedKeywordDifficulty: Codable, Equatable, Sendable {
+    let appStoreID: String
+    let keyword: String
+    let queryKey: String
+    let storefront: String
+    let platform: String
+    let state: String
+    let calculationID: String?
+    let score: Int?
+    let confidenceScore: Int?
+    let confidence: String?
+    let unavailableReason: String?
+    let estimationSource: String?
+    let algorithmIdentifier: String?
+    let algorithmVersion: Int?
+    let requestedResultLimit: Int?
+    let providerResultCount: Int?
+    let consideredResultCount: Int?
+    let ratedResultCount: Int?
+    let weightedRatingCoveragePercentage: Int?
+    let maximumRatingCount: Int?
+    let medianRatingCount: Int?
+    let ratingAuthorityScore: Int?
+    let metadataSaturationScore: Int?
+    let exactTitlePhraseMatchCount: Int?
+    let exactSubtitlePhraseMatchCount: Int?
+    let rankingSource: String?
+    let rankingFetchedAt: Date?
+    let computedAt: Date?
+    let isStale: Bool?
+    let fallback: OpenASOMCPEstimatedKeywordDifficultyFallback?
+    let notes: [String]
+    let availableEvidenceCount: Int
+    let returnedEvidenceCount: Int
+    let evidenceTruncated: Bool
+    let evidence: [OpenASOMCPEstimatedKeywordDifficultyEvidence]
 }
 
 struct OpenASOMCPStoredRankedApp: Codable, Identifiable, Sendable {

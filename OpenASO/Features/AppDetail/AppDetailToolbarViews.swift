@@ -150,6 +150,7 @@ struct AppDetailToolbarSearchField: View {
 struct AppDetailImportExportToolbarMenu: View {
     let exportAction: () -> Void
     let exportHistoryAction: () -> Void
+    let exportEstimatedDifficultyEvidenceAction: () -> Void
     let importAction: () -> Void
     let isImportDisabled: Bool
 
@@ -161,6 +162,13 @@ struct AppDetailImportExportToolbarMenu: View {
 
             Button(action: exportHistoryAction) {
                 Label("Export Historical Rankings CSV", systemImage: "clock.arrow.circlepath")
+            }
+
+            Button(action: exportEstimatedDifficultyEvidenceAction) {
+                Label(
+                    "Export Estimated Difficulty Evidence CSV",
+                    systemImage: "chart.bar.doc.horizontal"
+                )
             }
 
             Button(action: importAction) {

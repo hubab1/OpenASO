@@ -120,6 +120,7 @@ struct AppDetailView: View {
                     AppDetailImportExportToolbarMenu(
                         exportAction: prepareCSVExport,
                         exportHistoryAction: prepareKeywordHistoryCSVExport,
+                        exportEstimatedDifficultyEvidenceAction: prepareEstimatedDifficultyCSVExport,
                         importAction: showCSVImporter,
                         isImportDisabled: isProcessingCSVImport || isImportingCSV
                     )
@@ -601,6 +602,17 @@ struct AppDetailView: View {
         return sanitizedName.isEmpty ? "ratings.csv" : "\(sanitizedName)-ratings.csv"
     }
 
+    private var estimatedDifficultyExportFilename: String {
+        let sanitizedName = appName
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+            .lowercased()
+        let baseName = sanitizedName.isEmpty ? "keywords" : sanitizedName
+
+        return "\(baseName)-estimated-difficulty-evidence.csv"
+    }
+
     private func makeExportDocument() throws -> CSVDocument {
         let tracks = try fetchTrackedKeywords()
         let metricsByQueryKey = try services.keywordMetricsService.metricsMap(
@@ -634,24 +646,16 @@ struct AppDetailView: View {
 
     private func makeKeywordHistoryExportDocument() throws -> CSVDocument {
         let tracks = try fetchTrackedKeywords()
-        let metricsByQueryKey = try services.keywordMetricsService.metricsMap(
-            for: tracks.map(\.queryKey),
-            in: modelContext
+        return try KeywordHistoryCSVExporter.makeDocument(
+            tracks: tracks,
+            appName: appName,
+            appStoreID: appStoreID,
+            selectedStorefrontFilter: selectedStorefrontFilter,
+            workspaceState: keywordWorkspaceState,
+            searchText: searchText,
+            modelContext: modelContext,
+            storefrontTitle: storefrontTitle(for:)
         )
-        let rows = tracks
-            .filter { matchesExportStorefront($0) }
-            .filter { matchesExportPlatform($0) }
-            .filter { matchesExportSearch($0) }
-            .filter { matchesExportMetrics($0, metrics: metricsByQueryKey[$0.queryKey]) }
-            .filter(matchesExportChangedOnly)
-            .flatMap { track in
-                historicalRankingRows(
-                    for: track,
-                    metrics: metricsByQueryKey[track.queryKey]
-                )
-            }
-
-        return CSVDocument(text: KeywordRankingHistoryCSVFormat.encode(rows: rows))
     }
 
     private func makeRatingsExportDocument() async throws -> CSVDocument {
@@ -662,6 +666,18 @@ struct AppDetailView: View {
             searchText: searchText,
             backgroundModelStore: services.backgroundModelStore,
             storefrontCatalog: services.storefrontCatalog
+        )
+    }
+
+    private func makeEstimatedDifficultyExportDocument() async throws -> CSVDocument {
+        try await AppDetailEstimatedDifficultyCSVExporter.makeDocument(
+            appStoreID: appStoreID,
+            appName: appName,
+            selectedStorefrontFilter: selectedStorefrontFilter,
+            selectedPlatformFilter: keywordWorkspaceState.selectedPlatformFilter,
+            difficultyFilterRange: keywordWorkspaceState.difficultyFilterRange,
+            searchText: searchText,
+            backgroundModelStore: services.backgroundModelStore
         )
     }
 
@@ -700,6 +716,24 @@ struct AppDetailView: View {
         }
     }
 
+    private func prepareEstimatedDifficultyCSVExport() {
+        Task {
+            do {
+                exportDocument = try await makeEstimatedDifficultyExportDocument()
+                exportDefaultFilename = estimatedDifficultyExportFilename
+                isExportingCSV = true
+                services.analyticsService.capture(
+                    .csvExported(type: "estimated_difficulty_evidence")
+                )
+            } catch {
+                transferAlert = TrackedKeywordTransferAlert(
+                    title: "Export Failed",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
     private func showCSVImporter() {
         guard !isProcessingCSVImport, !isImportingCSV else {
             return
@@ -716,135 +750,6 @@ struct AppDetailView: View {
         }
 
         return String(previousRank - currentRank)
-    }
-
-    private func historicalRankingRows(
-        for track: TrackedAppKeyword,
-        metrics: KeywordDailyMetric?
-    ) -> [KeywordRankingHistoryCSVRow] {
-        let snapshots = filteredSnapshots(for: track).sorted { $0.searchedAt < $1.searchedAt }
-        guard
-            snapshots.count > 1,
-            let periodStartRank = snapshots.first?.rank,
-            let periodEndRank = snapshots.last?.rank,
-            matchesExportValue(periodStartRank - periodEndRank, in: keywordWorkspaceState.changeFilterRange, configuration: .change)
-        else {
-            return []
-        }
-
-        var previousRank: Int?
-        return snapshots.map { snapshot in
-            let snapshotChange = changeText(currentRank: snapshot.rank, previousRank: previousRank)
-            let periodChange = changeText(currentRank: snapshot.rank, previousRank: periodStartRank)
-            previousRank = snapshot.rank
-
-            return KeywordRankingHistoryCSVRow(
-                appName: appName,
-                appID: String(appStoreID),
-                platform: track.platform.rawValue,
-                keyword: track.term,
-                storeDomain: track.storefront,
-                store: storefrontTitle(for: track.storefront),
-                observedAt: KeywordRankingHistoryCSVFormat.string(from: snapshot.searchedAt),
-                ranking: snapshot.rank.map(String.init) ?? "1000",
-                change: snapshotChange,
-                periodChange: periodChange,
-                popularity: metrics?.popularityScore.map(String.init) ?? "",
-                difficulty: metrics?.difficultyScore.map(String.init) ?? "",
-                appsInRanking: String(snapshot.resultCount),
-                source: snapshot.sourceRaw,
-                error: snapshot.errorMessage ?? ""
-            )
-        }
-    }
-
-    private func filteredSnapshots(for track: TrackedAppKeyword) -> [TrackedKeywordDailyRanking] {
-        track.sortedSnapshots.filter { snapshot in
-            guard let cutoffDate = keywordWorkspaceState.selectedDateRange.cutoffDate else {
-                return true
-            }
-
-            return snapshot.searchedAt >= cutoffDate
-        }
-    }
-
-    private func matchesExportStorefront(_ track: TrackedAppKeyword) -> Bool {
-        switch selectedStorefrontFilter {
-        case .all:
-            return true
-        case .storefront(let code, _):
-            return track.storefront == code
-        }
-    }
-
-    private func matchesExportPlatform(_ track: TrackedAppKeyword) -> Bool {
-        keywordWorkspaceState.selectedPlatformFilter.matches(track.platform)
-    }
-
-    private func matchesExportSearch(_ track: TrackedAppKeyword) -> Bool {
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSearch.isEmpty else {
-            return true
-        }
-
-        return track.term.localizedCaseInsensitiveContains(trimmedSearch)
-    }
-
-    private func matchesExportMetrics(_ track: TrackedAppKeyword, metrics: KeywordDailyMetric?) -> Bool {
-        guard matchesExportValue(metrics?.popularityScore, in: keywordWorkspaceState.popularityFilterRange, configuration: .popularity),
-              matchesExportValue(metrics?.difficultyScore, in: keywordWorkspaceState.difficultyFilterRange, configuration: .difficulty)
-        else {
-            return false
-        }
-
-        let snapshots = filteredSnapshots(for: track)
-        guard let latestRank = snapshots.last?.rank else {
-            return MetricFilterRange.position.isDefault(keywordWorkspaceState.positionFilterRange)
-        }
-
-        return matchesExportValue(latestRank, in: keywordWorkspaceState.positionFilterRange, configuration: .position)
-    }
-
-    private func matchesExportChangedOnly(_ track: TrackedAppKeyword) -> Bool {
-        guard keywordWorkspaceState.showsOnlyChangedKeywords else {
-            return true
-        }
-
-        let rankedSnapshots = filteredSnapshots(for: track).compactMap(\.rank)
-        guard let firstRank = rankedSnapshots.first, let latestRank = rankedSnapshots.last else {
-            return false
-        }
-
-        return firstRank != latestRank
-    }
-
-    private func matchesExportValue(_ value: Int?, in range: ClosedRange<Double>, configuration: MetricFilterRange) -> Bool {
-        if configuration.isDefault(range) {
-            return true
-        }
-
-        guard let value else {
-            return false
-        }
-
-        return range.contains(Double(value))
-    }
-
-    private func changeText(currentRank: Int?, previousRank: Int?) -> String {
-        guard let currentRank, let previousRank else {
-            return "0"
-        }
-
-        let change = previousRank - currentRank
-        if change > 0 {
-            return "+\(change)"
-        }
-
-        if change < 0 {
-            return String(change)
-        }
-
-        return "0"
     }
 
     private func importCSV(from result: Result<[URL], Error>) {
@@ -1313,5 +1218,279 @@ struct AppDetailView: View {
         }
 
         return "\(storefront.flagEmoji) \(storefront.name)"
+    }
+}
+
+extension AppDetailView {
+    enum KeywordHistoryCSVExporter {
+        static func makeDocument(
+            tracks: [TrackedAppKeyword],
+            appName: String,
+            appStoreID: Int64,
+            selectedStorefrontFilter: StorefrontFilter,
+            workspaceState: KeywordWorkspaceState,
+            searchText: String,
+            modelContext: ModelContext,
+            storefrontTitle: (String) -> String
+        ) throws -> CSVDocument {
+            let queryKeys = tracks.map(\.queryKey)
+            let metricsByQueryKey = try metricsMap(
+                queryKeys: queryKeys,
+                in: modelContext
+            )
+            let estimatedDifficultyByQueryKey = try EstimatedKeywordDifficultyStore.summaries(
+                queryKeys: queryKeys,
+                in: modelContext
+            )
+            let rows = tracks
+                .filter {
+                    matchesStorefront(
+                        $0,
+                        selectedStorefrontFilter: selectedStorefrontFilter
+                    )
+                }
+                .filter {
+                    workspaceState.selectedPlatformFilter.matches($0.platform)
+                }
+                .filter {
+                    matchesSearch($0, searchText: searchText)
+                }
+                .filter { track in
+                    matchesMetrics(
+                        track,
+                        metrics: metricsByQueryKey[track.queryKey],
+                        estimatedDifficulty: estimatedDifficultyByQueryKey[track.queryKey],
+                        workspaceState: workspaceState
+                    )
+                }
+                .filter {
+                    matchesChangedOnly($0, workspaceState: workspaceState)
+                }
+                .flatMap { track in
+                    historicalRows(
+                        for: track,
+                        metrics: metricsByQueryKey[track.queryKey],
+                        appName: appName,
+                        appStoreID: appStoreID,
+                        workspaceState: workspaceState,
+                        storefrontTitle: storefrontTitle
+                    )
+                }
+
+            return CSVDocument(text: KeywordRankingHistoryCSVFormat.encode(rows: rows))
+        }
+
+        private static func metricsMap(
+            queryKeys: [String],
+            in modelContext: ModelContext
+        ) throws -> [String: KeywordDailyMetric] {
+            let uniqueQueryKeys = Array(Set(queryKeys))
+            guard !uniqueQueryKeys.isEmpty else { return [:] }
+
+            let targetQueryKeys = uniqueQueryKeys
+            let descriptor = FetchDescriptor<KeywordDailyMetric>(
+                predicate: #Predicate { metric in
+                    targetQueryKeys.contains(metric.queryKey)
+                }
+            )
+            return Dictionary(
+                uniqueKeysWithValues: try modelContext.fetch(descriptor).map {
+                    ($0.queryKey, $0)
+                }
+            )
+        }
+
+        private static func historicalRows(
+            for track: TrackedAppKeyword,
+            metrics: KeywordDailyMetric?,
+            appName: String,
+            appStoreID: Int64,
+            workspaceState: KeywordWorkspaceState,
+            storefrontTitle: (String) -> String
+        ) -> [KeywordRankingHistoryCSVRow] {
+            let snapshots = filteredSnapshots(
+                for: track,
+                selectedDateRange: workspaceState.selectedDateRange
+            )
+            guard
+                snapshots.count > 1,
+                let periodStartRank = snapshots.first?.rank,
+                let periodEndRank = snapshots.last?.rank,
+                matchesValue(
+                    periodStartRank - periodEndRank,
+                    in: workspaceState.changeFilterRange,
+                    configuration: .change
+                )
+            else {
+                return []
+            }
+
+            var previousRank: Int?
+            return snapshots.map { snapshot in
+                let snapshotChange = changeText(
+                    currentRank: snapshot.rank,
+                    previousRank: previousRank
+                )
+                let periodChange = changeText(
+                    currentRank: snapshot.rank,
+                    previousRank: periodStartRank
+                )
+                previousRank = snapshot.rank
+
+                return KeywordRankingHistoryCSVRow(
+                    appName: appName,
+                    appID: String(appStoreID),
+                    platform: track.platform.rawValue,
+                    keyword: track.term,
+                    storeDomain: track.storefront,
+                    store: storefrontTitle(track.storefront),
+                    observedAt: KeywordRankingHistoryCSVFormat.string(from: snapshot.searchedAt),
+                    ranking: snapshot.rank.map(String.init) ?? "1000",
+                    change: snapshotChange,
+                    periodChange: periodChange,
+                    popularity: metrics?.popularityScore.map(String.init) ?? "",
+                    difficulty: metrics?.difficultyScore.map(String.init) ?? "",
+                    appsInRanking: String(snapshot.resultCount),
+                    source: snapshot.sourceRaw,
+                    error: snapshot.errorMessage ?? ""
+                )
+            }
+        }
+
+        private static func filteredSnapshots(
+            for track: TrackedAppKeyword,
+            selectedDateRange: TrendDateRange
+        ) -> [TrackedKeywordDailyRanking] {
+            track.sortedSnapshots.filter { snapshot in
+                guard let cutoffDate = selectedDateRange.cutoffDate else {
+                    return true
+                }
+
+                return snapshot.searchedAt >= cutoffDate
+            }
+        }
+
+        private static func matchesStorefront(
+            _ track: TrackedAppKeyword,
+            selectedStorefrontFilter: StorefrontFilter
+        ) -> Bool {
+            switch selectedStorefrontFilter {
+            case .all:
+                return true
+            case .storefront(let code, _):
+                return track.storefront == code
+            }
+        }
+
+        private static func matchesSearch(
+            _ track: TrackedAppKeyword,
+            searchText: String
+        ) -> Bool {
+            let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedSearch.isEmpty else {
+                return true
+            }
+
+            return track.term.localizedCaseInsensitiveContains(trimmedSearch)
+        }
+
+        private static func matchesMetrics(
+            _ track: TrackedAppKeyword,
+            metrics: KeywordDailyMetric?,
+            estimatedDifficulty: EstimatedKeywordDifficultySummary?,
+            workspaceState: KeywordWorkspaceState
+        ) -> Bool {
+            guard matchesValue(
+                metrics?.popularityScore,
+                in: workspaceState.popularityFilterRange,
+                configuration: .popularity
+            ), matchesValue(
+                estimatedDifficultyScore(from: estimatedDifficulty),
+                in: workspaceState.difficultyFilterRange,
+                configuration: .difficulty
+            ) else {
+                return false
+            }
+
+            let snapshots = filteredSnapshots(
+                for: track,
+                selectedDateRange: workspaceState.selectedDateRange
+            )
+            guard let latestRank = snapshots.last?.rank else {
+                return MetricFilterRange.position.isDefault(
+                    workspaceState.positionFilterRange
+                )
+            }
+
+            return matchesValue(
+                latestRank,
+                in: workspaceState.positionFilterRange,
+                configuration: .position
+            )
+        }
+
+        private static func estimatedDifficultyScore(
+            from summary: EstimatedKeywordDifficultySummary?
+        ) -> Int? {
+            guard let summary, summary.state == .estimated else { return nil }
+            return summary.score
+        }
+
+        private static func matchesChangedOnly(
+            _ track: TrackedAppKeyword,
+            workspaceState: KeywordWorkspaceState
+        ) -> Bool {
+            guard workspaceState.showsOnlyChangedKeywords else {
+                return true
+            }
+
+            let rankedSnapshots = filteredSnapshots(
+                for: track,
+                selectedDateRange: workspaceState.selectedDateRange
+            ).compactMap(\.rank)
+            guard let firstRank = rankedSnapshots.first,
+                  let latestRank = rankedSnapshots.last
+            else {
+                return false
+            }
+
+            return firstRank != latestRank
+        }
+
+        private static func matchesValue(
+            _ value: Int?,
+            in range: ClosedRange<Double>,
+            configuration: MetricFilterRange
+        ) -> Bool {
+            if configuration.isDefault(range) {
+                return true
+            }
+
+            guard let value else {
+                return false
+            }
+
+            return range.contains(Double(value))
+        }
+
+        private static func changeText(
+            currentRank: Int?,
+            previousRank: Int?
+        ) -> String {
+            guard let currentRank, let previousRank else {
+                return "0"
+            }
+
+            let change = previousRank - currentRank
+            if change > 0 {
+                return "+\(change)"
+            }
+
+            if change < 0 {
+                return String(change)
+            }
+
+            return "0"
+        }
     }
 }

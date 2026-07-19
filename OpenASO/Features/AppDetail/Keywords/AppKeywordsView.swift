@@ -164,12 +164,18 @@ struct AppKeywordsView: View {
         let topResultsByCrawlKey: [String: [KeywordRankingAppSummary]]
     }
 
+    private struct MetricSnapshotBundle: Sendable {
+        let legacyByQueryKey: [String: KeywordMetricsSnapshot]
+        let estimatedDifficultyByQueryKey: [String: EstimatedKeywordDifficultySummary]
+    }
+
     private static let rankingFetchChunkSize = 500
 
     private func makeRows(
         from tracks: [TrackedAppKeyword],
         snapshotBuckets: SnapshotBuckets,
         metricsByQueryKey: [String: KeywordMetricsSnapshot],
+        estimatedDifficultyByQueryKey: [String: EstimatedKeywordDifficultySummary],
         refreshStatusesByIdentityKey: [String: KeywordRefreshStatusSnapshot]
     ) -> [KeywordWorkspaceRow] {
         let storefrontLookup = storefrontLookup
@@ -182,6 +188,7 @@ struct AppKeywordsView: View {
                 snapshotBuckets: snapshotBuckets,
                 storefrontLookup: storefrontLookup,
                 metricsByQueryKey: metricsByQueryKey,
+                estimatedDifficultyByQueryKey: estimatedDifficultyByQueryKey,
                 refreshStatusesByIdentityKey: refreshStatusesByIdentityKey
             ) else {
                 continue
@@ -241,13 +248,14 @@ struct AppKeywordsView: View {
         ) {
             try Task.checkCancellation()
             let platformTracks = tracks.filter(matchesPlatform)
-            let loadedMetrics = try await loadMetricsSnapshots(for: platformTracks.map(\.queryKey))
+            let loadedMetrics = try await loadMetricSnapshots(for: platformTracks.map(\.queryKey))
             try Task.checkCancellation()
             let snapshotBuckets = try fetchSnapshotBuckets(for: platformTracks)
             let loadedRows = makeRows(
                 from: platformTracks,
                 snapshotBuckets: snapshotBuckets,
-                metricsByQueryKey: loadedMetrics,
+                metricsByQueryKey: loadedMetrics.legacyByQueryKey,
+                estimatedDifficultyByQueryKey: loadedMetrics.estimatedDifficultyByQueryKey,
                 refreshStatusesByIdentityKey: TrackedKeywordRefreshStatusStore.snapshots(
                     from: refreshStatuses
                 )
@@ -270,18 +278,39 @@ struct AppKeywordsView: View {
         }
     }
 
-    private func loadMetricsSnapshots(for queryKeys: [String]) async throws -> [String: KeywordMetricsSnapshot] {
+    private func loadMetricSnapshots(for queryKeys: [String]) async throws -> MetricSnapshotBundle {
         guard !queryKeys.isEmpty else {
-            return [:]
+            return MetricSnapshotBundle(
+                legacyByQueryKey: [:],
+                estimatedDifficultyByQueryKey: [:]
+            )
         }
 
         if let backgroundModelStore = services.backgroundModelStore {
             return try await backgroundModelStore.read { modelContext in
-                try KeywordMetricsSnapshot.map(for: queryKeys, in: modelContext)
+                try MetricSnapshotBundle(
+                    legacyByQueryKey: KeywordMetricsSnapshot.map(
+                        for: queryKeys,
+                        in: modelContext
+                    ),
+                    estimatedDifficultyByQueryKey: EstimatedKeywordDifficultyStore.summaries(
+                        queryKeys: queryKeys,
+                        in: modelContext
+                    )
+                )
             }
         }
 
-        return try KeywordMetricsSnapshot.map(for: queryKeys, in: modelContext)
+        return try MetricSnapshotBundle(
+            legacyByQueryKey: KeywordMetricsSnapshot.map(
+                for: queryKeys,
+                in: modelContext
+            ),
+            estimatedDifficultyByQueryKey: EstimatedKeywordDifficultyStore.summaries(
+                queryKeys: queryKeys,
+                in: modelContext
+            )
+        )
     }
 
     private func matchesPlatform(for track: TrackedAppKeyword) -> Bool {
@@ -307,6 +336,7 @@ struct AppKeywordsView: View {
         snapshotBuckets: SnapshotBuckets,
         storefrontLookup: [String: StorefrontDefinition],
         metricsByQueryKey: [String: KeywordMetricsSnapshot],
+        estimatedDifficultyByQueryKey: [String: EstimatedKeywordDifficultySummary],
         refreshStatusesByIdentityKey: [String: KeywordRefreshStatusSnapshot]
     ) -> KeywordWorkspaceRow? {
         let latestSnapshot = snapshotBuckets.latestByTrackKey[track.identityKey]
@@ -317,6 +347,7 @@ struct AppKeywordsView: View {
             track: track,
             storefront: storefrontLookup[track.storefront],
             metrics: metricsByQueryKey[track.queryKey],
+            estimatedDifficulty: estimatedDifficultyByQueryKey[track.queryKey],
             refreshStatus: TrackedKeywordRefreshStatusStore.snapshot(
                 for: track,
                 persisted: refreshStatusesByIdentityKey[track.identityKey]

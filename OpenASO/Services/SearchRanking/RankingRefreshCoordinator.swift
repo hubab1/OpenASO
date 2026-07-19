@@ -8,19 +8,22 @@ struct RankingRefreshRequest: Sendable {
     let term: String
     let storefront: String
     let platform: AppPlatform
+    let trackCreatedAt: Date?
 
     init(
         identityKey: String,
         queryKey: String,
         term: String,
         storefront: String,
-        platform: AppPlatform
+        platform: AppPlatform,
+        trackCreatedAt: Date? = nil
     ) {
         self.identityKey = identityKey
         self.queryKey = queryKey
         self.term = term
         self.storefront = storefront
         self.platform = platform
+        self.trackCreatedAt = trackCreatedAt
     }
 
     init(track: TrackedAppKeyword) {
@@ -29,6 +32,12 @@ struct RankingRefreshRequest: Sendable {
         self.term = track.term
         self.storefront = track.storefront
         self.platform = track.platform
+        self.trackCreatedAt = track.createdAt
+    }
+
+    func matchesGeneration(of track: TrackedAppKeyword) -> Bool {
+        identityKey == track.identityKey
+            && (trackCreatedAt.map { $0 == track.createdAt } ?? true)
     }
 }
 
@@ -78,7 +87,8 @@ struct RankingRequestGroup: Sendable {
                 ),
                 term: normalizedTerm,
                 storefront: normalizedStorefront,
-                platform: request.platform
+                platform: request.platform,
+                trackCreatedAt: nil
             )
             groupIndexByKey[key] = groups.count
             groups.append(Self(
@@ -99,7 +109,9 @@ struct RankingRequestGroup: Sendable {
                 observedHour: pageResult.observedHour,
                 submissionCount: pageResult.submissionCount,
                 winningCount: pageResult.winningCount,
-                confidence: pageResult.confidence
+                confidence: pageResult.confidence,
+                requestedResultLimit: pageResult.requestedResultLimit,
+                estimatedDifficultyPayload: pageResult.estimatedDifficultyPayload
             )
         }
     }
@@ -113,6 +125,30 @@ struct RankingRefreshPageResult: Sendable {
     let submissionCount: Int
     let winningCount: Int
     let confidence: String?
+    let requestedResultLimit: Int
+    let estimatedDifficultyPayload: EstimatedKeywordDifficultyPersistencePayload?
+
+    init(
+        request: RankingRefreshRequest,
+        page: SearchRankingPage,
+        searchedAt: Date,
+        observedHour: Int?,
+        submissionCount: Int,
+        winningCount: Int,
+        confidence: String?,
+        requestedResultLimit: Int = SearchRankingCrawl.fullKeywordRankingLimit,
+        estimatedDifficultyPayload: EstimatedKeywordDifficultyPersistencePayload? = nil
+    ) {
+        self.request = request
+        self.page = page
+        self.searchedAt = searchedAt
+        self.observedHour = observedHour
+        self.submissionCount = submissionCount
+        self.winningCount = winningCount
+        self.confidence = confidence
+        self.requestedResultLimit = requestedResultLimit
+        self.estimatedDifficultyPayload = estimatedDifficultyPayload
+    }
 }
 
 struct RankingMetadataEnrichmentRequest: Hashable, Sendable {
@@ -151,11 +187,19 @@ struct RankingStatsRebuildRequest: Hashable, Sendable {
 }
 
 final class RankingRefreshCoordinator: Sendable {
+    typealias EstimatedDifficultyPayloadBuilder = @Sendable (
+        _ request: RankingRefreshRequest,
+        _ page: SearchRankingPage,
+        _ requestedResultLimit: Int,
+        _ rankingFetchedAt: Date
+    ) -> EstimatedKeywordDifficultyPersistencePayload?
+
     private let rankingProvider: any SearchRankingProvider
     private let appCatalogService: AppCatalogService
     private let analyticsService: AnalyticsService
     private let refreshTriggerRecorder: (@Sendable (Date) async -> Void)?
     private let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?
+    private let estimatedDifficultyPayloadBuilder: EstimatedDifficultyPayloadBuilder
 
     @MainActor
     init(
@@ -163,7 +207,19 @@ final class RankingRefreshCoordinator: Sendable {
         appCatalogService: AppCatalogService,
         analyticsService: AnalyticsService? = nil,
         refreshTriggerRecorder: (@Sendable (Date) async -> Void)? = nil,
-        metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)? = nil
+        metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)? = nil,
+        estimatedDifficultyPayloadBuilder: @escaping EstimatedDifficultyPayloadBuilder = {
+            request,
+            page,
+            requestedResultLimit,
+            rankingFetchedAt in
+            EstimatedKeywordDifficultyPersistenceAdapter.payload(
+                request: request,
+                page: page,
+                requestedResultLimit: requestedResultLimit,
+                rankingFetchedAt: rankingFetchedAt
+            )
+        }
     ) {
         self.rankingProvider = rankingProvider
         self.appCatalogService = appCatalogService
@@ -173,6 +229,7 @@ final class RankingRefreshCoordinator: Sendable {
         )
         self.refreshTriggerRecorder = refreshTriggerRecorder
         self.metadataEnrichmentHandler = metadataEnrichmentHandler
+        self.estimatedDifficultyPayloadBuilder = estimatedDifficultyPayloadBuilder
     }
 
     @MainActor
@@ -232,14 +289,22 @@ final class RankingRefreshCoordinator: Sendable {
                 platform: request.platform,
                 limit: limit
             )
+            let fetchedAt = Date()
             return .success(RankingRefreshPageResult(
                 request: request,
                 page: page,
-                searchedAt: .now,
+                searchedAt: fetchedAt,
                 observedHour: nil,
                 submissionCount: 1,
                 winningCount: 1,
-                confidence: "single_source"
+                confidence: "single_source",
+                requestedResultLimit: limit,
+                estimatedDifficultyPayload: estimatedDifficultyPayloadBuilder(
+                    request,
+                    page,
+                    limit,
+                    fetchedAt
+                )
             ))
         } catch {
             return .failure(OpenASOError.map(error))
@@ -251,6 +316,7 @@ final class RankingRefreshCoordinator: Sendable {
         limit: Int = SearchRankingCrawl.fullKeywordRankingLimit
     ) -> @Sendable (RankingRefreshRequest) async -> Result<RankingRefreshPageResult, OpenASOError> {
         let rankingProvider = rankingProvider
+        let estimatedDifficultyPayloadBuilder = estimatedDifficultyPayloadBuilder
         return { request in
             do {
                 let page = try await rankingProvider.search(
@@ -259,14 +325,22 @@ final class RankingRefreshCoordinator: Sendable {
                     platform: request.platform,
                     limit: limit
                 )
+                let fetchedAt = Date()
                 return .success(RankingRefreshPageResult(
                     request: request,
                     page: page,
-                    searchedAt: .now,
+                    searchedAt: fetchedAt,
                     observedHour: nil,
                     submissionCount: 1,
                     winningCount: 1,
-                    confidence: "single_source"
+                    confidence: "single_source",
+                    requestedResultLimit: limit,
+                    estimatedDifficultyPayload: estimatedDifficultyPayloadBuilder(
+                        request,
+                        page,
+                        limit,
+                        fetchedAt
+                    )
                 ))
             } catch {
                 return .failure(OpenASOError.map(error))
@@ -285,31 +359,76 @@ final class RankingRefreshCoordinator: Sendable {
         guard let track = try fetchTrackedAppKeyword(identityKey: pageResult.request.identityKey, in: modelContext) else {
             throw OpenASOError.appNotFound
         }
+        guard pageResult.request.matchesGeneration(of: track) else {
+            throw OpenASOError.providerUnavailable(
+                "The keyword changed while its ranking refresh was in flight. Refresh it again."
+            )
+        }
 
-        return try persistRankingPage(
-            pageResult.page,
-            searchedAt: pageResult.searchedAt,
-            observedHour: pageResult.observedHour,
-            submissionCount: pageResult.submissionCount,
-            winningCount: pageResult.winningCount,
-            confidence: pageResult.confidence,
-            track: track,
-            trackedApp: track.trackedApp,
-            in: modelContext,
-            rebuildDerivedStats: rebuildDerivedStats,
-            saveChanges: saveChanges,
-            scheduleMetadataEnrichment: scheduleMetadataEnrichment
-        )
+        let snapshot: TrackedKeywordDailyRanking
+        do {
+            snapshot = try persistRankingPage(
+                pageResult.page,
+                searchedAt: pageResult.searchedAt,
+                observedHour: pageResult.observedHour,
+                submissionCount: pageResult.submissionCount,
+                winningCount: pageResult.winningCount,
+                confidence: pageResult.confidence,
+                track: track,
+                trackedApp: track.trackedApp,
+                in: modelContext,
+                rebuildDerivedStats: rebuildDerivedStats,
+                saveChanges: false,
+                scheduleMetadataEnrichment: false
+            )
+
+            if saveChanges {
+                try modelContext.save()
+            }
+        } catch {
+            if saveChanges {
+                modelContext.rollback()
+            }
+            throw error
+        }
+
+        // Ranking observations are authoritative; the local difficulty metric
+        // is optional derived data. Commit the ranking first, then isolate a
+        // rejected estimate so it cannot turn a valid provider response into
+        // a ranking failure. Batched callers pass `saveChanges: false` and
+        // persist their estimates in a separate background-store transaction.
+        if saveChanges, let payload = pageResult.estimatedDifficultyPayload,
+           payload.queryKey == track.queryKey
+        {
+            do {
+                _ = try EstimatedKeywordDifficultyStore.upsert(payload, in: modelContext)
+                try modelContext.save()
+            } catch {
+                modelContext.rollback()
+                OpenASOLog.refresh.error(
+                    "Skipped optional estimated difficulty persistence: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                )
+            }
+        }
+
+        if scheduleMetadataEnrichment {
+            scheduleTopRankingMetadataEnrichment(for: pageResult)
+        }
+        return snapshot
     }
 
     @discardableResult
     func recordRefreshFailure(
         identityKey: String,
+        trackCreatedAt: Date? = nil,
         error: OpenASOError,
         in modelContext: ModelContext,
         saveChanges: Bool = true
     ) throws -> PersistentIdentifier? {
         guard let track = try fetchTrackedAppKeyword(identityKey: identityKey, in: modelContext) else {
+            return nil
+        }
+        guard trackCreatedAt.map({ $0 == track.createdAt }) ?? true else {
             return nil
         }
 
@@ -977,14 +1096,14 @@ final class RankingRefreshCoordinator: Sendable {
                     } catch {
                         let mappedError = OpenASOError.map(error)
                         do {
-                            try TrackedKeywordRefreshStatusStore.set(
-                                "Ranking failed to refresh. \(mappedError.localizedDescription)",
-                                domain: .ranking,
-                                for: track,
+                            _ = try recordRefreshFailure(
+                                identityKey: targetPageResult.request.identityKey,
+                                trackCreatedAt: targetPageResult.request.trackCreatedAt,
+                                error: mappedError,
                                 in: modelContext
                             )
-                            try modelContext.save()
                         } catch {
+                            modelContext.rollback()
                             OpenASOLog.refresh.error(
                                 "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
                             )
@@ -1011,14 +1130,14 @@ final class RankingRefreshCoordinator: Sendable {
                     }
 
                     do {
-                        try TrackedKeywordRefreshStatusStore.set(
-                            "Ranking failed to refresh. \(error.localizedDescription)",
-                            domain: .ranking,
-                            for: track,
+                        _ = try recordRefreshFailure(
+                            identityKey: targetRequest.identityKey,
+                            trackCreatedAt: targetRequest.trackCreatedAt,
+                            error: error,
                             in: modelContext
                         )
-                        try modelContext.save()
                     } catch {
+                        modelContext.rollback()
                         OpenASOLog.refresh.error(
                             "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
                         )

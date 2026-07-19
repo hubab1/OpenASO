@@ -286,3 +286,116 @@ struct AppDetailRatingsCSVExporter {
         value.formatted(.number.precision(.fractionLength(0...4)))
     }
 }
+
+@MainActor
+struct AppDetailEstimatedDifficultyCSVExporter {
+    static func makeDocument(
+        appStoreID: Int64,
+        appName: String,
+        selectedStorefrontFilter: StorefrontFilter,
+        selectedPlatformFilter: PlatformFilter,
+        difficultyFilterRange: ClosedRange<Double>,
+        searchText: String,
+        backgroundModelStore: BackgroundModelStore?,
+        asOf date: Date = .now
+    ) async throws -> CSVDocument {
+        guard let backgroundModelStore else {
+            throw OpenASOError.providerUnavailable(
+                "Estimated-difficulty evidence export is unavailable until the model store is ready."
+            )
+        }
+
+        let selectedStorefront: String?
+        switch selectedStorefrontFilter {
+        case .all:
+            selectedStorefront = nil
+        case .storefront(let code, _):
+            selectedStorefront = code
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        }
+
+        let selectedPlatformRaw: String?
+        switch selectedPlatformFilter {
+        case .all:
+            selectedPlatformRaw = nil
+        case .platform(let platform):
+            selectedPlatformRaw = platform.rawValue
+        }
+
+        let activeDifficultyRange = MetricFilterRange.difficulty.isDefault(
+            difficultyFilterRange
+        ) ? nil : difficultyFilterRange
+        let normalizedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let items = try await backgroundModelStore.read { modelContext in
+            try fetchItems(
+                appStoreID: appStoreID,
+                appName: appName,
+                selectedStorefront: selectedStorefront,
+                selectedPlatformRaw: selectedPlatformRaw,
+                activeDifficultyRange: activeDifficultyRange,
+                normalizedSearch: normalizedSearch,
+                in: modelContext
+            )
+        }
+        return CSVDocument(
+            text: EstimatedKeywordDifficultyCSVFormat.encode(items: items, asOf: date)
+        )
+    }
+
+    nonisolated private static func fetchItems(
+        appStoreID: Int64,
+        appName: String,
+        selectedStorefront: String?,
+        selectedPlatformRaw: String?,
+        activeDifficultyRange: ClosedRange<Double>?,
+        normalizedSearch: String,
+        in modelContext: ModelContext
+    ) throws -> [EstimatedKeywordDifficultyCSVItem] {
+        let targetAppStoreID = appStoreID
+        let descriptor = FetchDescriptor<TrackedAppKeyword>(
+            predicate: #Predicate { track in
+                track.appStoreID == targetAppStoreID
+            },
+            sortBy: [
+                SortDescriptor(\TrackedAppKeyword.term, order: .forward),
+                SortDescriptor(\TrackedAppKeyword.storefront, order: .forward),
+                SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward)
+            ]
+        )
+        let scopedTracks = try modelContext.fetch(descriptor).filter { track in
+            guard selectedStorefront == nil || track.storefront == selectedStorefront else {
+                return false
+            }
+            guard selectedPlatformRaw == nil || track.platformRaw == selectedPlatformRaw else {
+                return false
+            }
+            return normalizedSearch.isEmpty || track.term.localizedStandardContains(normalizedSearch)
+        }
+        let snapshots = try EstimatedKeywordDifficultyStore.snapshots(
+            queryKeys: scopedTracks.map(\.queryKey),
+            in: modelContext
+        )
+        let tracks = scopedTracks.filter { track in
+            guard let activeDifficultyRange else {
+                return true
+            }
+            guard let score = snapshots[track.queryKey]?.score else {
+                return false
+            }
+            return activeDifficultyRange.contains(Double(score))
+        }
+
+        return tracks.map { track in
+            EstimatedKeywordDifficultyCSVItem(
+                appName: appName,
+                appStoreID: appStoreID,
+                keyword: track.term,
+                queryKey: track.queryKey,
+                storefront: track.storefront,
+                platformRaw: track.platformRaw,
+                snapshot: snapshots[track.queryKey]
+            )
+        }
+    }
+}
