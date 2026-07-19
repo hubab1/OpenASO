@@ -4,6 +4,7 @@ struct RootView: View {
     @Environment(AppServices.self) private var services
 
     @State private var selectedApp: TrackedApp?
+    @State private var isPresentingKeywordResearch = false
 
     var body: some View {
         NavigationSplitView {
@@ -13,6 +14,19 @@ struct RootView: View {
             RootDetailView(selectedApp: selectedApp)
         }
         .navigationTitle("OpenASO")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    isPresentingKeywordResearch = true
+                } label: {
+                    Label("Keyword Research", systemImage: "magnifyingglass")
+                }
+                .help("Open the pre-live keyword research workspace")
+            }
+        }
+        .sheet(isPresented: $isPresentingKeywordResearch) {
+            KeywordResearchWorkspaceLauncher()
+        }
         .task {
             guard !Self.isRunningUnderTests else {
                 return
