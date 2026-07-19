@@ -1,0 +1,681 @@
+diff --git a/OpenASO.xcodeproj/project.pbxproj b/OpenASO.xcodeproj/project.pbxproj
+index 1e2c7ac..d836ec0 100644
+--- a/OpenASO.xcodeproj/project.pbxproj
++++ b/OpenASO.xcodeproj/project.pbxproj
+@@ -32,6 +32,7 @@
+ 		D02000000000000000000001 /* PersistenceMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D02000000000000000000003 /* PersistenceMigrationTests.swift */; };
+ 		D02000000000000000000002 /* v0.3.2-v1 in Resources */ = {isa = PBXBuildFile; fileRef = D02000000000000000000004 /* v0.3.2-v1 */; };
+ 		D02000000000000000000006 /* ReleasedV1StoreFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = D02000000000000000000007 /* ReleasedV1StoreFixture.swift */; };
++		D77BC4C30000000000000001 /* V4FixtureGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D77BC4C30000000000000002 /* V4FixtureGeneratorTests.swift */; };
+ 		0A1B2C3D4E5F678901234505 /* AppKeywordStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F678901234506 /* AppKeywordStats.swift */; };
+ 		0A1B2C3D4E5F678901234509 /* RatingsReviews/AppStorefrontRatingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F67890123450A /* RatingsReviews/AppStorefrontRatingService.swift */; };
+ 		0A1B2C3D4E5F67890123450D /* AppStorefrontRatingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F67890123450E /* AppStorefrontRatingServiceTests.swift */; };
+@@ -291,6 +292,7 @@
+ 		D02000000000000000000003 /* PersistenceMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceMigrationTests.swift; sourceTree = "<group>"; };
+ 		D02000000000000000000004 /* v0.3.2-v1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "v0.3.2-v1"; path = Fixtures/Persistence/v0.3.2-v1; sourceTree = "<group>"; };
+ 		D02000000000000000000007 /* ReleasedV1StoreFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleasedV1StoreFixture.swift; sourceTree = "<group>"; };
++		D77BC4C30000000000000002 /* V4FixtureGeneratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V4FixtureGeneratorTests.swift; sourceTree = "<group>"; };
+ 		1C1EE58C790084CF7A83CA8A /* SearchRanking/SearchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/SearchModels.swift; sourceTree = "<group>"; };
+ 		26D4B2C87FDED9CFCFA50D7D /* SearchRanking/RankingRefreshCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/RankingRefreshCoordinator.swift; sourceTree = "<group>"; };
+ 		2BC7973645CC5F20071230DE /* RankingRefreshCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingRefreshCoordinatorTests.swift; sourceTree = "<group>"; };
+@@ -481,6 +483,7 @@
+ 				0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */,
+ 				D02000000000000000000003 /* PersistenceMigrationTests.swift */,
+ 				D02000000000000000000007 /* ReleasedV1StoreFixture.swift */,
++				D77BC4C30000000000000002 /* V4FixtureGeneratorTests.swift */,
+ 				D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */,
+ 				D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */,
+ 				D02000000000000000000004 /* v0.3.2-v1 */,
+@@ -1109,6 +1112,7 @@
+ 				05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */,
+ 				D02000000000000000000001 /* PersistenceMigrationTests.swift in Sources */,
+ 				D02000000000000000000006 /* ReleasedV1StoreFixture.swift in Sources */,
++				D77BC4C30000000000000001 /* V4FixtureGeneratorTests.swift in Sources */,
+ 				D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */,
+ 				D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */,
+ 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
+diff --git a/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme b/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme
+index e55779e..a1e4c70 100644
+--- a/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme
++++ b/OpenASO.xcodeproj/xcshareddata/xcschemes/OpenASO.xcscheme
+@@ -26,7 +26,7 @@
+       buildConfiguration = "Debug"
+       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+-      shouldUseLaunchSchemeArgsEnv = "YES">
++      shouldUseLaunchSchemeArgsEnv = "NO">
+       <MacroExpansion>
+          <BuildableReference
+             BuildableIdentifier = "primary"
+@@ -49,6 +49,13 @@
+             </BuildableReference>
+          </TestableReference>
+       </Testables>
++      <EnvironmentVariables>
++         <EnvironmentVariable
++            key = "OPENASO_V4_FIXTURE_OUTPUT_DIR"
++            value = "$(OPENASO_V4_FIXTURE_OUTPUT_DIR)"
++            isEnabled = "YES">
++         </EnvironmentVariable>
++      </EnvironmentVariables>
+    </TestAction>
+    <LaunchAction
+       buildConfiguration = "Debug"
+diff --git a/OpenASOTests/V4FixtureGeneratorTests.swift b/OpenASOTests/V4FixtureGeneratorTests.swift
+new file mode 100644
+index 0000000..715a056
+--- /dev/null
++++ b/OpenASOTests/V4FixtureGeneratorTests.swift
+@@ -0,0 +1,612 @@
++import CryptoKit
++import Foundation
++import SwiftData
++import Testing
++@testable import OpenASO
++
++@MainActor
++struct V4FixtureGeneratorTests {
++    @Test
++    func generateExactV4MigrationFixture() throws {
++        let environmentKey = "OPENASO_V4_FIXTURE_OUTPUT_DIR"
++        guard let outputPath = ProcessInfo.processInfo.environment[environmentKey],
++              !outputPath.isEmpty
++        else {
++            throw FixtureGenerationError.missingOutputDirectory(environmentKey)
++        }
++
++        let fileManager = FileManager.default
++        let temporaryRoot = fileManager.temporaryDirectory
++            .standardizedFileURL
++            .resolvingSymlinksInPath()
++        let outputDirectory = URL(fileURLWithPath: outputPath, isDirectory: true)
++            .standardizedFileURL
++            .resolvingSymlinksInPath()
++        guard outputDirectory.path.hasPrefix(temporaryRoot.path + "/") else {
++            throw FixtureGenerationError.unsafeOutputDirectory(outputDirectory.path)
++        }
++        if fileManager.fileExists(atPath: outputDirectory.path) {
++            guard try fileManager.contentsOfDirectory(atPath: outputDirectory.path).isEmpty else {
++                throw FixtureGenerationError.outputDirectoryNotEmpty(outputDirectory.path)
++            }
++        } else {
++            try fileManager.createDirectory(
++                at: outputDirectory,
++                withIntermediateDirectories: true
++            )
++        }
++
++        let storeURL = outputDirectory.appendingPathComponent("default.store")
++        let fixtureDate = ISO8601DateFormatter().date(from: "2026-05-01T12:34:56Z")!
++        let priorDate = ISO8601DateFormatter().date(from: "2026-04-30T10:20:30Z")!
++        let releaseDate = ISO8601DateFormatter().date(from: "2024-03-02T01:02:03Z")!
++        let estimatedCalculationID = UUID(
++            uuidString: "77bc4c30-0000-4000-8000-000000000001"
++        )!
++        let unavailableCalculationID = UUID(
++            uuidString: "77bc4c30-0000-4000-8000-000000000002"
++        )!
++        try autoreleasepool {
++            let schema = Schema(versionedSchema: OpenASOSchemaV4.self)
++            let configuration = ModelConfiguration(schema: schema, url: storeURL)
++            let container = try ModelContainer(for: schema, configurations: [configuration])
++            let modelContext = ModelContext(container)
++
++            let folder = AppFolder(
++                id: UUID(uuidString: "03200000-0000-4000-8000-000000000001")!,
++                name: "Released v0.3.2 Fixture",
++                sortOrder: 1,
++                colorRaw: "purple",
++                createdAt: fixtureDate
++            )
++            folder.isExpanded = false
++            let storeApp = StoreApp(
++                appStoreID: 320_032_001,
++                bundleID: "com.thirdtech.openaso.fixture.v032",
++                name: "OpenASO v0.3.2 Migration Fixture",
++                subtitle: "Released-schema sentinel",
++                sellerName: "Third Tech Fixture",
++                iconURLString: "https://example.com/openaso-v032-icon.png",
++                defaultStorefront: "gb",
++                supportedLanguageCodes: ["en-GB", "fr"],
++                supportedLanguageCodesSource: .appStoreWeb,
++                supportedLanguageCodesFetchedAt: fixtureDate,
++                releaseDate: releaseDate,
++                currentVersionReleaseDate: priorDate,
++                version: "0.3.2",
++                primaryGenreID: 6002,
++                primaryGenreName: "Utilities",
++                defaultPlatform: .iphone,
++                lastMetadataRefreshAt: fixtureDate
++            )
++            let trackedApp = TrackedApp(
++                appStoreID: storeApp.appStoreID,
++                storeApp: storeApp,
++                sidebarSortOrder: 3,
++                createdAt: fixtureDate
++            )
++            trackedApp.isPinned = true
++            trackedApp.folder = folder
++
++            let metadata = AppStorefrontMetadata(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                defaultPlatform: .iphone,
++                name: storeApp.name,
++                subtitle: "Fixture metadata subtitle",
++                sellerName: "Third Tech Fixture",
++                descriptionText: "Persisted by OpenASO release 7a2c375",
++                releaseNotes: "Released fixture notes",
++                iconURLString: "https://example.com/openaso-v032-metadata-icon.png",
++                version: "0.3.2",
++                releaseDate: releaseDate,
++                currentVersionReleaseDate: priorDate,
++                primaryGenreID: 6002,
++                primaryGenreName: "Utilities",
++                storefrontLanguageCode: "en-GB",
++                servedLanguageCode: "en",
++                isLocalized: true,
++                isAvailable: true,
++                source: .appStoreWeb,
++                lastFetchedAt: fixtureDate,
++                storeApp: storeApp
++            )
++            let screenshot = AppStoreScreenshot(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                platformRaw: "iphone",
++                displayTypeRaw: "phone",
++                sortOrder: 0,
++                urlString: "https://example.com/openaso-v032-fixture.png",
++                width: 1290,
++                height: 2796,
++                source: .appStoreWeb,
++                lastFetchedAt: fixtureDate,
++                metadata: metadata
++            )
++            storeApp.storefrontMetadata.append(metadata)
++            metadata.screenshots.append(screenshot)
++
++            let query = KeywordQuery(
++                term: "migration fixture keyword",
++                storefront: "gb",
++                platform: .iphone
++            )
++            let track = TrackedAppKeyword(
++                term: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                trackedApp: trackedApp,
++                query: query,
++                createdAt: fixtureDate
++            )
++            track.rankingAppCount = 42
++            track.lastRefreshAt = fixtureDate
++            track.notes = "released-v0.3.2-sentinel"
++            track.statusMessage = nil
++            trackedApp.keywordTracks.append(track)
++            query.tracks.append(track)
++
++            let snapshot = TrackedKeywordDailyRanking(
++                rank: 7,
++                searchedAt: fixtureDate,
++                source: .iTunesFallback,
++                resultCount: 42,
++                errorMessage: "released-snapshot-warning",
++                keywordTrack: track
++            )
++            let rankedResult = TrackedKeywordRankedResult(
++                position: 3,
++                appStoreID: 320_032_999,
++                bundleID: "com.example.fixture-competitor",
++                name: "Fixture Competitor",
++                subtitle: "Fixture ranked subtitle",
++                sellerName: "Fixture Ranked Seller",
++                snapshot: snapshot
++            )
++            track.snapshots.append(snapshot)
++            snapshot.topResults.append(rankedResult)
++
++            let stats = AppKeywordStats(
++                appStoreID: storeApp.appStoreID,
++                queryKey: query.queryKey,
++                keyword: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                rank: 7,
++                observedAt: fixtureDate,
++                popularityScore: 61,
++                difficultyScore: 42
++            )
++            stats.bestRank = 5
++            stats.latestRank = 8
++            stats.averageRank = 6.5
++            stats.observationCount = 4
++            stats.firstSeenAt = priorDate
++            stats.lastSeenAt = fixtureDate
++
++            let latestRating = LatestAppRating(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                ratingCount: 1_200,
++                averageRating: 4.625,
++                oneStarRatingCount: 11,
++                twoStarRatingCount: 22,
++                threeStarRatingCount: 33,
++                fourStarRatingCount: 44,
++                fiveStarRatingCount: 1_090,
++                ratingDate: "2026-05-01",
++                observedAt: fixtureDate,
++                submissionCount: 3,
++                winningCount: 2,
++                confidence: "fixture-high",
++                source: .appStorePage,
++                storeApp: storeApp
++            )
++            let dailyRating = AppDailyRating(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                ratingCount: 1_180,
++                averageRating: 4.5,
++                oneStarRatingCount: 12,
++                twoStarRatingCount: 23,
++                threeStarRatingCount: 34,
++                fourStarRatingCount: 45,
++                fiveStarRatingCount: 1_066,
++                ratingDate: "2026-04-30",
++                observedAt: priorDate,
++                submissionCount: 4,
++                winningCount: 3,
++                confidence: "fixture-medium",
++                source: .iTunesSearch,
++                storeApp: storeApp
++            )
++            let review = AppStorefrontReview(
++                appStoreID: storeApp.appStoreID,
++                storefront: "gb",
++                reviewID: "released-review-032",
++                reviewerName: "Fixture Reviewer",
++                title: "Released fixture review",
++                content: "A persisted review from the released schema.",
++                rating: 5,
++                reviewedAt: priorDate,
++                version: "0.3.1",
++                source: .appStoreConnect,
++                observedAt: fixtureDate,
++                storeApp: storeApp
++            )
++            review.ascReviewID = "asc-review-032"
++            review.developerResponseID = "response-032"
++            review.developerResponseBody = "Thanks from the released fixture."
++            review.developerResponseState = "PUBLISHED"
++            review.developerResponseModifiedAt = priorDate
++            review.translatedTitle = "Avis de fixture"
++            review.translatedContent = "Contenu de fixture traduit."
++            review.translationLanguage = "fr"
++            review.translatedAt = fixtureDate
++            review.translationProviderRaw = "fixture-provider"
++            review.translationModelID = "fixture-model-v1"
++            review.assumedLanguageCode = "en"
++            review.assumedLanguageConfidence = 0.97
++            storeApp.storefrontLatest.append(latestRating)
++            storeApp.ratingSnapshots.append(dailyRating)
++            storeApp.reviews.append(review)
++
++            let metric = KeywordDailyMetric(
++                queryKey: query.queryKey,
++                keyword: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                popularityScore: 61,
++                difficultyScore: 42,
++                source: .appleAdsPopularity,
++                popularityDate: "2026-05-01",
++                submissionCount: 5,
++                winningCount: 4,
++                confidence: "fixture-strong",
++                updatedAt: fixtureDate,
++                notes: "released-metric-notes"
++            )
++            let crawl = KeywordRankingCrawl(
++                keyword: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                observedAt: fixtureDate,
++                source: .appStoreWeb,
++                resultCount: 50,
++                query: query,
++                observedHour: 493_836,
++                submissionCount: 6,
++                winningCount: 5,
++                confidence: "fixture-crawl-confidence"
++            )
++            let crawlItem = KeywordAppRanking(
++                position: 2,
++                appStoreID: 320_032_999,
++                bundleID: "com.example.fixture-competitor",
++                name: "Fixture Competitor",
++                subtitle: "Fixture crawl subtitle",
++                sellerName: "Fixture Crawl Seller",
++                observation: crawl
++            )
++            query.observations.append(crawl)
++            crawl.items.append(crawlItem)
++
++            let storefront = Storefront(
++                code: "gb",
++                name: "United Kingdom",
++                flagEmoji: "🇬🇧",
++                languageCode: "en-GB"
++            )
++
++            let refreshAttempt = TrackedAppKeywordRefreshAttempt(
++                trackIdentityKey: track.identityKey,
++                appStoreID: storeApp.appStoreID,
++                lastRankingRefreshAttemptAt: fixtureDate.addingTimeInterval(60)
++            )
++            let rankingStatus = TrackedKeywordRefreshStatus(
++                trackIdentityKey: track.identityKey,
++                trackCreatedAt: track.createdAt,
++                appStoreID: storeApp.appStoreID,
++                domain: .ranking,
++                message: "V3 ranking status sentinel",
++                updatedAt: fixtureDate.addingTimeInterval(120)
++            )
++            rankingStatus.statusKey = "v4-fixture::ranking-status::00000000-0000-4000-8000-000000000001"
++            let popularityStatus = TrackedKeywordRefreshStatus(
++                trackIdentityKey: track.identityKey,
++                trackCreatedAt: track.createdAt,
++                appStoreID: storeApp.appStoreID,
++                domain: .popularity,
++                message: nil,
++                updatedAt: fixtureDate.addingTimeInterval(180)
++            )
++            popularityStatus.statusKey = "v4-fixture::popularity-status::00000000-0000-4000-8000-000000000002"
++
++            let unavailableQuery = KeywordQuery(
++                term: "v4 unavailable difficulty",
++                storefront: query.storefront,
++                platform: query.platform
++            )
++            let estimatedPayload = EstimatedKeywordDifficultyPersistencePayload(
++                queryKey: query.queryKey,
++                calculationID: estimatedCalculationID,
++                keyword: query.term,
++                storefront: query.storefront,
++                platform: query.platform,
++                result: .estimated(score: 67, confidenceScore: 89, confidence: .high),
++                algorithmIdentifier: "openaso.fixture.exact-v4",
++                algorithmVersion: 4,
++                requestedResultLimit: 100,
++                providerResultCount: 50,
++                evidence: EstimatedKeywordDifficultyEvidence(
++                    consideredResultCount: 3,
++                    ratedResultCount: 3,
++                    weightedRatingCoveragePercentage: 100,
++                    maximumRatingCount: 12_345,
++                    medianRatingCount: 2_345,
++                    ratingAuthorityScore: 73,
++                    metadataSaturationScore: 61,
++                    resultEvidence: [
++                        EstimatedKeywordDifficultyResultEvidence(
++                            position: 1,
++                            appStoreID: 320_032_998,
++                            title: "First V4 Evidence",
++                            subtitle: "Exact title match",
++                            ratingCount: 12_345,
++                            ratingAuthorityScore: 89,
++                            titleTokenCoveragePercentage: 100,
++                            combinedTokenCoveragePercentage: 100,
++                            metadataMatchScore: 94,
++                            exactTitlePhraseMatch: true,
++                            exactSubtitlePhraseMatch: true
++                        ),
++                        EstimatedKeywordDifficultyResultEvidence(
++                            position: 2,
++                            appStoreID: 320_032_999,
++                            title: "Second V4 Evidence",
++                            ratingCount: 2_345,
++                            ratingAuthorityScore: 70,
++                            titleTokenCoveragePercentage: 50,
++                            combinedTokenCoveragePercentage: 50,
++                            metadataMatchScore: 37,
++                            exactTitlePhraseMatch: false,
++                            exactSubtitlePhraseMatch: false
++                        ),
++                        EstimatedKeywordDifficultyResultEvidence(
++                            position: 3,
++                            appStoreID: 320_033_000,
++                            title: "Third V4 Evidence",
++                            subtitle: "Rated migration evidence",
++                            ratingCount: 789,
++                            ratingAuthorityScore: 55,
++                            titleTokenCoveragePercentage: 25,
++                            combinedTokenCoveragePercentage: 50,
++                            metadataMatchScore: 42,
++                            exactTitlePhraseMatch: false,
++                            exactSubtitlePhraseMatch: false
++                        ),
++                    ]
++                ),
++                rankingSource: .appStoreWeb,
++                rankingFetchedAt: fixtureDate,
++                computedAt: fixtureDate.addingTimeInterval(240),
++                notes: ["V4 estimated difficulty sentinel", "immutable source fixture"]
++            )
++            let unavailablePayload = EstimatedKeywordDifficultyPersistencePayload(
++                queryKey: unavailableQuery.queryKey,
++                calculationID: unavailableCalculationID,
++                keyword: unavailableQuery.term,
++                storefront: unavailableQuery.storefront,
++                platform: unavailableQuery.platform,
++                result: .unavailable(reason: .insufficientResults),
++                algorithmIdentifier: "openaso.fixture.exact-v4",
++                algorithmVersion: 4,
++                requestedResultLimit: 100,
++                providerResultCount: 2,
++                evidence: EstimatedKeywordDifficultyEvidence(
++                    consideredResultCount: 2,
++                    ratedResultCount: 2,
++                    weightedRatingCoveragePercentage: 100,
++                    maximumRatingCount: 300,
++                    medianRatingCount: 200,
++                    ratingAuthorityScore: 25,
++                    metadataSaturationScore: 22,
++                    resultEvidence: [
++                        EstimatedKeywordDifficultyResultEvidence(
++                            position: 1,
++                            appStoreID: 320_033_001,
++                            title: "First Unavailable V4 Evidence",
++                            ratingCount: 300,
++                            ratingAuthorityScore: 30,
++                            titleTokenCoveragePercentage: 50,
++                            combinedTokenCoveragePercentage: 50,
++                            metadataMatchScore: 40,
++                            exactTitlePhraseMatch: false,
++                            exactSubtitlePhraseMatch: false
++                        ),
++                        EstimatedKeywordDifficultyResultEvidence(
++                            position: 2,
++                            appStoreID: 320_033_002,
++                            title: "Second Unavailable V4 Evidence",
++                            ratingCount: 100,
++                            ratingAuthorityScore: 20,
++                            titleTokenCoveragePercentage: 25,
++                            combinedTokenCoveragePercentage: 25,
++                            metadataMatchScore: 20,
++                            exactTitlePhraseMatch: false,
++                            exactSubtitlePhraseMatch: false
++                        ),
++                    ]
++                ),
++                rankingSource: .iTunesFallback,
++                rankingFetchedAt: priorDate,
++                computedAt: fixtureDate.addingTimeInterval(300),
++                fallback: EstimatedKeywordDifficultyFallbackProvenance(
++                    provider: .appStoreWeb,
++                    category: .httpStatus,
++                    httpStatus: 503
++                ),
++                notes: ["V4 unavailable difficulty sentinel"]
++            )
++
++            modelContext.insert(folder)
++            modelContext.insert(stats)
++            modelContext.insert(latestRating)
++            modelContext.insert(dailyRating)
++            modelContext.insert(review)
++            modelContext.insert(storeApp)
++            modelContext.insert(trackedApp)
++            modelContext.insert(metadata)
++            modelContext.insert(screenshot)
++            modelContext.insert(query)
++            modelContext.insert(unavailableQuery)
++            modelContext.insert(metric)
++            modelContext.insert(crawl)
++            modelContext.insert(crawlItem)
++            modelContext.insert(track)
++            modelContext.insert(snapshot)
++            modelContext.insert(rankedResult)
++            modelContext.insert(storefront)
++            modelContext.insert(refreshAttempt)
++            modelContext.insert(rankingStatus)
++            modelContext.insert(popularityStatus)
++            #expect(try EstimatedKeywordDifficultyStore.upsert(
++                estimatedPayload,
++                in: modelContext
++            ) == .inserted)
++            #expect(try EstimatedKeywordDifficultyStore.upsert(
++                unavailablePayload,
++                in: modelContext
++            ) == .inserted)
++            try modelContext.save()
++        }
++
++        try autoreleasepool {
++            let schema = Schema(versionedSchema: OpenASOSchemaV4.self)
++            let configuration = ModelConfiguration(schema: schema, url: storeURL)
++            let container = try ModelContainer(for: schema, configurations: [configuration])
++            let modelContext = ModelContext(container)
++
++            #expect(try modelContext.fetch(FetchDescriptor<AppFolder>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<AppKeywordStats>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<LatestAppRating>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<AppDailyRating>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<AppStorefrontReview>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<StoreApp>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<KeywordQuery>()).count == 2)
++            #expect(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<KeywordAppRanking>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<TrackedApp>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>()).count == 1)
++            #expect(try modelContext.fetch(FetchDescriptor<Storefront>()).count == 1)
++            #expect(
++                try modelContext.fetch(FetchDescriptor<TrackedAppKeywordRefreshAttempt>()).count
++                    == 1
++            )
++            #expect(
++                try modelContext.fetch(FetchDescriptor<TrackedKeywordRefreshStatus>()).count == 2
++            )
++            #expect(
++                try modelContext.fetch(FetchDescriptor<EstimatedKeywordDifficultyMetric>()).count
++                    == 2
++            )
++            #expect(
++                try modelContext.fetch(
++                    FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
++                ).count == 5
++            )
++
++            let statuses = try modelContext.fetch(FetchDescriptor<TrackedKeywordRefreshStatus>())
++            #expect(Set(statuses.compactMap(\.domain)) == Set([.ranking, .popularity]))
++            let difficulties = try modelContext.fetch(
++                FetchDescriptor<EstimatedKeywordDifficultyMetric>()
++            )
++            #expect(Set(difficulties.compactMap(\.state)) == Set([.estimated, .unavailable]))
++            let evidence = try modelContext.fetch(
++                FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()
++            )
++            #expect(Set(evidence.map(\.calculationID)) == Set([
++                estimatedCalculationID,
++                unavailableCalculationID,
++            ]))
++        }
++
++        let storeArtifacts = try fileManager.contentsOfDirectory(
++            at: outputDirectory,
++            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
++            options: [.skipsHiddenFiles]
++        )
++        .filter { $0.lastPathComponent.hasPrefix("default.store") }
++        .sorted { $0.lastPathComponent < $1.lastPathComponent }
++
++        var artifacts: [[String: Any]] = []
++        for artifactURL in storeArtifacts {
++            let data = try Data(contentsOf: artifactURL, options: [.mappedIfSafe])
++            if data.isEmpty, artifactURL.lastPathComponent != "default.store" {
++                try fileManager.removeItem(at: artifactURL)
++                continue
++            }
++            guard !data.isEmpty else {
++                throw FixtureGenerationError.emptyStore
++            }
++            let digest = SHA256.hash(data: data)
++                .map { String(format: "%02x", Int($0)) }
++                .joined()
++            artifacts.append([
++                "filename": artifactURL.lastPathComponent,
++                "byteCount": data.count,
++                "sha256": digest
++            ])
++        }
++        guard artifacts.contains(where: { ($0["filename"] as? String) == "default.store" }) else {
++            throw FixtureGenerationError.missingStore
++        }
++
++        let manifest: [String: Any] = [
++            "formatVersion": 2,
++            "fixtureID": "77bc4c3-v4",
++            "sourceCommit": "77bc4c39735f8d68376347f671fd4c8ac34d684c",
++            "sourceTree": "f99c6e8349b253e8220b8dae9258059e3c8ab455",
++            "schemaVersion": "4.0.0",
++            "storeFilename": "default.store",
++            "artifacts": artifacts
++        ]
++        let manifestData = try JSONSerialization.data(
++            withJSONObject: manifest,
++            options: [.prettyPrinted, .sortedKeys]
++        )
++        try manifestData.write(
++            to: outputDirectory.appendingPathComponent("manifest.json"),
++            options: .atomic
++        )
++    }
++}
++
++private enum FixtureGenerationError: LocalizedError {
++    case missingOutputDirectory(String)
++    case unsafeOutputDirectory(String)
++    case outputDirectoryNotEmpty(String)
++    case emptyStore
++    case missingStore
++
++    var errorDescription: String? {
++        switch self {
++        case .missingOutputDirectory(let key):
++            return "Set \(key) to an isolated temporary output directory."
++        case .unsafeOutputDirectory(let path):
++            return "Fixture output must be below the system temporary directory: \(path)"
++        case .outputDirectoryNotEmpty(let path):
++            return "Fixture output directory must be empty: \(path)"
++        case .emptyStore:
++            return "The released SwiftData store is empty."
++        case .missingStore:
++            return "The released SwiftData generator did not create default.store."
++        }
++    }
++}

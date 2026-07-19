@@ -41,8 +41,59 @@ enum ReleasedV1FixtureSentinel {
     static let crawlResultCount = 50
 }
 
-struct ReleasedV1StoreFixtureManifest: Decodable {
-    struct Artifact: Decodable, Hashable {
+enum ExactV4FixtureSentinel {
+    static let fixtureID = "77bc4c3-v4"
+    static let sourceCommit = "77bc4c39735f8d68376347f671fd4c8ac34d684c"
+    static let sourceTree = "f99c6e8349b253e8220b8dae9258059e3c8ab455"
+    static let schemaVersion = "4.0.0"
+
+    static let rankingStatusKey =
+        "v4-fixture::ranking-status::00000000-0000-4000-8000-000000000001"
+    static let popularityStatusKey =
+        "v4-fixture::popularity-status::00000000-0000-4000-8000-000000000002"
+    static let rankingStatusMessage = "V3 ranking status sentinel"
+    static let estimatedCalculationID = UUID(
+        uuidString: "77bc4c30-0000-4000-8000-000000000001",
+    )!
+    static let unavailableCalculationID = UUID(
+        uuidString: "77bc4c30-0000-4000-8000-000000000002",
+    )!
+    static let unavailableKeyword = "v4 unavailable difficulty"
+    static let unavailableQueryKey = "v4 unavailable difficulty::gb::iphone"
+}
+
+struct StoredMigrationFixtureDescriptor: Sendable {
+    let formatVersion: Int
+    let fixtureID: String
+    let sourceTag: String?
+    let sourceCommit: String
+    let sourceTree: String?
+    let schemaVersion: String
+    let generatorCommand: String
+
+    static let releasedV1 = Self(
+        formatVersion: 1,
+        fixtureID: ReleasedV1FixtureSentinel.fixtureID,
+        sourceTag: ReleasedV1FixtureSentinel.sourceTag,
+        sourceCommit: ReleasedV1FixtureSentinel.sourceCommit,
+        sourceTree: nil,
+        schemaVersion: ReleasedV1FixtureSentinel.schemaVersion,
+        generatorCommand: "./script/generate_v032_migration_fixture.sh",
+    )
+
+    static let exactV4 = Self(
+        formatVersion: 2,
+        fixtureID: ExactV4FixtureSentinel.fixtureID,
+        sourceTag: nil,
+        sourceCommit: ExactV4FixtureSentinel.sourceCommit,
+        sourceTree: ExactV4FixtureSentinel.sourceTree,
+        schemaVersion: ExactV4FixtureSentinel.schemaVersion,
+        generatorCommand: "./script/generate_v4_migration_fixture.sh",
+    )
+}
+
+struct StoredMigrationFixtureManifest: Codable, Equatable {
+    struct Artifact: Codable, Hashable {
         let filename: String
         let byteCount: Int
         let sha256: String
@@ -50,105 +101,137 @@ struct ReleasedV1StoreFixtureManifest: Decodable {
 
     let formatVersion: Int
     let fixtureID: String
-    let sourceTag: String
+    let sourceTag: String?
     let sourceCommit: String
+    let sourceTree: String?
     let schemaVersion: String
     let storeFilename: String
     let artifacts: [Artifact]
 
-    func validate() throws {
-        guard formatVersion == 1 else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("formatVersion must be 1")
+    func validate(against descriptor: StoredMigrationFixtureDescriptor) throws {
+        guard formatVersion == descriptor.formatVersion else {
+            throw StoredMigrationFixtureError.invalidManifest(
+                "formatVersion must be \(descriptor.formatVersion)",
+            )
         }
-        guard fixtureID == ReleasedV1FixtureSentinel.fixtureID else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("unexpected fixtureID \(fixtureID)")
+        guard fixtureID == descriptor.fixtureID else {
+            throw StoredMigrationFixtureError.invalidManifest("unexpected fixtureID \(fixtureID)")
         }
-        guard sourceTag == ReleasedV1FixtureSentinel.sourceTag else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("unexpected sourceTag \(sourceTag)")
+        guard sourceTag == descriptor.sourceTag else {
+            throw StoredMigrationFixtureError.invalidManifest(
+                "unexpected sourceTag \(String(describing: sourceTag))",
+            )
         }
-        guard sourceCommit == ReleasedV1FixtureSentinel.sourceCommit else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("unexpected sourceCommit \(sourceCommit)")
+        guard sourceCommit == descriptor.sourceCommit else {
+            throw StoredMigrationFixtureError.invalidManifest(
+                "unexpected sourceCommit \(sourceCommit)",
+            )
         }
-        guard schemaVersion == ReleasedV1FixtureSentinel.schemaVersion else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("unexpected schemaVersion \(schemaVersion)")
+        guard sourceTree == descriptor.sourceTree else {
+            throw StoredMigrationFixtureError.invalidManifest(
+                "unexpected sourceTree \(String(describing: sourceTree))",
+            )
+        }
+        guard schemaVersion == descriptor.schemaVersion else {
+            throw StoredMigrationFixtureError.invalidManifest(
+                "unexpected schemaVersion \(schemaVersion)",
+            )
         }
         guard storeFilename == "default.store" else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("storeFilename must be default.store")
+            throw StoredMigrationFixtureError.invalidManifest(
+                "storeFilename must be default.store",
+            )
         }
         guard !artifacts.isEmpty else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("artifacts must not be empty")
+            throw StoredMigrationFixtureError.invalidManifest("artifacts must not be empty")
         }
         guard artifacts.map(\.filename) == artifacts.map(\.filename).sorted() else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("artifacts must use stable filename ordering")
+            throw StoredMigrationFixtureError.invalidManifest(
+                "artifacts must use stable filename ordering",
+            )
         }
         guard Set(artifacts.map(\.filename)).count == artifacts.count else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("artifact filenames must be unique")
+            throw StoredMigrationFixtureError.invalidManifest(
+                "artifact filenames must be unique",
+            )
         }
         guard artifacts.contains(where: { $0.filename == storeFilename }) else {
-            throw ReleasedV1StoreFixtureError.invalidManifest("artifacts must include default.store")
+            throw StoredMigrationFixtureError.invalidManifest(
+                "artifacts must include default.store",
+            )
         }
 
         let allowedFilenames = Set(["default.store", "default.store-shm", "default.store-wal"])
         for artifact in artifacts {
             guard allowedFilenames.contains(artifact.filename) else {
-                throw ReleasedV1StoreFixtureError.invalidManifest(
-                    "unsupported artifact filename \(artifact.filename)"
+                throw StoredMigrationFixtureError.invalidManifest(
+                    "unsupported artifact filename \(artifact.filename)",
                 )
             }
             guard artifact.byteCount > 0 else {
-                throw ReleasedV1StoreFixtureError.invalidManifest(
-                    "artifact \(artifact.filename) must not be empty"
+                throw StoredMigrationFixtureError.invalidManifest(
+                    "artifact \(artifact.filename) must not be empty",
                 )
             }
             guard artifact.sha256.count == 64,
                   artifact.sha256.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
             else {
-                throw ReleasedV1StoreFixtureError.invalidManifest(
-                    "artifact \(artifact.filename) must have a lowercase SHA-256 digest"
+                throw StoredMigrationFixtureError.invalidManifest(
+                    "artifact \(artifact.filename) must have a lowercase SHA-256 digest",
                 )
             }
         }
     }
 }
 
-struct ReleasedV1StoreFixture {
+struct StoredMigrationFixture {
     struct MaterializedCopy {
         let directoryURL: URL
         let storeURL: URL
     }
 
     let directoryURL: URL
-    let manifest: ReleasedV1StoreFixtureManifest
+    let manifest: StoredMigrationFixtureManifest
+    let descriptor: StoredMigrationFixtureDescriptor
 
-    static func loadFromTestBundle() throws -> Self {
+    static func loadFromTestBundle(
+        descriptor: StoredMigrationFixtureDescriptor,
+    ) throws -> Self {
         let bundle = Bundle(for: ReleasedV1FixtureBundleToken.self)
         let directDirectoryURL = bundle.resourceURL?.appendingPathComponent(
-            ReleasedV1FixtureSentinel.fixtureID,
-            isDirectory: true
+            descriptor.fixtureID,
+            isDirectory: true,
         )
         let directoryURL = bundle.url(
-            forResource: ReleasedV1FixtureSentinel.fixtureID,
-            withExtension: nil
+            forResource: descriptor.fixtureID,
+            withExtension: nil,
         ) ?? directDirectoryURL
         guard let directoryURL,
               FileManager.default.fileExists(atPath: directoryURL.path)
         else {
-            throw ReleasedV1StoreFixtureError.missingFixture(
-                "Run ./script/generate_v032_migration_fixture.sh to create the bundled fixture."
+            throw StoredMigrationFixtureError.missingFixture(
+                "Run \(descriptor.generatorCommand) to create the bundled fixture.",
             )
         }
-        let manifestURL = directoryURL.appendingPathComponent("manifest.json", isDirectory: false)
+        let manifestURL = directoryURL.appendingPathComponent(
+            "manifest.json",
+            isDirectory: false,
+        )
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
-            throw ReleasedV1StoreFixtureError.missingFixture(
-                "Missing \(manifestURL.lastPathComponent); run ./script/generate_v032_migration_fixture.sh."
+            throw StoredMigrationFixtureError.missingFixture(
+                "Missing manifest.json; run \(descriptor.generatorCommand).",
             )
         }
         let manifest = try JSONDecoder().decode(
-            ReleasedV1StoreFixtureManifest.self,
-            from: Data(contentsOf: manifestURL)
+            StoredMigrationFixtureManifest.self,
+            from: Data(contentsOf: manifestURL),
         )
-        try manifest.validate()
-        let fixture = Self(directoryURL: directoryURL, manifest: manifest)
+        try manifest.validate(against: descriptor)
+        let fixture = Self(
+            directoryURL: directoryURL,
+            manifest: manifest,
+            descriptor: descriptor,
+        )
         try fixture.verifyBundledArtifacts()
         return fixture
     }
@@ -163,19 +246,19 @@ struct ReleasedV1StoreFixture {
 
     func artifactData(in directoryURL: URL) throws -> [String: Data] {
         let expectedFilenames = Set(manifest.artifacts.map(\.filename))
-        let actualStoreFilenames = Set(
-            try FileManager.default.contentsOfDirectory(
+        let actualStoreFilenames = try Set(
+            FileManager.default.contentsOfDirectory(
                 at: directoryURL,
                 includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                options: [.skipsHiddenFiles],
             )
             .map(\.lastPathComponent)
-            .filter { $0.hasPrefix("default.store") }
+            .filter { $0.hasPrefix("default.store") },
         )
         guard actualStoreFilenames == expectedFilenames else {
-            throw ReleasedV1StoreFixtureError.artifactSetMismatch(
+            throw StoredMigrationFixtureError.artifactSetMismatch(
                 expected: expectedFilenames.sorted(),
-                actual: actualStoreFilenames.sorted()
+                actual: actualStoreFilenames.sorted(),
             )
         }
 
@@ -183,24 +266,24 @@ struct ReleasedV1StoreFixture {
         for artifact in manifest.artifacts {
             let artifactURL = directoryURL.appendingPathComponent(
                 artifact.filename,
-                isDirectory: false
+                isDirectory: false,
             )
             let data = try Data(contentsOf: artifactURL, options: [.mappedIfSafe])
             guard data.count == artifact.byteCount else {
-                throw ReleasedV1StoreFixtureError.byteCountMismatch(
+                throw StoredMigrationFixtureError.byteCountMismatch(
                     filename: artifact.filename,
                     expected: artifact.byteCount,
-                    actual: data.count
+                    actual: data.count,
                 )
             }
             let digest = SHA256.hash(data: data)
                 .map { String(format: "%02x", Int($0)) }
                 .joined()
             guard digest == artifact.sha256 else {
-                throw ReleasedV1StoreFixtureError.checksumMismatch(
+                throw StoredMigrationFixtureError.checksumMismatch(
                     filename: artifact.filename,
                     expected: artifact.sha256,
-                    actual: digest
+                    actual: digest,
                 )
             }
             dataByFilename[artifact.filename] = data
@@ -210,35 +293,83 @@ struct ReleasedV1StoreFixture {
 
     func makeTemporaryCopy() throws -> MaterializedCopy {
         try verifyBundledArtifacts()
-        let directoryURL = FileManager.default.temporaryDirectory
+        let temporaryDirectoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(
-                "OpenASO-ReleasedV1Fixture-\(UUID().uuidString)",
-                isDirectory: true
+                "OpenASO-StoredFixture-\(descriptor.fixtureID)-\(UUID().uuidString)",
+                isDirectory: true,
             )
         try FileManager.default.createDirectory(
-            at: directoryURL,
-            withIntermediateDirectories: true
+            at: temporaryDirectoryURL,
+            withIntermediateDirectories: true,
         )
         do {
             for artifact in manifest.artifacts {
                 try FileManager.default.copyItem(
-                    at: self.directoryURL.appendingPathComponent(artifact.filename),
-                    to: directoryURL.appendingPathComponent(artifact.filename)
+                    at: directoryURL.appendingPathComponent(artifact.filename),
+                    to: temporaryDirectoryURL.appendingPathComponent(artifact.filename),
                 )
             }
-            try verifyArtifacts(in: directoryURL)
+            try verifyArtifacts(in: temporaryDirectoryURL)
             return MaterializedCopy(
-                directoryURL: directoryURL,
-                storeURL: directoryURL.appendingPathComponent(manifest.storeFilename)
+                directoryURL: temporaryDirectoryURL,
+                storeURL: temporaryDirectoryURL.appendingPathComponent(manifest.storeFilename),
             )
         } catch {
-            try? FileManager.default.removeItem(at: directoryURL)
+            try? FileManager.default.removeItem(at: temporaryDirectoryURL)
             throw error
         }
     }
 }
 
-enum ReleasedV1StoreFixtureError: LocalizedError {
+struct ReleasedV1StoreFixture {
+    typealias MaterializedCopy = StoredMigrationFixture.MaterializedCopy
+
+    private let fixture: StoredMigrationFixture
+
+    var directoryURL: URL { fixture.directoryURL }
+    var manifest: StoredMigrationFixtureManifest { fixture.manifest }
+
+    static func loadFromTestBundle() throws -> Self {
+        try Self(fixture: .loadFromTestBundle(descriptor: .releasedV1))
+    }
+
+    func verifyBundledArtifacts() throws { try fixture.verifyBundledArtifacts() }
+    func verifyArtifacts(in directoryURL: URL) throws {
+        try fixture.verifyArtifacts(in: directoryURL)
+    }
+
+    func artifactData(in directoryURL: URL) throws -> [String: Data] {
+        try fixture.artifactData(in: directoryURL)
+    }
+
+    func makeTemporaryCopy() throws -> MaterializedCopy { try fixture.makeTemporaryCopy() }
+}
+
+struct ExactV4StoreFixture {
+    typealias MaterializedCopy = StoredMigrationFixture.MaterializedCopy
+
+    private let fixture: StoredMigrationFixture
+
+    var directoryURL: URL { fixture.directoryURL }
+    var manifest: StoredMigrationFixtureManifest { fixture.manifest }
+
+    static func loadFromTestBundle() throws -> Self {
+        try Self(fixture: .loadFromTestBundle(descriptor: .exactV4))
+    }
+
+    func verifyBundledArtifacts() throws { try fixture.verifyBundledArtifacts() }
+    func verifyArtifacts(in directoryURL: URL) throws {
+        try fixture.verifyArtifacts(in: directoryURL)
+    }
+
+    func artifactData(in directoryURL: URL) throws -> [String: Data] {
+        try fixture.artifactData(in: directoryURL)
+    }
+
+    func makeTemporaryCopy() throws -> MaterializedCopy { try fixture.makeTemporaryCopy() }
+}
+
+enum StoredMigrationFixtureError: LocalizedError {
     case missingFixture(String)
     case invalidManifest(String)
     case artifactSetMismatch(expected: [String], actual: [String])
@@ -247,16 +378,19 @@ enum ReleasedV1StoreFixtureError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingFixture(let message), .invalidManifest(let message):
-            return message
-        case .artifactSetMismatch(let expected, let actual):
-            return "Fixture artifacts differ: expected \(expected), found \(actual)."
-        case .byteCountMismatch(let filename, let expected, let actual):
-            return "Fixture \(filename) has \(actual) bytes; expected \(expected)."
-        case .checksumMismatch(let filename, let expected, let actual):
-            return "Fixture \(filename) SHA-256 is \(actual); expected \(expected)."
+        case let .missingFixture(message), let .invalidManifest(message):
+            message
+        case let .artifactSetMismatch(expected, actual):
+            "Fixture artifacts differ: expected \(expected), found \(actual)."
+        case let .byteCountMismatch(filename, expected, actual):
+            "Fixture \(filename) has \(actual) bytes; expected \(expected)."
+        case let .checksumMismatch(filename, expected, actual):
+            "Fixture \(filename) SHA-256 is \(actual); expected \(expected)."
         }
     }
 }
+
+typealias ReleasedV1StoreFixtureManifest = StoredMigrationFixtureManifest
+typealias ReleasedV1StoreFixtureError = StoredMigrationFixtureError
 
 final class ReleasedV1FixtureBundleToken {}
