@@ -626,13 +626,15 @@ struct RootSidebarView: View {
             selectedApp = trackedApps.first { $0.persistentModelID != trackedApp.persistentModelID }
         }
 
-        for track in trackedKeywords {
-            modelContext.delete(track)
-        }
-
-        modelContext.delete(trackedApp)
-
         do {
+            try TrackedKeywordRefreshStatusStore.deleteStatuses(
+                for: trackedKeywords.map(\.identityKey),
+                in: modelContext
+            )
+            for track in trackedKeywords {
+                modelContext.delete(track)
+            }
+            modelContext.delete(trackedApp)
             try modelContext.save()
             services.analyticsService.capture(.trackedAppRemoved(keywordCount: keywordCount))
         } catch {

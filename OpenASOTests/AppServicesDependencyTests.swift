@@ -6,17 +6,19 @@ import Testing
 @MainActor
 struct AppServicesDependencyTests {
     @Test
-    func modelContainerFactoryUsesAppendOnlyV2MigrationPlan() throws {
+    func modelContainerFactoryUsesAppendOnlyV3MigrationPlan() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
         #expect(OpenASOSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 2)
+        #expect(OpenASOSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 3)
         #expect(OpenASOMigrationPlan.schemas.first?.versionIdentifier == OpenASOSchemaV1.versionIdentifier)
-        #expect(OpenASOMigrationPlan.schemas.last?.versionIdentifier == OpenASOSchemaV2.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas.last?.versionIdentifier == OpenASOSchemaV3.versionIdentifier)
         #expect(OpenASOSchemaV1.models.count == 17)
         #expect(OpenASOSchemaV2.models.count == 18)
-        #expect(OpenASOMigrationPlan.stages.count == 1)
+        #expect(OpenASOSchemaV3.models.count == 19)
+        #expect(OpenASOMigrationPlan.stages.count == 2)
         #expect(container.migrationPlan != nil)
     }
 

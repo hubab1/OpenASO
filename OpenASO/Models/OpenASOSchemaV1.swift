@@ -38,7 +38,8 @@ enum OpenASOMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [
             OpenASOSchemaV1.self,
-            OpenASOSchemaV2.self
+            OpenASOSchemaV2.self,
+            OpenASOSchemaV3.self
         ]
     }
 
@@ -47,6 +48,16 @@ enum OpenASOMigrationPlan: SchemaMigrationPlan {
             .lightweight(
                 fromVersion: OpenASOSchemaV1.self,
                 toVersion: OpenASOSchemaV2.self
+            ),
+            .custom(
+                fromVersion: OpenASOSchemaV2.self,
+                toVersion: OpenASOSchemaV3.self,
+                willMigrate: nil,
+                didMigrate: { modelContext in
+                    try TrackedKeywordRefreshStatusStore.migrateLegacyStatuses(
+                        in: modelContext
+                    )
+                }
             )
         ]
     }

@@ -6,6 +6,7 @@ struct AppKeywordsView: View {
     @Environment(AppServices.self) private var services
 
     @Query private var tracks: [TrackedAppKeyword]
+    @Query private var refreshStatuses: [TrackedKeywordRefreshStatus]
 
     let trackedApp: TrackedApp
     let searchText: String
@@ -56,6 +57,12 @@ struct AppKeywordsView: View {
             SortDescriptor(\TrackedAppKeyword.storefront, order: .forward),
             SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward)
         ]
+        _refreshStatuses = Query(
+            filter: #Predicate<TrackedKeywordRefreshStatus> { status in
+                status.appStoreID == appStoreID
+            },
+            sort: [SortDescriptor(\TrackedKeywordRefreshStatus.statusKey, order: .forward)]
+        )
 
         switch selectedStorefrontFilter {
         case .all:
@@ -77,7 +84,10 @@ struct AppKeywordsView: View {
     }
 
     private var materializationID: KeywordWorkspaceProjection.MaterializationID {
-        KeywordWorkspaceProjection.MaterializationID(
+        let statusesByIdentityKey = TrackedKeywordRefreshStatusStore.snapshots(
+            from: refreshStatuses
+        )
+        return KeywordWorkspaceProjection.MaterializationID(
             refreshToken: refreshToken,
             backgroundStoreRevision: services.backgroundModelStoreRevision,
             appStoreID: trackedApp.appStoreID,
@@ -89,7 +99,10 @@ struct AppKeywordsView: View {
                     identityKey: track.identityKey,
                     lastRefreshAt: track.lastRefreshAt,
                     rankingAppCount: track.rankingAppCount,
-                    statusMessage: track.statusMessage
+                    statusMessage: TrackedKeywordRefreshStatusStore.snapshot(
+                        for: track,
+                        persisted: statusesByIdentityKey[track.identityKey]
+                    ).displayMessage
                 )
             }
         )
@@ -156,7 +169,8 @@ struct AppKeywordsView: View {
     private func makeRows(
         from tracks: [TrackedAppKeyword],
         snapshotBuckets: SnapshotBuckets,
-        metricsByQueryKey: [String: KeywordMetricsSnapshot]
+        metricsByQueryKey: [String: KeywordMetricsSnapshot],
+        refreshStatusesByIdentityKey: [String: KeywordRefreshStatusSnapshot]
     ) -> [KeywordWorkspaceRow] {
         let storefrontLookup = storefrontLookup
         var rows: [KeywordWorkspaceRow] = []
@@ -167,7 +181,8 @@ struct AppKeywordsView: View {
                 for: track,
                 snapshotBuckets: snapshotBuckets,
                 storefrontLookup: storefrontLookup,
-                metricsByQueryKey: metricsByQueryKey
+                metricsByQueryKey: metricsByQueryKey,
+                refreshStatusesByIdentityKey: refreshStatusesByIdentityKey
             ) else {
                 continue
             }
@@ -232,7 +247,10 @@ struct AppKeywordsView: View {
             let loadedRows = makeRows(
                 from: platformTracks,
                 snapshotBuckets: snapshotBuckets,
-                metricsByQueryKey: loadedMetrics
+                metricsByQueryKey: loadedMetrics,
+                refreshStatusesByIdentityKey: TrackedKeywordRefreshStatusStore.snapshots(
+                    from: refreshStatuses
+                )
             )
             try Task.checkCancellation()
             return loadedRows
@@ -288,7 +306,8 @@ struct AppKeywordsView: View {
         for track: TrackedAppKeyword,
         snapshotBuckets: SnapshotBuckets,
         storefrontLookup: [String: StorefrontDefinition],
-        metricsByQueryKey: [String: KeywordMetricsSnapshot]
+        metricsByQueryKey: [String: KeywordMetricsSnapshot],
+        refreshStatusesByIdentityKey: [String: KeywordRefreshStatusSnapshot]
     ) -> KeywordWorkspaceRow? {
         let latestSnapshot = snapshotBuckets.latestByTrackKey[track.identityKey]
         let trendSnapshots = snapshotBuckets.trendByTrackKey[track.identityKey] ?? []
@@ -298,6 +317,10 @@ struct AppKeywordsView: View {
             track: track,
             storefront: storefrontLookup[track.storefront],
             metrics: metricsByQueryKey[track.queryKey],
+            refreshStatus: TrackedKeywordRefreshStatusStore.snapshot(
+                for: track,
+                persisted: refreshStatusesByIdentityKey[track.identityKey]
+            ),
             latestSnapshot: latestSnapshot,
             trendSnapshots: trendSnapshots,
             rankingApps: rankingApps

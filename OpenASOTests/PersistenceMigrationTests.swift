@@ -6,22 +6,25 @@ import Testing
 @MainActor
 struct PersistenceMigrationTests {
     @Test
-    func migrationPlanAppendsV2AndKeepsTheReleasedV1SchemaFrozen() throws {
+    func migrationPlanAppendsV2AndV3AndKeepsTheReleasedV1SchemaFrozen() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
         #expect(OpenASOSchemaV1.models.count == 17)
         #expect(OpenASOSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
         #expect(OpenASOSchemaV2.models.count == 18)
-        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(2, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 2)
+        #expect(OpenASOSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
+        #expect(OpenASOSchemaV3.models.count == 19)
+        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(3, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 3)
         #expect(OpenASOMigrationPlan.schemas[0].versionIdentifier == OpenASOSchemaV1.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[1].versionIdentifier == OpenASOSchemaV2.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas[2].versionIdentifier == OpenASOSchemaV3.versionIdentifier)
         #expect(
             OpenASOMigrationPlan.currentSchema.versionIdentifier
                 == OpenASOMigrationPlan.schemas.last?.versionIdentifier
         )
-        #expect(OpenASOMigrationPlan.stages.count == 1)
+        #expect(OpenASOMigrationPlan.stages.count == 2)
         #expect(container.migrationPlan != nil)
     }
 
@@ -29,6 +32,7 @@ struct PersistenceMigrationTests {
     func releasedV032StoreOpensWritesAndReopensWithAllEntitiesAndRelationships() throws {
         let fixture = try ReleasedV1StoreFixture.loadFromTestBundle()
         let materialized = try fixture.makeTemporaryCopy()
+        let migrationStartedAt = Date.now
         defer {
             try? FileManager.default.removeItem(at: materialized.directoryURL)
         }
@@ -42,6 +46,14 @@ struct PersistenceMigrationTests {
             #expect(try modelContext.fetch(
                 FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
             ).isEmpty)
+            let migratedStatus = try #require(modelContext.fetch(
+                FetchDescriptor<TrackedKeywordRefreshStatus>()
+            ).first)
+            #expect(migratedStatus.trackIdentityKey == ReleasedV1FixtureSentinel.trackIdentityKey)
+            #expect(migratedStatus.domain == .ranking)
+            #expect(migratedStatus.message == "released-status-sentinel")
+            #expect(migratedStatus.updatedAt >= migrationStartedAt)
+            #expect(migratedStatus.updatedAt <= Date.now)
 
             let track = try #require(modelContext.fetch(FetchDescriptor<TrackedAppKeyword>()).first)
             track.notes = ReleasedV1FixtureSentinel.reopenWriteNotes
@@ -71,9 +83,51 @@ struct PersistenceMigrationTests {
                 attempt.lastRankingRefreshAttemptAt
                     == ReleasedV1FixtureSentinel.refreshAttemptDate
             )
+            let migratedStatus = try #require(reopenedContext.fetch(
+                FetchDescriptor<TrackedKeywordRefreshStatus>()
+            ).first)
+            #expect(migratedStatus.trackIdentityKey == ReleasedV1FixtureSentinel.trackIdentityKey)
+            #expect(migratedStatus.domain == .ranking)
+            #expect(migratedStatus.message == "released-status-sentinel")
         }
 
         try fixture.verifyBundledArtifacts()
+    }
+
+    @Test
+    func v2RefreshAttemptStoreMigratesToV3WithoutLosingAttemptState() throws {
+        let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OpenASO-V2-to-V3-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let storeURL = rootURL.appendingPathComponent("default.store", isDirectory: false)
+
+        try autoreleasepool {
+            let schema = Schema(versionedSchema: OpenASOSchemaV2.self)
+            let configuration = ModelConfiguration(schema: schema, url: storeURL)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(TrackedAppKeywordRefreshAttempt(
+                trackIdentityKey: ReleasedV1FixtureSentinel.trackIdentityKey,
+                appStoreID: ReleasedV1FixtureSentinel.appStoreID,
+                lastRankingRefreshAttemptAt: ReleasedV1FixtureSentinel.refreshAttemptDate
+            ))
+            try context.save()
+        }
+
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: storeURL)
+            let context = ModelContext(container)
+            let attempt = try #require(context.fetch(
+                FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+            ).first)
+            #expect(attempt.trackIdentityKey == ReleasedV1FixtureSentinel.trackIdentityKey)
+            #expect(attempt.appStoreID == ReleasedV1FixtureSentinel.appStoreID)
+            #expect(attempt.lastRankingRefreshAttemptAt == ReleasedV1FixtureSentinel.refreshAttemptDate)
+            #expect(try context.fetch(FetchDescriptor<TrackedKeywordRefreshStatus>()).isEmpty)
+        }
     }
 
     @Test
@@ -267,7 +321,7 @@ struct PersistenceMigrationTests {
         #expect(track.rankingAppCount == ReleasedV1FixtureSentinel.resultCount)
         #expect(track.lastRefreshAt == ReleasedV1FixtureSentinel.fixtureDate)
         #expect(track.notes == expectedTrackNotes)
-        #expect(track.statusMessage == "released-status-sentinel")
+        #expect(track.statusMessage == nil)
         #expect(track.createdAt == ReleasedV1FixtureSentinel.fixtureDate)
         #expect(track.trackedApp.appStoreID == trackedApp.appStoreID)
         #expect(track.query.queryKey == query.queryKey)

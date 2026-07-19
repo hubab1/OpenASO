@@ -48,12 +48,25 @@ struct KeywordMetricsServiceTests {
         modelContext.insert(trackedApp)
         modelContext.insert(track)
         modelContext.insert(metrics)
+        let rankingStatus = "Ranking failed to refresh. Preserve this failure."
+        try TrackedKeywordRefreshStatusStore.set(
+            rankingStatus,
+            domain: .ranking,
+            for: track,
+            in: modelContext
+        )
         try modelContext.save()
 
         _ = await services.keywordMetricsService.refreshMetrics(for: trackedApp, tracks: [track], in: modelContext)
 
         #expect(metrics.popularityScore == 72)
         #expect(metrics.updatedAt == previousUpdatedAt)
+        let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+            for: track,
+            in: modelContext
+        )
+        #expect(refreshStatus.rankingMessage == rankingStatus)
+        #expect(refreshStatus.popularityMessage == nil)
         #expect(track.statusMessage == nil)
         #expect(services.appleAdsWebSessionStore.requiresReconnect)
         #expect(services.appleAdsWebSessionStore.hasSession)
@@ -84,7 +97,10 @@ struct KeywordMetricsServiceTests {
         let storedMetrics = try #require(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
 
         #expect(storedMetrics.popularityScore == nil)
-        #expect(track.statusMessage == "Popularity failed to fetch. Reconnect Apple Ads in Settings so OpenASO can detect a linked app.")
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: track,
+            in: modelContext
+        ).popularityMessage == "Popularity failed to fetch. Reconnect Apple Ads in Settings so OpenASO can detect a linked app.")
     }
 
     @Test
@@ -413,12 +429,17 @@ struct KeywordMetricsServiceTests {
 
         _ = await services.keywordMetricsService.refreshMetrics(for: trackedApp, tracks: [track], in: modelContext)
 
-        #expect(track.statusMessage == "Popularity unavailable. Apple Ads does not support keyword popularity in Angola.")
+        let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+            for: track,
+            in: modelContext
+        )
+        #expect(refreshStatus.popularityMessage == "Popularity unavailable. Apple Ads does not support keyword popularity in Angola.")
         let storedMetrics = try #require(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
         let row = KeywordWorkspaceRow(
             track: track,
             storefront: nil,
             metrics: storedMetrics,
+            refreshStatus: refreshStatus,
             latestSnapshot: Optional<KeywordRankingCrawlSummary>.none,
             trendSnapshots: [KeywordRankingCrawlSummary](),
             rankingApps: [KeywordRankingAppSummary]()
@@ -1249,8 +1270,12 @@ struct KeywordMetricsServiceTests {
         let storedState = try await backgroundModelStore.read { context in
             let persistedTracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
             let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
+            let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: persistedTracks.map(\.identityKey),
+                in: context
+            )
             return (
-                statuses: persistedTracks.compactMap(\.statusMessage),
+                statuses: statuses.values.compactMap(\.popularityMessage),
                 metricCount: metrics.count,
                 populatedMetricCount: metrics.compactMap(\.popularityScore).count
             )
