@@ -247,6 +247,64 @@ struct KeywordResearchProjectsModelTests {
     }
 
     @Test
+    func cancelledNonCancellationLoadErrorRestoresStateAndAllowsRetry() async {
+        let loader = ControlledOperation<KeywordResearchProjectPresentationPage>()
+        let project = makeProject(name: "Project")
+        let model = KeywordResearchProjectsModel(
+            dependencies: projectsDependencies { _, _ in try await loader.call() }
+        )
+
+        let cancelled = Task { @MainActor in await model.reload() }
+        await loader.waitForCallCount(1)
+        cancelled.cancel()
+        await loader.fail(at: 0, with: OpenASOError.networkUnavailable)
+        await cancelled.value
+        #expect(model.loadState == .idle)
+
+        let retry = Task { @MainActor in await model.reload() }
+        await loader.waitForCallCount(2)
+        await loader.succeed(
+            at: 0,
+            with: KeywordResearchProjectPresentationPage(
+                projects: [project],
+                nextOffset: nil
+            )
+        )
+        await retry.value
+        #expect(model.projects == [project])
+        #expect(model.loadState == .loaded)
+    }
+
+    @Test
+    func createBeforeInitialLoadRequiresReconciliation() async {
+        let existing = makeProject(name: "Existing")
+        let created = makeProject(name: "Created")
+        let model = KeywordResearchProjectsModel(
+            dependencies: KeywordResearchProjectsDependencies(
+                loadPage: { _, _ in
+                    KeywordResearchProjectPresentationPage(
+                        projects: [existing, created],
+                        nextOffset: 2
+                    )
+                },
+                createProject: { _ in created },
+                updateProject: { _, _ in created },
+                deleteProject: { _ in }
+            )
+        )
+
+        #expect(await model.create(KeywordResearchProjectDraft(id: created.id)) == created)
+        #expect(model.projects == [created])
+        #expect(model.requiresReload)
+        #expect(!model.hasMoreProjects)
+
+        await model.reload()
+        #expect(Set(model.projects.map(\.id)) == Set([existing.id, created.id]))
+        #expect(!model.requiresReload)
+        #expect(model.hasMoreProjects)
+    }
+
+    @Test
     func cancelLoadingAllowsImmediateReplacementLoadAndRejectsOldCompletion() async {
         let loader = ControlledOperation<KeywordResearchProjectPresentationPage>()
         let old = makeProject(name: "Old")
@@ -258,6 +316,8 @@ struct KeywordResearchProjectsModelTests {
         let oldLoad = Task { @MainActor in await model.reload() }
         await loader.waitForCallCount(1)
         model.cancelLoading()
+        #expect(model.requiresReload)
+        #expect(!model.hasMoreProjects)
         let freshLoad = Task { @MainActor in await model.reload() }
         await loader.waitForCallCount(2)
 
