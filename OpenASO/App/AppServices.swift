@@ -19,6 +19,7 @@ final class AppServices {
     let appStoreWebMetadataProvider: AppStoreWebMetadataProvider
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
+    let appMetadataRefreshService: AppMetadataRefreshService?
     let screenshotDownloadService: ScreenshotDownloadService
     let screenshotDownloadProgressStore: ScreenshotDownloadProgressStore
     let appStorefrontRatingService: AppStorefrontRatingService
@@ -91,6 +92,21 @@ final class AppServices {
         let resolver = DefaultAppResolver(httpClient: httpClient)
         let appStoreWebMetadataProvider = AppStoreWebMetadataProvider(httpClient: httpClient)
         let catalogService = AppCatalogService(appResolver: resolver)
+        let appIconStore = AppIconStore(
+            namespace: namespace,
+            allowsNetworkFetches: allowsIconNetworkFetches
+        )
+        let appMetadataRefreshService = backgroundModelStore.map { backgroundModelStore in
+            AppMetadataRefreshService(
+                appResolver: resolver,
+                webMetadataProvider: appStoreWebMetadataProvider,
+                store: SwiftDataAppMetadataRefreshStore(
+                    backgroundModelStore: backgroundModelStore,
+                    appCatalogService: catalogService
+                ),
+                iconInvalidator: appIconStore
+            )
+        }
         let screenshotDownloadService = ScreenshotDownloadService()
         let screenshotDownloadProgressStore = ScreenshotDownloadProgressStore()
         let appStorefrontRatingService = AppStorefrontRatingService(httpClient: httpClient)
@@ -246,10 +262,8 @@ final class AppServices {
         self.appResolver = resolver
         self.appStoreWebMetadataProvider = appStoreWebMetadataProvider
         self.appCatalogService = catalogService
-        self.appIconStore = AppIconStore(
-            namespace: namespace,
-            allowsNetworkFetches: allowsIconNetworkFetches
-        )
+        self.appIconStore = appIconStore
+        self.appMetadataRefreshService = appMetadataRefreshService
         self.screenshotDownloadService = screenshotDownloadService
         self.screenshotDownloadProgressStore = screenshotDownloadProgressStore
         self.appStorefrontRatingService = appStorefrontRatingService

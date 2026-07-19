@@ -26,13 +26,19 @@ final class AppCatalogService: Sendable {
     func upsertStoreApp(
         from resolvedApp: ResolvedApp,
         storefrontCode: String? = nil,
+        canonicalStorefrontCode: String? = nil,
         in modelContext: ModelContext
     ) throws -> StoreApp {
         let normalizedStorefront = normalizedStorefrontCode(storefrontCode)
+        let normalizedCanonicalStorefront = normalizedStorefrontCode(
+            canonicalStorefrontCode ?? normalizedStorefront
+        )
+        let enforcesCanonicalStorefront = canonicalStorefrontCode != nil
+        let payloadIsCanonical = normalizedStorefront == normalizedCanonicalStorefront
         let storeApp: StoreApp
         if let existing = try fetchStoreApp(appStoreID: resolvedApp.appStoreID, in: modelContext) {
             storeApp = existing
-        } else {
+        } else if !enforcesCanonicalStorefront || payloadIsCanonical {
             storeApp = StoreApp(
                 appStoreID: resolvedApp.appStoreID,
                 bundleID: resolvedApp.bundleID,
@@ -40,7 +46,7 @@ final class AppCatalogService: Sendable {
                 subtitle: resolvedApp.subtitle,
                 sellerName: resolvedApp.sellerName,
                 iconURLString: resolvedApp.iconURLString,
-                defaultStorefront: normalizedStorefront,
+                defaultStorefront: normalizedCanonicalStorefront,
                 supportedLanguageCodes: normalizedLanguageCodes(resolvedApp.supportedLanguageCodes),
                 supportedLanguageCodesSource: .iTunesLookup,
                 supportedLanguageCodesFetchedAt: resolvedApp.supportedLanguageCodes.isEmpty ? nil : .now,
@@ -52,7 +58,23 @@ final class AppCatalogService: Sendable {
                 defaultPlatform: resolvedApp.defaultPlatform
             )
             modelContext.insert(storeApp)
+        } else {
+            storeApp = StoreApp(
+                appStoreID: resolvedApp.appStoreID,
+                bundleID: nil,
+                name: "App \(resolvedApp.appStoreID)",
+                sellerName: nil,
+                iconURLString: nil,
+                defaultStorefront: normalizedCanonicalStorefront,
+                defaultPlatform: .iphone,
+                lastMetadataRefreshAt: .distantPast
+            )
+            modelContext.insert(storeApp)
         }
+        repairCanonicalStorefront(
+            storeApp,
+            canonicalStorefrontCode: canonicalStorefrontCode
+        )
 
         update(
             storeApp,
@@ -69,7 +91,8 @@ final class AppCatalogService: Sendable {
             version: resolvedApp.version,
             primaryGenreID: resolvedApp.primaryGenreID,
             primaryGenreName: resolvedApp.primaryGenreName,
-            defaultPlatform: resolvedApp.defaultPlatform
+            defaultPlatform: resolvedApp.defaultPlatform,
+            allowsNoncanonicalFallback: !enforcesCanonicalStorefront
         )
         try upsertStorefrontMetadata(
             from: resolvedApp,
@@ -199,13 +222,19 @@ final class AppCatalogService: Sendable {
     func upsertStoreApp(
         from webMetadata: AppStoreWebMetadata,
         storefrontCode: String? = nil,
+        canonicalStorefrontCode: String? = nil,
         in modelContext: ModelContext
     ) throws -> StoreApp {
         let normalizedStorefront = normalizedStorefrontCode(storefrontCode ?? webMetadata.storefront)
+        let normalizedCanonicalStorefront = normalizedStorefrontCode(
+            canonicalStorefrontCode ?? normalizedStorefront
+        )
+        let enforcesCanonicalStorefront = canonicalStorefrontCode != nil
+        let payloadIsCanonical = normalizedStorefront == normalizedCanonicalStorefront
         let storeApp: StoreApp
         if let existing = try fetchStoreApp(appStoreID: webMetadata.appStoreID, in: modelContext) {
             storeApp = existing
-        } else {
+        } else if !enforcesCanonicalStorefront || payloadIsCanonical {
             storeApp = StoreApp(
                 appStoreID: webMetadata.appStoreID,
                 bundleID: nil,
@@ -213,11 +242,27 @@ final class AppCatalogService: Sendable {
                 subtitle: webMetadata.subtitle,
                 sellerName: webMetadata.sellerName,
                 iconURLString: nil,
-                defaultStorefront: normalizedStorefront,
+                defaultStorefront: normalizedCanonicalStorefront,
                 defaultPlatform: .iphone
             )
             modelContext.insert(storeApp)
+        } else {
+            storeApp = StoreApp(
+                appStoreID: webMetadata.appStoreID,
+                bundleID: nil,
+                name: "App \(webMetadata.appStoreID)",
+                sellerName: nil,
+                iconURLString: nil,
+                defaultStorefront: normalizedCanonicalStorefront,
+                defaultPlatform: .iphone,
+                lastMetadataRefreshAt: .distantPast
+            )
+            modelContext.insert(storeApp)
         }
+        repairCanonicalStorefront(
+            storeApp,
+            canonicalStorefrontCode: canonicalStorefrontCode
+        )
 
         update(
             storeApp,
@@ -234,7 +279,8 @@ final class AppCatalogService: Sendable {
             version: nil,
             primaryGenreID: nil,
             primaryGenreName: nil,
-            defaultPlatform: storeApp.defaultPlatform
+            defaultPlatform: storeApp.defaultPlatform,
+            allowsNoncanonicalFallback: !enforcesCanonicalStorefront
         )
         try upsertStorefrontMetadata(
             from: webMetadata,
@@ -372,63 +418,82 @@ final class AppCatalogService: Sendable {
         version: String?,
         primaryGenreID: Int?,
         primaryGenreName: String?,
-        defaultPlatform: AppPlatform
+        defaultPlatform: AppPlatform,
+        allowsNoncanonicalFallback: Bool = true
     ) {
         var changed = false
-        if let bundleID, !bundleID.isEmpty {
+        let isCanonicalStorefront = isCanonicalStorefront(
+            storeApp: storeApp,
+            storefront: storefront
+        )
+
+        if isCanonicalStorefront, let bundleID, !bundleID.isEmpty {
             changed = assignIfChanged(storeApp, \.bundleID, bundleID) || changed
         }
 
-        let shouldUpdateCanonicalMetadata = shouldUpdateCanonicalMetadata(storeApp: storeApp, storefront: storefront)
-
-        if shouldUpdateCanonicalMetadata {
+        let canonicalNameIsMissing = nonEmpty(storeApp.name) == nil
+        if isCanonicalStorefront || (allowsNoncanonicalFallback && canonicalNameIsMissing) {
             changed = assignIfChanged(storeApp, \.name, name) || changed
         }
 
         let canonicalSubtitleIsMissing = nonEmpty(storeApp.subtitle) == nil
-        if (shouldUpdateCanonicalMetadata || canonicalSubtitleIsMissing), let subtitle, !subtitle.isEmpty {
+        if (isCanonicalStorefront || (allowsNoncanonicalFallback && canonicalSubtitleIsMissing)),
+           let subtitle,
+           !subtitle.isEmpty {
             changed = assignIfChanged(storeApp, \.subtitle, subtitle) || changed
         }
 
-        if let sellerName, !sellerName.isEmpty {
+        if isCanonicalStorefront, let sellerName, !sellerName.isEmpty {
             changed = assignIfChanged(storeApp, \.sellerName, sellerName) || changed
         }
 
-        if shouldUpdateCanonicalMetadata, let iconURLString, !iconURLString.isEmpty {
+        if isCanonicalStorefront, let iconURLString, !iconURLString.isEmpty {
             changed = assignIfChanged(storeApp, \.iconURLString, iconURLString) || changed
         }
 
         let normalizedLanguages = normalizedLanguageCodes(supportedLanguageCodes)
-        if !normalizedLanguages.isEmpty {
-            let languagesChanged = assignIfChanged(storeApp, \.supportedLanguageCodes, normalizedLanguages)
-                || assignIfChanged(storeApp, \.supportedLanguageCodesSourceRaw, supportedLanguageCodesSource?.rawValue)
-            if languagesChanged {
-                storeApp.supportedLanguageCodesFetchedAt = .now
-                changed = true
-            }
+        if isCanonicalStorefront, !normalizedLanguages.isEmpty {
+            let codesChanged = assignIfChanged(
+                storeApp,
+                \.supportedLanguageCodes,
+                normalizedLanguages
+            )
+            let sourceChanged = assignIfChanged(
+                storeApp,
+                \.supportedLanguageCodesSourceRaw,
+                supportedLanguageCodesSource?.rawValue
+            )
+            let fetchedAtChanged = assignIfChanged(
+                storeApp,
+                \.supportedLanguageCodesFetchedAt,
+                Date.now
+            )
+            changed = codesChanged || sourceChanged || fetchedAtChanged || changed
         }
 
-        if let releaseDate {
+        if isCanonicalStorefront, let releaseDate {
             changed = assignIfChanged(storeApp, \.releaseDate, releaseDate) || changed
         }
 
-        if let currentVersionReleaseDate {
+        if isCanonicalStorefront, let currentVersionReleaseDate {
             changed = assignIfChanged(storeApp, \.currentVersionReleaseDate, currentVersionReleaseDate) || changed
         }
 
-        if let version, !version.isEmpty {
+        if isCanonicalStorefront, let version, !version.isEmpty {
             changed = assignIfChanged(storeApp, \.version, version) || changed
         }
 
-        if let primaryGenreID {
+        if isCanonicalStorefront, let primaryGenreID {
             changed = assignIfChanged(storeApp, \.primaryGenreID, primaryGenreID) || changed
         }
 
-        if let primaryGenreName, !primaryGenreName.isEmpty {
+        if isCanonicalStorefront, let primaryGenreName, !primaryGenreName.isEmpty {
             changed = assignIfChanged(storeApp, \.primaryGenreName, primaryGenreName) || changed
         }
 
-        changed = assignIfChanged(storeApp, \.defaultPlatformRaw, defaultPlatform.rawValue) || changed
+        if isCanonicalStorefront {
+            changed = assignIfChanged(storeApp, \.defaultPlatformRaw, defaultPlatform.rawValue) || changed
+        }
         if changed {
             storeApp.lastMetadataRefreshAt = .now
         }
@@ -836,10 +901,21 @@ final class AppCatalogService: Sendable {
         return Dictionary(uniqueKeysWithValues: try modelContext.fetch(descriptor).map { ($0.identityKey, $0) })
     }
 
-    private func shouldUpdateCanonicalMetadata(storeApp: StoreApp, storefront: String?) -> Bool {
+    private func isCanonicalStorefront(storeApp: StoreApp, storefront: String?) -> Bool {
         guard let storefront else { return true }
         let normalizedStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalizedStorefront == storeApp.defaultStorefront || storeApp.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return normalizedStorefront == normalizedStorefrontCode(storeApp.defaultStorefront)
+    }
+
+    private func repairCanonicalStorefront(
+        _ storeApp: StoreApp,
+        canonicalStorefrontCode: String?
+    ) {
+        guard let canonicalStorefrontCode else { return }
+        let normalizedCanonicalStorefront = normalizedStorefrontCode(canonicalStorefrontCode)
+        if storeApp.defaultStorefront != normalizedCanonicalStorefront {
+            storeApp.defaultStorefront = normalizedCanonicalStorefront
+        }
     }
 
     private func normalizedLanguageCodes(_ values: [String]) -> [String] {
