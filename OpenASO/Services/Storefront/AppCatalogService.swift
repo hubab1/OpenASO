@@ -160,6 +160,13 @@ final class AppCatalogService: Sendable {
         cache: inout SearchRankingPageCache
     ) throws -> StoreApp {
         let normalizedStorefront = normalizedStorefrontCode(storefrontCode)
+        let storefrontMetadataIdentityKey = AppStorefrontMetadata.makeIdentityKey(
+            appStoreID: item.appStoreID,
+            storefront: normalizedStorefront
+        )
+        let storefrontMetadataFetchedAt = cache.storefrontMetadataByIdentityKey[
+            storefrontMetadataIdentityKey
+        ]?.lastFetchedAt
         let metadataSource = metadataSource(for: rankingSource)
         let storeApp: StoreApp
         let isExisting: Bool
@@ -192,27 +199,27 @@ final class AppCatalogService: Sendable {
             isExisting = false
         }
 
-        if !isExisting || fetchedAt >= storeApp.lastMetadataRefreshAt {
-            update(
-                storeApp,
-                storefront: normalizedStorefront,
-                bundleID: item.bundleID,
-                name: item.name,
-                subtitle: item.subtitle,
-                sellerName: item.sellerName,
-                iconURLString: item.iconURLString,
-                supportedLanguageCodes: item.supportedLanguageCodes,
-                supportedLanguageCodesSource: metadataSource,
-                supportedLanguageCodesFetchedAt: fetchedAt,
-                releaseDate: item.releaseDate,
-                currentVersionReleaseDate: item.currentVersionReleaseDate,
-                version: item.version,
-                primaryGenreID: item.primaryGenreID,
-                primaryGenreName: item.primaryGenreName,
-                defaultPlatform: isExisting ? nil : requestedPlatform,
-                fetchedAt: fetchedAt
-            )
-        }
+        update(
+            storeApp,
+            storefront: normalizedStorefront,
+            bundleID: item.bundleID,
+            name: item.name,
+            subtitle: item.subtitle,
+            sellerName: item.sellerName,
+            iconURLString: item.iconURLString,
+            supportedLanguageCodes: item.supportedLanguageCodes,
+            supportedLanguageCodesSource: metadataSource,
+            supportedLanguageCodesFetchedAt: fetchedAt,
+            releaseDate: item.releaseDate,
+            currentVersionReleaseDate: item.currentVersionReleaseDate,
+            version: item.version,
+            primaryGenreID: item.primaryGenreID,
+            primaryGenreName: item.primaryGenreName,
+            defaultPlatform: isExisting ? nil : requestedPlatform,
+            fetchedAt: fetchedAt,
+            storefrontMetadataFetchedAt: storefrontMetadataFetchedAt,
+            allowsNoncanonicalGlobalEvidence: true
+        )
         try upsertStorefrontMetadata(
             from: item,
             storefront: normalizedStorefront,
@@ -464,40 +471,56 @@ final class AppCatalogService: Sendable {
         primaryGenreName: String?,
         defaultPlatform: AppPlatform?,
         allowsNoncanonicalFallback: Bool = true,
-        fetchedAt: Date = .now
+        fetchedAt: Date = .now,
+        storefrontMetadataFetchedAt: Date? = nil,
+        allowsNoncanonicalGlobalEvidence: Bool = false
     ) {
         var changed = false
+        let acceptsGlobalEvidence = fetchedAt >= storeApp.lastMetadataRefreshAt
+        let acceptsStorefrontEvidence = fetchedAt >= (storefrontMetadataFetchedAt ?? .distantPast)
+        let hasNewerCrossSourceGlobalEvidence = fetchedAt < storeApp.lastMetadataRefreshAt
+            && storeApp.supportedLanguageCodesSource != supportedLanguageCodesSource
+        let acceptsCanonicalEvidence = acceptsStorefrontEvidence
+            && !hasNewerCrossSourceGlobalEvidence
         let isCanonicalStorefront = isCanonicalStorefront(
             storeApp: storeApp,
             storefront: storefront
         )
+        let acceptsGlobalFields = acceptsGlobalEvidence
+            && (isCanonicalStorefront || allowsNoncanonicalGlobalEvidence)
 
-        if isCanonicalStorefront, let bundleID, !bundleID.isEmpty {
+        if acceptsGlobalFields, let bundleID, !bundleID.isEmpty {
             changed = assignIfChanged(storeApp, \.bundleID, bundleID) || changed
         }
 
         let canonicalNameIsMissing = nonEmpty(storeApp.name) == nil
-        if isCanonicalStorefront || (allowsNoncanonicalFallback && canonicalNameIsMissing) {
+        if (isCanonicalStorefront && acceptsCanonicalEvidence)
+            || (allowsNoncanonicalFallback && canonicalNameIsMissing)
+        {
             changed = assignIfChanged(storeApp, \.name, name) || changed
         }
 
         let canonicalSubtitleIsMissing = nonEmpty(storeApp.subtitle) == nil
-        if (isCanonicalStorefront || (allowsNoncanonicalFallback && canonicalSubtitleIsMissing)),
+        if ((isCanonicalStorefront && acceptsCanonicalEvidence)
+            || (allowsNoncanonicalFallback && canonicalSubtitleIsMissing)),
            let subtitle,
            !subtitle.isEmpty {
             changed = assignIfChanged(storeApp, \.subtitle, subtitle) || changed
         }
 
-        if isCanonicalStorefront, let sellerName, !sellerName.isEmpty {
+        if acceptsGlobalFields, let sellerName, !sellerName.isEmpty {
             changed = assignIfChanged(storeApp, \.sellerName, sellerName) || changed
         }
 
-        if isCanonicalStorefront, let iconURLString, !iconURLString.isEmpty {
+        if isCanonicalStorefront,
+           acceptsCanonicalEvidence,
+           let iconURLString,
+           !iconURLString.isEmpty {
             changed = assignIfChanged(storeApp, \.iconURLString, iconURLString) || changed
         }
 
         let normalizedLanguages = normalizedLanguageCodes(supportedLanguageCodes)
-        if isCanonicalStorefront, !normalizedLanguages.isEmpty {
+        if acceptsGlobalFields, !normalizedLanguages.isEmpty {
             let codesChanged = assignIfChanged(
                 storeApp,
                 \.supportedLanguageCodes,
@@ -518,30 +541,30 @@ final class AppCatalogService: Sendable {
             }
         }
 
-        if isCanonicalStorefront, let releaseDate {
+        if acceptsGlobalFields, let releaseDate {
             changed = assignIfChanged(storeApp, \.releaseDate, releaseDate) || changed
         }
 
-        if isCanonicalStorefront, let currentVersionReleaseDate {
+        if acceptsGlobalFields, let currentVersionReleaseDate {
             changed = assignIfChanged(storeApp, \.currentVersionReleaseDate, currentVersionReleaseDate) || changed
         }
 
-        if isCanonicalStorefront, let version, !version.isEmpty {
+        if acceptsGlobalFields, let version, !version.isEmpty {
             changed = assignIfChanged(storeApp, \.version, version) || changed
         }
 
-        if isCanonicalStorefront, let primaryGenreID {
+        if acceptsGlobalFields, let primaryGenreID {
             changed = assignIfChanged(storeApp, \.primaryGenreID, primaryGenreID) || changed
         }
 
-        if isCanonicalStorefront, let primaryGenreName, !primaryGenreName.isEmpty {
+        if acceptsGlobalFields, let primaryGenreName, !primaryGenreName.isEmpty {
             changed = assignIfChanged(storeApp, \.primaryGenreName, primaryGenreName) || changed
         }
 
-        if isCanonicalStorefront, let defaultPlatform {
+        if acceptsGlobalFields, let defaultPlatform {
             changed = assignIfChanged(storeApp, \.defaultPlatformRaw, defaultPlatform.rawValue) || changed
         }
-        if isCanonicalStorefront && (changed || storeApp.lastMetadataRefreshAt != fetchedAt) {
+        if acceptsGlobalFields && (changed || storeApp.lastMetadataRefreshAt != fetchedAt) {
             storeApp.lastMetadataRefreshAt = fetchedAt
         }
     }
@@ -593,7 +616,6 @@ final class AppCatalogService: Sendable {
             cache.storefrontMetadataByIdentityKey[identityKey] = metadata
             isNewMetadata = true
         }
-
         guard fetchedAt >= metadata.lastFetchedAt else { return }
 
         // App Store Web search rows are intentionally sparse. Once a detail

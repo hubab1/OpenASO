@@ -831,6 +831,57 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func discoverKeywordLandscapeCoordinatorPathPersistsFullRankingBeforeEnrichment() async throws {
+        let rankingProvider = StubMCPRankingProvider(pages: [
+            "calorie tracker::us::iphone": SearchRankingPage(items: [
+                makeRankingItem(position: 1, appStoreID: 456, name: "MyFitnessPal", ratingCount: 1_000),
+                makeRankingItem(position: 2, appStoreID: 123, name: "Calorie Tracker", ratingCount: 100)
+            ], source: .iTunesFallback)
+        ])
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let enrichmentRecorder = MCPMetadataEnrichmentRecorder(modelContainer: container)
+        let context = try MCPTestContext(
+            modelContainer: container,
+            rankingProvider: rankingProvider,
+            useRankingRefreshCoordinator: true,
+            metadataEnrichmentScheduler: enrichmentRecorder.record
+        )
+        try context.insertTrackedApp(appStoreID: 123, name: "Calorie Tracker")
+
+        let result = try await context.service.discoverKeywordLandscape(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone",
+            keywordLimit: 1,
+            competitorLimit: 1,
+            includeReviews: false
+        )
+
+        #expect(result.errors.isEmpty)
+        #expect(result.verifiedKeywords.count == 1)
+        #expect(result.verifiedKeywords.first?.keyword == "calorie tracker")
+        #expect(result.verifiedKeywords.first?.isTracked == true)
+        #expect(result.verifiedKeywords.first?.targetRank == 2)
+        #expect(await rankingProvider.searchedLimitsSnapshot() == [200])
+        #expect(enrichmentRecorder.snapshot() == [MCPMetadataEnrichmentRecord(
+            requests: [
+                RankingMetadataEnrichmentRequest(
+                    appStoreID: 456,
+                    storefront: "us",
+                    platform: .iphone
+                ),
+                RankingMetadataEnrichmentRequest(
+                    appStoreID: 123,
+                    storefront: "us",
+                    platform: .iphone
+                )
+            ],
+            committedCrawlCount: 1,
+            committedSnapshotCount: 1
+        )])
+    }
+
+    @Test
     func suggestKeywordsStopsVerificationBeforeToolTimeoutBudget() async throws {
         let rankingProvider = StubMCPRankingProvider(pages: [:])
         let context = try MCPTestContext(rankingProvider: rankingProvider)
@@ -916,6 +967,57 @@ struct OpenASOMCPServiceTests {
         #expect(metricsRefresh.outcomes.first?.rankingProvenance == nil)
         #expect(metricsRefresh.outcomes.first?.error?.code == "apple_ads_not_configured")
         #expect(metricsRefresh.outcomes.first?.track.statusMessage?.contains("Connect an Apple Ads") == true)
+    }
+
+    @Test
+    func refreshKeywordRankingsCoordinatorPathRequestsFullPageAndEnrichesAfterCommit() async throws {
+        let rankingProvider = StubMCPRankingProvider(pages: [
+            "calorie tracker::us::iphone": SearchRankingPage(items: [
+                makeRankingItem(position: 1, appStoreID: 456, name: "MyFitnessPal", ratingCount: 1_000),
+                makeRankingItem(position: 2, appStoreID: 123, name: "Cal AI", ratingCount: 100)
+            ], source: .iTunesFallback)
+        ])
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let enrichmentRecorder = MCPMetadataEnrichmentRecorder(modelContainer: container)
+        let context = try MCPTestContext(
+            modelContainer: container,
+            rankingProvider: rankingProvider,
+            useRankingRefreshCoordinator: true,
+            metadataEnrichmentScheduler: enrichmentRecorder.record
+        )
+        try context.insertTrackedApp(appStoreID: 123, name: "Cal AI")
+        _ = try await context.service.addKeywords(
+            appStoreID: 123,
+            keywords: ["calorie tracker"],
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        let refresh = try await context.service.refreshKeywordRankings(
+            appStoreID: 123,
+            storefronts: ["us"],
+            platform: "iphone"
+        )
+
+        #expect(refresh.summary.refreshed == 1)
+        #expect(refresh.outcomes.first?.track.latestRank == 2)
+        #expect(await rankingProvider.searchedLimitsSnapshot() == [200])
+        #expect(enrichmentRecorder.snapshot() == [MCPMetadataEnrichmentRecord(
+            requests: [
+                RankingMetadataEnrichmentRequest(
+                    appStoreID: 456,
+                    storefront: "us",
+                    platform: .iphone
+                ),
+                RankingMetadataEnrichmentRequest(
+                    appStoreID: 123,
+                    storefront: "us",
+                    platform: .iphone
+                )
+            ],
+            committedCrawlCount: 1,
+            committedSnapshotCount: 1
+        )])
     }
 
     @Test
@@ -3189,6 +3291,7 @@ private struct MCPTestContext {
         resolver: StubMCPAppResolver = StubMCPAppResolver(),
         rankingProvider: (any SearchRankingProvider)? = nil,
         useRankingRefreshCoordinator: Bool = false,
+        metadataEnrichmentScheduler: (@Sendable ([RankingMetadataEnrichmentRequest]) -> Void)? = nil,
         rankingRefreshScheduler: OpenASOMCPRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler(),
         persistRankingRefreshAttempts: OpenASOMCPService.RankingRefreshAttemptsPersistence? = nil,
         includeReviewService: Bool = false,
@@ -3217,7 +3320,11 @@ private struct MCPTestContext {
         )
         let rankingRefreshCoordinator = rankingProvider.flatMap { provider in
             useRankingRefreshCoordinator
-                ? RankingRefreshCoordinator(rankingProvider: provider, appCatalogService: appCatalogService)
+                ? RankingRefreshCoordinator(
+                    rankingProvider: provider,
+                    appCatalogService: appCatalogService,
+                    metadataEnrichmentScheduler: metadataEnrichmentScheduler
+                )
                 : nil
         }
         self.service = OpenASOMCPService(
@@ -3666,10 +3773,48 @@ private struct StubMCPAppResolver: AppResolver {
     }
 }
 
+private struct MCPMetadataEnrichmentRecord: Equatable, Sendable {
+    let requests: [RankingMetadataEnrichmentRequest]
+    let committedCrawlCount: Int
+    let committedSnapshotCount: Int
+}
+
+private final class MCPMetadataEnrichmentRecorder: Sendable {
+    private let modelContainer: ModelContainer
+    private let records = Mutex<[MCPMetadataEnrichmentRecord]>([])
+
+    init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+    }
+
+    func record(_ requests: [RankingMetadataEnrichmentRequest]) {
+        let modelContext = ModelContext(modelContainer)
+        let record = MCPMetadataEnrichmentRecord(
+            requests: requests,
+            committedCrawlCount: (try? modelContext.fetchCount(
+                FetchDescriptor<KeywordRankingCrawl>()
+            )) ?? -1,
+            committedSnapshotCount: (try? modelContext.fetchCount(
+                FetchDescriptor<TrackedKeywordDailyRanking>()
+            )) ?? -1
+        )
+        records.withLock { records in
+            records.append(record)
+        }
+    }
+
+    func snapshot() -> [MCPMetadataEnrichmentRecord] {
+        records.withLock { records in
+            records
+        }
+    }
+}
+
 private actor StubMCPRankingProvider: SearchRankingProvider {
     private var pages: [String: SearchRankingPage]
     private var failures: [String: OpenASOError]
     private var searchedKeys: [String] = []
+    private var searchedLimits: [Int] = []
 
     init(
         pages: [String: SearchRankingPage],
@@ -3691,6 +3836,10 @@ private actor StubMCPRankingProvider: SearchRankingProvider {
         searchedKeys
     }
 
+    func searchedLimitsSnapshot() -> [Int] {
+        searchedLimits
+    }
+
     func search(keyword: String, storefrontCode: String, platform: AppPlatform, limit: Int) async throws -> SearchRankingPage {
         let key = TrackedAppKeyword.makeQueryKey(
             term: keyword,
@@ -3698,6 +3847,7 @@ private actor StubMCPRankingProvider: SearchRankingProvider {
             platform: platform
         )
         searchedKeys.append(key)
+        searchedLimits.append(limit)
         if let failure = failures[key] {
             throw failure
         }

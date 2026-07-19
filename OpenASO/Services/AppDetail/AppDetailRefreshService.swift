@@ -88,7 +88,7 @@ private struct KeywordRefreshResult: Sendable {
 private struct RankingPersistenceBatchOutcome: Sendable {
     let outcomes: [KeywordBackgroundRefreshOutcome]
     let statsRebuildRequests: Set<RankingStatsRebuildRequest>
-    let successfulPageResults: [RankingRefreshPageResult]
+    let metadataEnrichmentPageResults: [RankingRefreshPageResult]
 
     var failureCount: Int {
         outcomes.filter { $0.error != nil }.count
@@ -576,7 +576,7 @@ final class AppDetailRefreshService: Sendable {
             outcomes.append(contentsOf: batchOutcome.outcomes)
             statsRebuildRequests.formUnion(batchOutcome.statsRebuildRequests)
             failureCount += batchOutcome.failureCount
-            for pageResult in batchOutcome.successfulPageResults {
+            for pageResult in batchOutcome.metadataEnrichmentPageResults {
                 try Task.checkCancellation()
                 refreshCoordinator.scheduleTopRankingMetadataEnrichment(for: pageResult)
             }
@@ -682,13 +682,16 @@ final class AppDetailRefreshService: Sendable {
             do {
                 try await backgroundModelStore.write { modelContext in
                     try Task.checkCancellation()
-                    refreshCoordinator.rebuildDerivedStats(for: requests, in: modelContext)
+                    try refreshCoordinator.rebuildDerivedStats(for: requests, in: modelContext)
                 }
                 try Task.checkCancellation()
             } catch {
                 if Task.isCancelled {
                     throw CancellationError()
                 }
+                OpenASOLog.refresh.error(
+                    "Failed to rebuild ranking statistics: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                )
             }
         }
 
@@ -711,44 +714,30 @@ final class AppDetailRefreshService: Sendable {
                 try Task.checkCancellation()
                 var outcomes: [KeywordBackgroundRefreshOutcome] = []
                 var statsRebuildRequests = Set<RankingStatsRebuildRequest>()
-                var successfulPageResults: [RankingRefreshPageResult] = []
+                var metadataEnrichmentPageResults: [RankingRefreshPageResult] = []
 
                 for pageResult in pageResults {
-                    do {
-                        _ = try refreshCoordinator.persistRankingPage(
-                            pageResult,
-                            in: modelContext,
-                            rebuildDerivedStats: false,
-                            saveChanges: false,
-                            scheduleMetadataEnrichment: false
-                        )
-                        if let statsRebuildRequest = RankingStatsRebuildRequest(pageRequest: pageResult.request) {
-                            statsRebuildRequests.insert(statsRebuildRequest)
-                        }
-                        successfulPageResults.append(pageResult)
-                        outcomes.append(KeywordBackgroundRefreshOutcome(
-                            trackIdentityKey: pageResult.request.identityKey,
-                            error: nil
-                        ))
-                    } catch {
-                        let mappedError = OpenASOError.map(error)
-                        _ = try? refreshCoordinator.recordRefreshFailure(
-                            identityKey: pageResult.request.identityKey,
-                            error: mappedError,
-                            in: modelContext,
-                            saveChanges: false
-                        )
-                        outcomes.append(KeywordBackgroundRefreshOutcome(
-                            trackIdentityKey: pageResult.request.identityKey,
-                            error: mappedError
-                        ))
+                    let persistence = try refreshCoordinator.persistRankingPageTransaction(
+                        pageResult,
+                        in: modelContext,
+                        rebuildDerivedStats: false
+                    )
+                    if let statsRebuildRequest = RankingStatsRebuildRequest(pageRequest: pageResult.request) {
+                        statsRebuildRequests.insert(statsRebuildRequest)
                     }
+                    if persistence.appliedSharedObservation {
+                        metadataEnrichmentPageResults.append(persistence.canonicalPageResult)
+                    }
+                    outcomes.append(KeywordBackgroundRefreshOutcome(
+                        trackIdentityKey: pageResult.request.identityKey,
+                        error: nil
+                    ))
                 }
 
                 return RankingPersistenceBatchOutcome(
                     outcomes: outcomes,
                     statsRebuildRequests: statsRebuildRequests,
-                    successfulPageResults: successfulPageResults
+                    metadataEnrichmentPageResults: metadataEnrichmentPageResults
                 )
             }
             try Task.checkCancellation()
@@ -781,7 +770,7 @@ final class AppDetailRefreshService: Sendable {
                     KeywordBackgroundRefreshOutcome(trackIdentityKey: $0.request.identityKey, error: mappedError)
                 },
                 statsRebuildRequests: [],
-                successfulPageResults: []
+                metadataEnrichmentPageResults: []
             )
         }
     }

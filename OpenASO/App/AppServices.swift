@@ -42,6 +42,7 @@ final class AppServices {
     let refreshProgressStore: AppRefreshProgressStore
     let mcpServerController: OpenASOMCPServerController
     let keywordResearchProjectStore: KeywordResearchProjectStore?
+    let keywordResearchRankingWorkflow: KeywordResearchRankingWorkflow?
     private(set) var backgroundModelStore: BackgroundModelStore?
     private(set) var backgroundModelStoreRevision = 0
 
@@ -55,6 +56,7 @@ final class AppServices {
         allowsIconNetworkFetches: Bool = true,
         backgroundModelStore: BackgroundModelStore? = nil,
         keywordResearchProjectStore: KeywordResearchProjectStore? = nil,
+        keywordResearchRankingWorkflow: KeywordResearchRankingWorkflow? = nil,
         refreshObservationClock: RefreshObservationClock = .live,
         refreshMetricsRecorder: RefreshMetricsRecorder? = nil,
         providerRequestGateMode: ProviderRequestGateMode? = nil,
@@ -241,6 +243,13 @@ final class AppServices {
             },
             metadataEnrichmentHandler: metadataEnrichmentHandler
         )
+        let keywordResearchRankingWorkflow = keywordResearchRankingWorkflow
+            ?? backgroundModelStore.map {
+                KeywordResearchRankingWorkflow(
+                    backgroundModelStore: $0,
+                    rankingCoordinator: refreshCoordinator
+                )
+            }
         let appDetailRefreshService = backgroundModelStore.map {
             AppDetailRefreshService(
                 backgroundModelStore: $0,
@@ -342,6 +351,7 @@ final class AppServices {
         self.appDetailRefreshService = appDetailRefreshService
         self.refreshProgressStore = refreshProgressStore
         self.keywordResearchProjectStore = keywordResearchProjectStore
+        self.keywordResearchRankingWorkflow = keywordResearchRankingWorkflow
         self.mcpServerController = OpenASOMCPServerController(portProvider: {
             settingsStore.mcpServerPort
         }) {

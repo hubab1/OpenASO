@@ -137,6 +137,8 @@
 		D32C00000000000000000001 /* Persistence/KeywordResearchProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32C00000000000000000011 /* Persistence/KeywordResearchProjectStore.swift */; };
 		D32C00000000000000000002 /* Persistence/KeywordResearchProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32C00000000000000000011 /* Persistence/KeywordResearchProjectStore.swift */; };
 		D32C00000000000000000003 /* KeywordResearchProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */; };
+		D33A00000000000000000001 /* SearchRanking/KeywordResearchRankingWorkflow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */; };
+		D33A00000000000000000002 /* KeywordResearchRankingWorkflowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000012 /* KeywordResearchRankingWorkflowTests.swift */; };
 		D20B00000000000000000007 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
 		D20B00000000000000000008 /* Persistence/EstimatedKeywordDifficultyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */; };
 		D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */; };
@@ -401,6 +403,8 @@
 		D32A00000000000000000014 /* KeywordResearchPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchPersistenceTests.swift; sourceTree = "<group>"; };
 		D32C00000000000000000011 /* Persistence/KeywordResearchProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/KeywordResearchProjectStore.swift; sourceTree = "<group>"; };
 		D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchProjectStoreTests.swift; sourceTree = "<group>"; };
+		D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordResearchRankingWorkflow.swift; sourceTree = "<group>"; };
+		D33A00000000000000000012 /* KeywordResearchRankingWorkflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchRankingWorkflowTests.swift; sourceTree = "<group>"; };
 		D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/EstimatedKeywordDifficultyStore.swift; sourceTree = "<group>"; };
 		D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyStoreTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* KeywordTableCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTableCells.swift; sourceTree = "<group>"; };
@@ -548,6 +552,7 @@
 				D77BC4C40000000000000011 /* ExactV4StoreFixtureTests.swift */,
 				D32A00000000000000000014 /* KeywordResearchPersistenceTests.swift */,
 				D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */,
+				D33A00000000000000000012 /* KeywordResearchRankingWorkflowTests.swift */,
 				D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */,
 				D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */,
 				D02000000000000000000004 /* v0.3.2-v1 */,
@@ -671,6 +676,7 @@
 				9838D42ED1A3EA1E6DDDD68C /* OpenASOError.swift */,
 				035877A6E7443B32A3980E39 /* SearchRanking/RankingMatcher.swift */,
 				26D4B2C87FDED9CFCFA50D7D /* SearchRanking/RankingRefreshCoordinator.swift */,
+				D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */,
 				A70000000000000000000002 /* RatingsReviews/ReviewLanguageDetectionService.swift */,
 				1C1EE58C790084CF7A83CA8A /* SearchRanking/SearchModels.swift */,
 				F1F48387102DE88B407695C3 /* SearchRanking/SearchRankingProvider.swift */,
@@ -1178,6 +1184,7 @@
 				5FAADABB0DA1EEDB3699E66C /* SearchRanking/RankingMatcher.swift in Sources */,
 				33B2BE83B4CFC8970D7A3482 /* SearchRanking/RankingRefreshCoordinator.swift in Sources */,
 				D20A00000000000000000001 /* SearchRanking/KeywordDifficultyEstimator.swift in Sources */,
+				D33A00000000000000000001 /* SearchRanking/KeywordResearchRankingWorkflow.swift in Sources */,
 				9A6937276AF0E3CAEDA90C36 /* RankingSource.swift in Sources */,
 				A40000000000000000000003 /* RatingsDetail.swift in Sources */,
 				A40000000000000000000001 /* RatingsDashboardSupport.swift in Sources */,
@@ -1224,6 +1231,7 @@
 				D77BC4C40000000000000001 /* ExactV4StoreFixtureTests.swift in Sources */,
 				D32A00000000000000000007 /* KeywordResearchPersistenceTests.swift in Sources */,
 				D32C00000000000000000003 /* KeywordResearchProjectStoreTests.swift in Sources */,
+				D33A00000000000000000002 /* KeywordResearchRankingWorkflowTests.swift in Sources */,
 				D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */,
 				D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */,
 				D14000000000000000000002 /* AppMetadataRefreshProgressStoreTests.swift in Sources */,

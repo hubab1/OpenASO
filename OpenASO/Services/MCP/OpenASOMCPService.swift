@@ -54,6 +54,11 @@ private struct OpenASOMCPHistoryCursor: Codable, Sendable {
   }
 }
 
+private struct OpenASOMCPRankingRefreshCommit: Sendable {
+  let result: OpenASOMCPKeywordRefreshResult
+  let enrichmentPageResults: [RankingRefreshPageResult]
+}
+
 private enum OpenASOMCPHistoryCursorCodec {
   private static let version = 2
   private static let maximumEncodedCursorLength = 4_096
@@ -1989,7 +1994,7 @@ final class OpenASOMCPService: Sendable {
       default: ResponseLimits.defaultKeywordRefreshTrackLimit,
       maximum: ResponseLimits.maximumKeywordRefreshTrackLimit
     )
-    let resultLimit = ResponseLimits.defaultRankingAppLimit
+    let resultLimit = SearchRankingCrawl.fullKeywordRankingLimit
 
     let reconciliationPlan = await rankingRefreshScheduler.makeReconciliationPlan()
     let candidateBatch: (
@@ -2140,8 +2145,9 @@ final class OpenASOMCPService: Sendable {
       try Task.checkCancellation()
 
       let fetchedResults = fetched
-      let result = try await backgroundModelStore.write { modelContext in
+      let commit = try await backgroundModelStore.write { modelContext in
         var outcomes: [OpenASOMCPKeywordRefreshOutcome] = []
+        var enrichmentPageResults: [RankingRefreshPageResult] = []
         for item in fetchedResults {
           if let page = item.page, let observedAt = item.fetchedAt {
             let track: TrackedAppKeyword
@@ -2155,13 +2161,15 @@ final class OpenASOMCPService: Sendable {
                 winningCount: 0,
                 confidence: nil
               )
-              track = try rankingRefreshCoordinator.persistRankingPage(
+              let persistence = try rankingRefreshCoordinator.persistRankingPageTransaction(
                 pageResult,
                 in: modelContext,
-                rebuildDerivedStats: true,
-                saveChanges: false,
-                scheduleMetadataEnrichment: true
-              ).keywordTrack
+                rebuildDerivedStats: true
+              )
+              track = persistence.snapshot.keywordTrack
+              if persistence.appliedSharedObservation {
+                enrichmentPageResults.append(persistence.canonicalPageResult)
+              }
             } else {
               track = try Self.persistRankingPage(
                 page,
@@ -2220,23 +2228,31 @@ final class OpenASOMCPService: Sendable {
           }
         }
         let failures = outcomes.filter { $0.error != nil }.count
-        return OpenASOMCPKeywordRefreshResult(
-          summary: OpenASOMCPMutationSummary(
-            inserted: 0,
-            updated: 0,
-            skipped: max(0, candidateBatch.totalCount - reservation.requests.count),
-            refreshed: outcomes.count - failures,
-            failed: failures
+        return OpenASOMCPRankingRefreshCommit(
+          result: OpenASOMCPKeywordRefreshResult(
+            summary: OpenASOMCPMutationSummary(
+              inserted: 0,
+              updated: 0,
+              skipped: max(0, candidateBatch.totalCount - reservation.requests.count),
+              refreshed: outcomes.count - failures,
+              failed: failures
+            ),
+            outcomes: outcomes,
+            notes: Self.keywordRankingRefreshNotes(
+              requestedLimit: requestedLimit,
+              appliedLimit: trackLimit
+            )
           ),
-          outcomes: outcomes,
-          notes: Self.keywordRankingRefreshNotes(
-            requestedLimit: requestedLimit,
-            appliedLimit: trackLimit
-          )
+          enrichmentPageResults: enrichmentPageResults
         )
       }
+      if let rankingRefreshCoordinator {
+        for pageResult in commit.enrichmentPageResults {
+          rankingRefreshCoordinator.scheduleTopRankingMetadataEnrichment(for: pageResult)
+        }
+      }
       await rankingRefreshScheduler.release(reservation)
-      return result
+      return commit.result
     } catch {
       await rankingRefreshScheduler.release(reservation)
       throw error
@@ -3278,7 +3294,9 @@ extension OpenASOMCPService {
               keyword: seed.keyword,
               storefrontCode: storefront,
               platform: platform,
-              limit: ResponseLimits.defaultRankingAppLimit
+              limit: persistResults
+                ? SearchRankingCrawl.fullKeywordRankingLimit
+                : ResponseLimits.defaultRankingAppLimit
             )
           }
         } catch {
@@ -3318,7 +3336,7 @@ extension OpenASOMCPService {
             storefront: storefront,
             platform: platform
           )
-          try await backgroundModelStore.write { modelContext in
+          let enrichmentPageResults = try await backgroundModelStore.write { modelContext in
             let observedAt = now()
             if let rankingRefreshCoordinator {
               _ = try Self.ensureTrackedKeyword(
@@ -3335,13 +3353,14 @@ extension OpenASOMCPService {
                 winningCount: 0,
                 confidence: nil
               )
-              _ = try rankingRefreshCoordinator.persistRankingPage(
+              let persistence = try rankingRefreshCoordinator.persistRankingPageTransaction(
                 pageResult,
                 in: modelContext,
-                rebuildDerivedStats: true,
-                saveChanges: false,
-                scheduleMetadataEnrichment: true
+                rebuildDerivedStats: true
               )
+              return persistence.appliedSharedObservation
+                ? [persistence.canonicalPageResult]
+                : []
             } else {
               _ = try Self.persistRankingPage(
                 page,
@@ -3351,6 +3370,12 @@ extension OpenASOMCPService {
                 appCatalogService: appCatalogService,
                 in: modelContext
               )
+              return []
+            }
+          }
+          if let rankingRefreshCoordinator {
+            for pageResult in enrichmentPageResults {
+              rankingRefreshCoordinator.scheduleTopRankingMetadataEnrichment(for: pageResult)
             }
           }
           isTracked = true
