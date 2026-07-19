@@ -1,1 +1,2 @@
 script/fixtures/v0.3.2-generator.patch whitespace=-blank-at-eol
+script/fixtures/77bc4c3-v4-generator.patch whitespace=-blank-at-eol,-space-before-tab
