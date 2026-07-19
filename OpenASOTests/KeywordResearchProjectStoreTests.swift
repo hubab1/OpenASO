@@ -692,6 +692,7 @@ struct KeywordResearchProjectStoreTests {
         )
 
         #expect(appServices.keywordResearchProjectStore === researchStore)
+        #expect(appServices.keywordResearchRankingWorkflow != nil)
         let sharedProject = try await researchStore.createProject(name: "Shared MCP reader")
         let mcpReader = try #require(mcpService.keywordResearchProjectStore)
         #expect(try await mcpReader.listProjects(offset: 0, limit: 50) == [sharedProject])
@@ -708,6 +709,7 @@ struct KeywordResearchProjectStoreTests {
             providerRequestGateMode: .disabled
         )
         let autoStore = try #require(autoAppServices.keywordResearchProjectStore)
+        #expect(autoAppServices.keywordResearchRankingWorkflow != nil)
         let autoProject = try await autoStore.createProject(name: "Auto-wired app store")
         #expect(try await autoStore.listProjects() == [autoProject])
 

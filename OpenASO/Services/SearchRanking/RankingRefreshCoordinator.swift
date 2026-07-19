@@ -115,6 +115,22 @@ struct RankingRefreshPageResult: Sendable {
     let confidence: String?
 }
 
+/// Context-bound result from the synchronous shared-observation transaction.
+/// It must never cross an actor or `ModelContext` boundary.
+struct RankingObservationPersistenceResult {
+    let observation: KeywordRankingCrawl
+    let appliedIncomingPage: Bool
+}
+
+/// Context-bound result from a tracked ranking persistence transaction.
+/// The SwiftData snapshot must remain on the owning model executor; the
+/// canonical page result is Sendable and may be scheduled after commit.
+struct RankingPagePersistenceResult {
+    let snapshot: TrackedKeywordDailyRanking
+    let canonicalPageResult: RankingRefreshPageResult
+    let appliedSharedObservation: Bool
+}
+
 struct RankingMetadataEnrichmentRequest: Hashable, Sendable {
     let appStoreID: Int64
     let storefront: String
@@ -150,20 +166,31 @@ struct RankingStatsRebuildRequest: Hashable, Sendable {
     }
 }
 
+private struct RankingModelContextHasPendingChangesError: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "Save or discard pending edits before refreshing keyword rankings."
+    }
+}
+
 final class RankingRefreshCoordinator: Sendable {
     private let rankingProvider: any SearchRankingProvider
     private let appCatalogService: AppCatalogService
     private let analyticsService: AnalyticsService
+    private let now: @Sendable () -> Date
     private let refreshTriggerRecorder: (@Sendable (Date) async -> Void)?
-    private let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?
+    private let metadataEnrichmentScheduler: (@Sendable ([RankingMetadataEnrichmentRequest]) -> Void)?
+    private let persistenceMutationCheckpoint: (@Sendable () throws -> Void)?
 
     @MainActor
     init(
         rankingProvider: any SearchRankingProvider,
         appCatalogService: AppCatalogService,
         analyticsService: AnalyticsService? = nil,
+        now: @escaping @Sendable () -> Date = { Date() },
         refreshTriggerRecorder: (@Sendable (Date) async -> Void)? = nil,
-        metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)? = nil
+        metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)? = nil,
+        metadataEnrichmentScheduler: (@Sendable ([RankingMetadataEnrichmentRequest]) -> Void)? = nil,
+        persistenceMutationCheckpoint: (@Sendable () throws -> Void)? = nil
     ) {
         self.rankingProvider = rankingProvider
         self.appCatalogService = appCatalogService
@@ -171,20 +198,32 @@ final class RankingRefreshCoordinator: Sendable {
             settingsStore: AppSettingsStore(defaults: UserDefaults(suiteName: "com.openaso.analytics.noop") ?? .standard),
             client: NoOpAnalyticsClient()
         )
+        self.now = now
         self.refreshTriggerRecorder = refreshTriggerRecorder
-        self.metadataEnrichmentHandler = metadataEnrichmentHandler
+        self.persistenceMutationCheckpoint = persistenceMutationCheckpoint
+        if let metadataEnrichmentScheduler {
+            self.metadataEnrichmentScheduler = metadataEnrichmentScheduler
+        } else if let metadataEnrichmentHandler {
+            self.metadataEnrichmentScheduler = { requests in
+                Task {
+                    await RefreshObservationScope.$runID.withValue(nil) {
+                        await metadataEnrichmentHandler(requests)
+                    }
+                }
+            }
+        } else {
+            self.metadataEnrichmentScheduler = nil
+        }
     }
 
     @MainActor
     func refresh(
         track: TrackedAppKeyword,
-        in modelContext: ModelContext,
-        limit: Int = SearchRankingCrawl.fullKeywordRankingLimit
+        in modelContext: ModelContext
     ) async -> Result<TrackedKeywordDailyRanking, OpenASOError> {
         await refresh(
             track: track,
             in: modelContext,
-            limit: limit,
             recordsTrigger: true
         )
     }
@@ -193,13 +232,16 @@ final class RankingRefreshCoordinator: Sendable {
     private func refresh(
         track: TrackedAppKeyword,
         in modelContext: ModelContext,
-        limit: Int,
         recordsTrigger: Bool,
         rebuildDerivedStats: Bool = true
     ) async -> Result<TrackedKeywordDailyRanking, OpenASOError> {
         let request = RankingRefreshRequest(track: track)
 
-        let pageResult = await refreshPage(for: request, limit: limit, recordsTrigger: recordsTrigger)
+        let pageResult = await refreshPage(
+            for: request,
+            limit: SearchRankingCrawl.fullKeywordRankingLimit,
+            recordsTrigger: recordsTrigger
+        )
         switch pageResult {
         case .success(let pageResult):
             do {
@@ -226,47 +268,46 @@ final class RankingRefreshCoordinator: Sendable {
             await recordRefreshTriggered()
         }
         do {
-            let page = try await rankingProvider.search(
-                keyword: request.term,
-                storefrontCode: request.storefront,
-                platform: request.platform,
-                limit: limit
-            )
-            return .success(RankingRefreshPageResult(
-                request: request,
-                page: page,
-                searchedAt: .now,
-                observedHour: nil,
-                submissionCount: 1,
-                winningCount: 1,
-                confidence: "single_source"
-            ))
+            return .success(try await fetchRankingPage(for: request, limit: limit))
         } catch {
             return .failure(OpenASOError.map(error))
         }
     }
 
-    @MainActor
-    func makeRankingPageFetcher(
+    /// Performs only the provider await and produces an immutable page result.
+    /// Callers that need cancellation semantics should use this throwing API
+    /// rather than the legacy `Result` wrapper above.
+    func fetchRankingPage(
+        for request: RankingRefreshRequest,
         limit: Int = SearchRankingCrawl.fullKeywordRankingLimit
-    ) -> @Sendable (RankingRefreshRequest) async -> Result<RankingRefreshPageResult, OpenASOError> {
-        let rankingProvider = rankingProvider
+    ) async throws -> RankingRefreshPageResult {
+        try Task.checkCancellation()
+        let providerPage = try await rankingProvider.search(
+            keyword: request.term,
+            storefrontCode: request.storefront,
+            platform: request.platform,
+            limit: limit
+        )
+        try Task.checkCancellation()
+        return RankingRefreshPageResult(
+            request: request,
+            page: providerPage.canonicalized(limit: limit),
+            searchedAt: now(),
+            observedHour: nil,
+            submissionCount: 1,
+            winningCount: 1,
+            confidence: "single_source"
+        )
+    }
+
+    @MainActor
+    func makeRankingPageFetcher() -> @Sendable (RankingRefreshRequest) async -> Result<RankingRefreshPageResult, OpenASOError> {
+        let coordinator = self
         return { request in
             do {
-                let page = try await rankingProvider.search(
-                    keyword: request.term,
-                    storefrontCode: request.storefront,
-                    platform: request.platform,
-                    limit: limit
-                )
-                return .success(RankingRefreshPageResult(
-                    request: request,
-                    page: page,
-                    searchedAt: .now,
-                    observedHour: nil,
-                    submissionCount: 1,
-                    winningCount: 1,
-                    confidence: "single_source"
+                return .success(try await coordinator.fetchRankingPage(
+                    for: request,
+                    limit: SearchRankingCrawl.fullKeywordRankingLimit
                 ))
             } catch {
                 return .failure(OpenASOError.map(error))
@@ -282,23 +323,77 @@ final class RankingRefreshCoordinator: Sendable {
         saveChanges: Bool = true,
         scheduleMetadataEnrichment: Bool = true
     ) throws -> TrackedKeywordDailyRanking {
+        if saveChanges {
+            guard !modelContext.hasChanges else {
+                throw RankingModelContextHasPendingChangesError()
+            }
+            let committedResult: RankingPagePersistenceResult
+            do {
+                committedResult = try persistRankingPageTransaction(
+                    pageResult,
+                    in: modelContext,
+                    rebuildDerivedStats: rebuildDerivedStats
+                )
+                try modelContext.save()
+            } catch {
+                // SwiftData's transaction block does not restore a context's
+                // in-memory graph when its closure throws. Explicit rollback
+                // prevents a later save from committing a partial crawl.
+                modelContext.rollback()
+                throw error
+            }
+            if scheduleMetadataEnrichment, committedResult.appliedSharedObservation {
+                scheduleTopRankingMetadataEnrichment(for: committedResult.canonicalPageResult)
+            }
+            return committedResult.snapshot
+        }
+        return try persistRankingPageTransaction(
+            pageResult,
+            in: modelContext,
+            rebuildDerivedStats: rebuildDerivedStats
+        ).snapshot
+    }
+
+    /// Mutates only the supplied model context. It never saves or starts
+    /// metadata work, allowing an outer actor-owned transaction to commit
+    /// before any enrichment side effect is scheduled.
+    func persistRankingPageTransaction(
+        _ pageResult: RankingRefreshPageResult,
+        in modelContext: ModelContext,
+        rebuildDerivedStats: Bool = true
+    ) throws -> RankingPagePersistenceResult {
         guard let track = try fetchTrackedAppKeyword(identityKey: pageResult.request.identityKey, in: modelContext) else {
             throw OpenASOError.appNotFound
         }
+        let requestTerm = pageResult.request.term
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let trackTerm = track.term
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let requestStorefront = pageResult.request.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let trackStorefront = track.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard pageResult.request.queryKey == track.queryKey,
+              requestTerm == trackTerm,
+              requestStorefront == trackStorefront,
+              pageResult.request.platform == track.platform
+        else {
+            throw OpenASOError.unexpectedResponse
+        }
 
+        let canonicalPageResult = pageResult.canonicalized(
+            limit: SearchRankingCrawl.fullKeywordRankingLimit
+        )
         return try persistRankingPage(
-            pageResult.page,
-            searchedAt: pageResult.searchedAt,
-            observedHour: pageResult.observedHour,
-            submissionCount: pageResult.submissionCount,
-            winningCount: pageResult.winningCount,
-            confidence: pageResult.confidence,
+            canonicalPageResult,
             track: track,
             trackedApp: track.trackedApp,
             in: modelContext,
-            rebuildDerivedStats: rebuildDerivedStats,
-            saveChanges: saveChanges,
-            scheduleMetadataEnrichment: scheduleMetadataEnrichment
+            rebuildDerivedStats: rebuildDerivedStats
         )
     }
 
@@ -309,91 +404,74 @@ final class RankingRefreshCoordinator: Sendable {
         in modelContext: ModelContext,
         saveChanges: Bool = true
     ) throws -> PersistentIdentifier? {
-        guard let track = try fetchTrackedAppKeyword(identityKey: identityKey, in: modelContext) else {
-            return nil
+        if saveChanges, modelContext.hasChanges {
+            throw RankingModelContextHasPendingChangesError()
         }
+        do {
+            guard let track = try fetchTrackedAppKeyword(identityKey: identityKey, in: modelContext) else {
+                return nil
+            }
 
-        try TrackedKeywordRefreshStatusStore.set(
-            "Ranking failed to refresh. \(error.localizedDescription)",
-            domain: .ranking,
-            for: track,
-            in: modelContext
-        )
-        if saveChanges {
-            try modelContext.save()
+            try TrackedKeywordRefreshStatusStore.set(
+                "Ranking failed to refresh. \(error.localizedDescription)",
+                domain: .ranking,
+                for: track,
+                in: modelContext
+            )
+            if saveChanges {
+                try modelContext.save()
+            }
+            return track.persistentModelID
+        } catch {
+            if saveChanges {
+                modelContext.rollback()
+            }
+            throw error
         }
-        return track.persistentModelID
     }
 
     private func persistRankingPage(
-        _ page: SearchRankingPage,
-        searchedAt: Date,
-        observedHour: Int?,
-        submissionCount: Int,
-        winningCount: Int,
-        confidence: String?,
+        _ pageResult: RankingRefreshPageResult,
         track: TrackedAppKeyword,
         trackedApp: TrackedApp,
         in modelContext: ModelContext,
-        rebuildDerivedStats: Bool,
-        saveChanges: Bool,
-        scheduleMetadataEnrichment: Bool
-    ) throws -> TrackedKeywordDailyRanking {
-            let snapshotKey = TrackedKeywordDailyRanking.makeSnapshotKey(
-                trackIdentityKey: track.identityKey,
-                searchedAt: searchedAt,
-                source: page.source
-            )
-            let observationKey = KeywordRankingCrawl.makeObservationKey(
-                queryKey: track.queryKey,
-                observedAt: searchedAt,
-                source: page.source
-            )
-
-            let snapshot = try fetchTrackedKeywordDailyRanking(
-                snapshotKey: snapshotKey,
-                track: track,
-                searchedAt: searchedAt,
-                source: page.source,
-                in: modelContext
-            ) ?? TrackedKeywordDailyRanking(
+        rebuildDerivedStats: Bool
+    ) throws -> RankingPagePersistenceResult {
+        let page = pageResult.page
+        let searchedAt = pageResult.searchedAt
+        let incomingSnapshotKey = TrackedKeywordDailyRanking.makeSnapshotKey(
+            trackIdentityKey: track.identityKey,
+            searchedAt: searchedAt,
+            source: page.source
+        )
+        let existingSnapshot = try fetchTrackedKeywordDailyRanking(
+            snapshotKey: incomingSnapshotKey,
+            track: track,
+            searchedAt: searchedAt,
+            source: page.source,
+            in: modelContext
+        )
+        let sharedResult = try persistSharedRankingObservation(
+            pageResult,
+            query: track.query,
+            in: modelContext
+        )
+        let incomingWinsTrackedSnapshot = existingSnapshot.map { $0.searchedAt < searchedAt } ?? true
+        let snapshot: TrackedKeywordDailyRanking
+        if incomingWinsTrackedSnapshot {
+            snapshot = existingSnapshot ?? TrackedKeywordDailyRanking(
                 rank: RankingMatcher.rank(for: trackedApp, in: page.items),
                 searchedAt: searchedAt,
                 source: page.source,
                 resultCount: page.resultCount,
                 keywordTrack: track
             )
-            let observation = try fetchKeywordRankingCrawl(
-                observationKey: observationKey,
-                queryKey: track.queryKey,
-                observedAt: searchedAt,
-                source: page.source,
-                in: modelContext
-            ) ?? KeywordRankingCrawl(
-                keyword: track.term,
-                storefront: track.storefront,
-                platform: track.platform,
-                observedAt: searchedAt,
-                source: page.source,
-                resultCount: page.resultCount,
-                query: track.query,
-                observedHour: observedHour,
-                submissionCount: submissionCount,
-                winningCount: winningCount,
-                confidence: confidence
-            )
-
             let isNewSnapshot = snapshot.modelContext == nil
-            let isNewObservation = observation.modelContext == nil
-
             if isNewSnapshot {
                 modelContext.insert(snapshot)
             }
-            if isNewObservation {
-                modelContext.insert(observation)
-            }
 
-            snapshot.snapshotKey = snapshotKey
+            snapshot.snapshotKey = incomingSnapshotKey
             snapshot.trackIdentityKey = track.identityKey
             snapshot.rank = RankingMatcher.rank(for: trackedApp, in: page.items)
             snapshot.searchedAt = searchedAt
@@ -402,95 +480,185 @@ final class RankingRefreshCoordinator: Sendable {
             snapshot.errorMessage = nil
             snapshot.keywordTrack = track
 
-            observation.observationKey = observationKey
-            observation.queryKey = track.queryKey
-            observation.query = track.query
-            observation.keyword = track.term.trimmingCharacters(in: .whitespacesAndNewlines)
-            observation.storefront = track.storefront.lowercased()
-            observation.platform = track.platform
-            observation.observedAt = searchedAt
-            observation.observedHour = observedHour ?? KeywordRankingCrawl.utcHourBucket(for: searchedAt)
-            observation.source = page.source
-            observation.resultCount = page.resultCount
-            observation.submissionCount = submissionCount
-            observation.winningCount = winningCount
-            observation.confidenceRaw = confidence
-
-            var catalogCache = try appCatalogService.makeSearchRankingPageCache(
-                items: page.items,
-                storefrontCode: track.storefront,
-                in: modelContext
-            )
-            var ratingCache = try makeRatingPageCache(
-                items: page.items,
-                storefront: track.storefront,
-                observedAt: snapshot.searchedAt,
-                in: modelContext
-            )
-
             for item in page.items {
-                let storeApp = try appCatalogService.upsertStoreApp(
-                    from: item,
-                    storefrontCode: track.storefront,
-                    rankingSource: page.source,
-                    fetchedAt: searchedAt,
-                    requestedPlatform: track.platform,
-                    in: modelContext,
-                    cache: &catalogCache
-                )
-                upsertStorefrontRating(
-                    from: item,
-                    storefront: track.storefront,
-                    observedAt: snapshot.searchedAt,
-                    source: storefrontRatingSource(for: page.source),
-                    storeApp: storeApp,
-                    in: modelContext,
-                    cache: &ratingCache
-                )
-
                 upsertRankedResult(
                     from: item,
                     snapshot: snapshot,
-                    snapshotKey: snapshotKey,
-                    in: modelContext
-                )
-                upsertObservationItem(
-                    from: item,
-                    observation: observation,
+                    snapshotKey: incomingSnapshotKey,
                     in: modelContext
                 )
             }
-            pruneRankedResults(for: snapshot, keeping: page.items.map(\.appStoreID), in: modelContext)
-            pruneObservationItems(for: observation, keeping: page.items.map(\.appStoreID), in: modelContext)
-
-            if rebuildDerivedStats {
-                self.rebuildDerivedStats(for: [RankingStatsRebuildRequest(track: track)], in: modelContext)
-            }
-
-            try TrackedKeywordRefreshStatusStore.set(
-                nil,
-                domain: .ranking,
-                for: track,
-                updatedAt: snapshot.searchedAt,
+            pruneRankedResults(
+                for: snapshot,
+                keeping: page.items.map(\.appStoreID),
                 in: modelContext
             )
-            track.lastRefreshAt = snapshot.searchedAt
             track.rankingAppCount = page.resultCount
             if isNewSnapshot {
                 track.snapshots.append(snapshot)
             }
+        } else {
+            snapshot = existingSnapshot!
+        }
 
-            if saveChanges {
-                try modelContext.save()
-            }
-            if scheduleMetadataEnrichment {
-                scheduleTopRankingMetadataEnrichment(
-                    items: page.items,
-                    storefront: track.storefront,
-                    platform: track.platform
-                )
-            }
-            return snapshot
+        try persistenceMutationCheckpoint?()
+
+        if rebuildDerivedStats {
+            try self.rebuildDerivedStats(
+                for: [RankingStatsRebuildRequest(track: track)],
+                in: modelContext
+            )
+        }
+
+        try TrackedKeywordRefreshStatusStore.set(
+            nil,
+            domain: .ranking,
+            for: track,
+            updatedAt: searchedAt,
+            in: modelContext
+        )
+        track.lastRefreshAt = max(track.lastRefreshAt ?? .distantPast, searchedAt)
+
+        return RankingPagePersistenceResult(
+            snapshot: snapshot,
+            canonicalPageResult: pageResult,
+            appliedSharedObservation: sharedResult.appliedIncomingPage
+        )
+    }
+
+    /// Upserts the app-independent ranking observation and its shared catalog
+    /// and rating data. The caller owns the surrounding transaction and save.
+    /// No tracked-app model is read or written by this primitive.
+    @discardableResult
+    func persistSharedRankingObservation(
+        _ pageResult: RankingRefreshPageResult,
+        query: KeywordQuery,
+        in modelContext: ModelContext
+    ) throws -> RankingObservationPersistenceResult {
+        let pageResult = pageResult.canonicalized(
+            limit: SearchRankingCrawl.fullKeywordRankingLimit
+        )
+        let requestTerm = pageResult.request.term
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let queryTerm = query.term
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let requestStorefront = pageResult.request.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let queryStorefront = query.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard query.queryKey == pageResult.request.queryKey,
+              requestTerm == queryTerm,
+              requestStorefront == queryStorefront,
+              pageResult.request.platform == query.platform
+        else {
+            throw OpenASOError.unexpectedResponse
+        }
+
+        let observationKey = KeywordRankingCrawl.makeObservationKey(
+            queryKey: pageResult.request.queryKey,
+            observedAt: pageResult.searchedAt,
+            source: pageResult.page.source
+        )
+        let existingObservation = try fetchKeywordRankingCrawl(
+            observationKey: observationKey,
+            queryKey: pageResult.request.queryKey,
+            observedAt: pageResult.searchedAt,
+            source: pageResult.page.source,
+            in: modelContext
+        )
+        if let existingObservation,
+           existingObservation.observedAt >= pageResult.searchedAt {
+            return RankingObservationPersistenceResult(
+                observation: existingObservation,
+                appliedIncomingPage: false
+            )
+        }
+
+        let observation = existingObservation ?? KeywordRankingCrawl(
+            keyword: pageResult.request.term,
+            storefront: pageResult.request.storefront,
+            platform: pageResult.request.platform,
+            observedAt: pageResult.searchedAt,
+            source: pageResult.page.source,
+            resultCount: pageResult.page.resultCount,
+            query: query,
+            observedHour: pageResult.observedHour,
+            submissionCount: pageResult.submissionCount,
+            winningCount: pageResult.winningCount,
+            confidence: pageResult.confidence
+        )
+        if observation.modelContext == nil {
+            modelContext.insert(observation)
+        }
+
+        observation.observationKey = observationKey
+        observation.queryKey = pageResult.request.queryKey
+        observation.query = query
+        observation.keyword = pageResult.request.term
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        observation.storefront = pageResult.request.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        observation.platform = pageResult.request.platform
+        observation.observedAt = pageResult.searchedAt
+        observation.observedHour = pageResult.observedHour
+            ?? KeywordRankingCrawl.utcHourBucket(for: pageResult.searchedAt)
+        observation.source = pageResult.page.source
+        observation.resultCount = pageResult.page.resultCount
+        observation.submissionCount = pageResult.submissionCount
+        observation.winningCount = pageResult.winningCount
+        observation.confidenceRaw = pageResult.confidence
+
+        var catalogCache = try appCatalogService.makeSearchRankingPageCache(
+            items: pageResult.page.items,
+            storefrontCode: pageResult.request.storefront,
+            in: modelContext
+        )
+        var ratingCache = try makeRatingPageCache(
+            items: pageResult.page.items,
+            storefront: pageResult.request.storefront,
+            observedAt: pageResult.searchedAt,
+            in: modelContext
+        )
+        for item in pageResult.page.items {
+            let storeApp = try appCatalogService.upsertStoreApp(
+                from: item,
+                storefrontCode: pageResult.request.storefront,
+                rankingSource: pageResult.page.source,
+                fetchedAt: pageResult.searchedAt,
+                requestedPlatform: pageResult.request.platform,
+                in: modelContext,
+                cache: &catalogCache
+            )
+            upsertStorefrontRating(
+                from: item,
+                storefront: pageResult.request.storefront,
+                observedAt: pageResult.searchedAt,
+                source: storefrontRatingSource(for: pageResult.page.source),
+                storeApp: storeApp,
+                in: modelContext,
+                cache: &ratingCache
+            )
+            upsertObservationItem(
+                from: item,
+                observation: observation,
+                in: modelContext
+            )
+        }
+        pruneObservationItems(
+            for: observation,
+            keeping: pageResult.page.items.map(\.appStoreID),
+            in: modelContext
+        )
+
+        return RankingObservationPersistenceResult(
+            observation: observation,
+            appliedIncomingPage: true
+        )
     }
 
     func scheduleTopRankingMetadataEnrichment(for pageResult: RankingRefreshPageResult) {
@@ -506,7 +674,7 @@ final class RankingRefreshCoordinator: Sendable {
         storefront: String,
         platform: AppPlatform
     ) {
-        guard let metadataEnrichmentHandler else { return }
+        guard let metadataEnrichmentScheduler else { return }
         let requests = Self.topRankingEnrichmentRequests(
             items: items,
             storefront: storefront,
@@ -514,11 +682,7 @@ final class RankingRefreshCoordinator: Sendable {
         )
         guard !requests.isEmpty else { return }
 
-        Task {
-            await RefreshObservationScope.$runID.withValue(nil) {
-                await metadataEnrichmentHandler(requests)
-            }
-        }
+        metadataEnrichmentScheduler(requests)
     }
 
     static let metadataEnrichmentTopResultLimit = 20
@@ -768,7 +932,9 @@ final class RankingRefreshCoordinator: Sendable {
             storefront: normalizedStorefront,
             ratingDate: ratingDate
         )
-        let snapshot = cache.snapshotsByIdentityKey[snapshotKey] ?? AppDailyRating(
+        let existingSnapshot = cache.snapshotsByIdentityKey[snapshotKey]
+        let isNewSnapshot = existingSnapshot == nil
+        let snapshot = existingSnapshot ?? AppDailyRating(
             appStoreID: item.appStoreID,
             storefront: normalizedStorefront,
             ratingCount: item.ratingCount,
@@ -781,24 +947,24 @@ final class RankingRefreshCoordinator: Sendable {
             source: source,
             storeApp: storeApp
         )
-        if snapshot.modelContext != nil, observedAt < snapshot.observedAt {
+        if !isNewSnapshot, observedAt <= snapshot.observedAt {
             return
         }
-        if snapshot.modelContext == nil {
+        if isNewSnapshot {
             modelContext.insert(snapshot)
             cache.snapshotsByIdentityKey[snapshotKey] = snapshot
         }
         if snapshot.storeApp !== storeApp {
             snapshot.storeApp = storeApp
         }
-        let snapshotChanged = snapshot.modelContext == nil
+        let snapshotChanged = isNewSnapshot
+            || snapshot.observedAt != observedAt
             || snapshot.ratingCount != item.ratingCount
             || snapshot.averageRating != item.averageRating
             || snapshot.ratingDate != ratingDate
             || snapshot.submissionCount != 1
             || snapshot.winningCount != 1
             || snapshot.confidenceRaw != "single_source"
-            || snapshot.observedAt != observedAt
             || snapshot.source != source
         if snapshotChanged {
             snapshot.ratingCount = item.ratingCount
@@ -815,7 +981,9 @@ final class RankingRefreshCoordinator: Sendable {
             appStoreID: item.appStoreID,
             storefront: normalizedStorefront
         )
-        let latest = cache.latestByIdentityKey[latestKey] ?? LatestAppRating(
+        let existingLatest = cache.latestByIdentityKey[latestKey]
+        let isNewLatest = existingLatest == nil
+        let latest = existingLatest ?? LatestAppRating(
             appStoreID: item.appStoreID,
             storefront: normalizedStorefront,
             ratingCount: item.ratingCount,
@@ -828,24 +996,24 @@ final class RankingRefreshCoordinator: Sendable {
             source: source,
             storeApp: storeApp
         )
-        if latest.modelContext != nil, observedAt < latest.observedAt {
+        if !isNewLatest, observedAt <= latest.observedAt {
             return
         }
-        if latest.modelContext == nil {
+        if isNewLatest {
             modelContext.insert(latest)
             cache.latestByIdentityKey[latestKey] = latest
         }
         if latest.storeApp !== storeApp {
             latest.storeApp = storeApp
         }
-        let latestChanged = latest.modelContext == nil
+        let latestChanged = isNewLatest
+            || latest.observedAt != observedAt
             || latest.ratingCount != item.ratingCount
             || latest.averageRating != item.averageRating
             || latest.ratingDate != ratingDate
             || latest.submissionCount != 1
             || latest.winningCount != 1
             || latest.confidenceRaw != "single_source"
-            || latest.observedAt != observedAt
             || latest.source != source
         if latestChanged {
             latest.ratingCount = item.ratingCount
@@ -920,7 +1088,6 @@ final class RankingRefreshCoordinator: Sendable {
     func refresh(
         tracks: [TrackedAppKeyword],
         in modelContext: ModelContext,
-        limit: Int = SearchRankingCrawl.fullKeywordRankingLimit,
         analyticsTrigger: String? = nil,
         progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil
     ) async -> [RefreshOutcome] {
@@ -947,7 +1114,7 @@ final class RankingRefreshCoordinator: Sendable {
         for requestGroup in requestGroups {
             let result = await refreshPage(
                 for: requestGroup.providerRequest,
-                limit: limit,
+                limit: SearchRankingCrawl.fullKeywordRankingLimit,
                 recordsTrigger: false
             )
             switch result {
@@ -976,18 +1143,25 @@ final class RankingRefreshCoordinator: Sendable {
                         ))
                     } catch {
                         let mappedError = OpenASOError.map(error)
-                        do {
-                            try TrackedKeywordRefreshStatusStore.set(
-                                "Ranking failed to refresh. \(mappedError.localizedDescription)",
-                                domain: .ranking,
-                                for: track,
-                                in: modelContext
-                            )
-                            try modelContext.save()
-                        } catch {
+                        if modelContext.hasChanges {
                             OpenASOLog.refresh.error(
-                                "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                                "Skipped ranking failure status because the model context has pending edits."
                             )
+                        } else {
+                            do {
+                                try TrackedKeywordRefreshStatusStore.set(
+                                    "Ranking failed to refresh. \(mappedError.localizedDescription)",
+                                    domain: .ranking,
+                                    for: track,
+                                    in: modelContext
+                                )
+                                try modelContext.save()
+                            } catch {
+                                modelContext.rollback()
+                                OpenASOLog.refresh.error(
+                                    "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                                )
+                            }
                         }
                         outcomes.append(RefreshOutcome(
                             trackID: track.persistentModelID,
@@ -1010,18 +1184,25 @@ final class RankingRefreshCoordinator: Sendable {
                         continue
                     }
 
-                    do {
-                        try TrackedKeywordRefreshStatusStore.set(
-                            "Ranking failed to refresh. \(error.localizedDescription)",
-                            domain: .ranking,
-                            for: track,
-                            in: modelContext
-                        )
-                        try modelContext.save()
-                    } catch {
+                    if modelContext.hasChanges {
                         OpenASOLog.refresh.error(
-                            "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                            "Skipped ranking failure status because the model context has pending edits."
                         )
+                    } else {
+                        do {
+                            try TrackedKeywordRefreshStatusStore.set(
+                                "Ranking failed to refresh. \(error.localizedDescription)",
+                                domain: .ranking,
+                                for: track,
+                                in: modelContext
+                            )
+                            try modelContext.save()
+                        } catch {
+                            modelContext.rollback()
+                            OpenASOLog.refresh.error(
+                                "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                            )
+                        }
                     }
                     outcomes.append(RefreshOutcome(
                         trackID: track.persistentModelID,
@@ -1037,8 +1218,21 @@ final class RankingRefreshCoordinator: Sendable {
             }
         }
         if !statsRebuildRequests.isEmpty {
-            rebuildDerivedStats(for: statsRebuildRequests, in: modelContext)
-            try? modelContext.save()
+            if modelContext.hasChanges {
+                OpenASOLog.refresh.error(
+                    "Skipped ranking statistics rebuild because the model context has pending edits."
+                )
+            } else {
+                do {
+                    try rebuildDerivedStats(for: statsRebuildRequests, in: modelContext)
+                    try modelContext.save()
+                } catch {
+                    modelContext.rollback()
+                    OpenASOLog.refresh.error(
+                        "Failed to rebuild ranking statistics: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                    )
+                }
+            }
         }
         if let analyticsTrigger {
             await captureKeywordRefreshCompleted(
@@ -1052,8 +1246,7 @@ final class RankingRefreshCoordinator: Sendable {
 
     @MainActor
     func refreshStaleTracks(
-        in modelContext: ModelContext,
-        limit: Int = SearchRankingCrawl.fullKeywordRankingLimit
+        in modelContext: ModelContext
     ) async -> [RefreshOutcome] {
         let descriptor = FetchDescriptor<TrackedAppKeyword>()
         let tracks = (try? modelContext.fetch(descriptor)) ?? []
@@ -1064,7 +1257,6 @@ final class RankingRefreshCoordinator: Sendable {
         return await refresh(
             tracks: staleTracks,
             in: modelContext,
-            limit: limit,
             analyticsTrigger: "daily_refresh",
             progress: nil
         )
@@ -1092,17 +1284,27 @@ final class RankingRefreshCoordinator: Sendable {
     func rebuildDerivedStats(
         for requests: some Sequence<RankingStatsRebuildRequest>,
         in modelContext: ModelContext
-    ) {
-        let requests = Set(requests)
-        for request in requests {
-            rebuildAppKeywordStats(queryKey: request.queryKey, in: modelContext)
+    ) throws {
+        let queryKeys = Set(requests.map(\.queryKey))
+        for queryKey in queryKeys {
+            try rebuildAppKeywordStats(queryKey: queryKey, in: modelContext)
         }
     }
 
-    private func rebuildAppKeywordStats(queryKey: String, in modelContext: ModelContext) {
-        let metrics = try? fetchKeywordMetrics(queryKey: queryKey, in: modelContext)
-        let observations = (try? fetchKeywordRankingCrawls(queryKey: queryKey, in: modelContext)) ?? []
-        let existingStats = (try? fetchAppKeywordStats(queryKey: queryKey, in: modelContext)) ?? []
+    func rebuildDerivedStats(
+        forQueryKey queryKey: String,
+        in modelContext: ModelContext
+    ) throws {
+        try rebuildAppKeywordStats(queryKey: queryKey, in: modelContext)
+    }
+
+    private func rebuildAppKeywordStats(
+        queryKey: String,
+        in modelContext: ModelContext
+    ) throws {
+        let metrics = try fetchKeywordMetrics(queryKey: queryKey, in: modelContext)
+        let observations = try fetchKeywordRankingCrawls(queryKey: queryKey, in: modelContext)
+        let existingStats = try fetchAppKeywordStats(queryKey: queryKey, in: modelContext)
 
         struct KeywordAggregate {
             var appStoreID: Int64
@@ -1118,7 +1320,13 @@ final class RankingRefreshCoordinator: Sendable {
         }
 
         var aggregates: [Int64: KeywordAggregate] = [:]
-        for observation in observations.sorted(by: { $0.observedAt < $1.observedAt }) {
+        let orderedObservations = observations.sorted { lhs, rhs in
+            if lhs.observedAt != rhs.observedAt {
+                return lhs.observedAt < rhs.observedAt
+            }
+            return lhs.observationKey < rhs.observationKey
+        }
+        for observation in orderedObservations {
             for item in observation.items {
                 if var aggregate = aggregates[item.appStoreID] {
                     aggregate.bestRank = min(aggregate.bestRank, item.position)
@@ -1305,4 +1513,117 @@ struct RefreshOutcome {
     let rank: Int?
     let searchedAt: Date?
     let error: OpenASOError?
+}
+
+extension RankingRefreshPageResult {
+    func canonicalized(limit: Int) -> RankingRefreshPageResult {
+        RankingRefreshPageResult(
+            request: request,
+            page: page.canonicalized(limit: limit),
+            searchedAt: searchedAt,
+            observedHour: observedHour,
+            submissionCount: submissionCount,
+            winningCount: winningCount,
+            confidence: confidence
+        )
+    }
+}
+
+extension SearchRankingPage {
+    func canonicalized(limit: Int) -> SearchRankingPage {
+        let boundedLimit = max(0, limit)
+        var seenAppStoreIDs = Set<Int64>()
+        let canonicalItems = items
+            .sorted { lhs, rhs in
+                if lhs.position != rhs.position {
+                    return lhs.position < rhs.position
+                }
+                if lhs.appStoreID != rhs.appStoreID {
+                    return lhs.appStoreID < rhs.appStoreID
+                }
+                return Self.canonicalTiePrecedes(lhs, rhs)
+            }
+            .compactMap { item in
+                seenAppStoreIDs.insert(item.appStoreID).inserted
+                    ? item
+                    : nil
+            }
+            .prefix(boundedLimit)
+        return SearchRankingPage(items: Array(canonicalItems), source: source)
+    }
+
+    private static func canonicalTiePrecedes(
+        _ lhs: SearchRankingItem,
+        _ rhs: SearchRankingItem
+    ) -> Bool {
+        let comparisons: [ComparisonResult] = [
+            compare(lhs.bundleID, rhs.bundleID),
+            compare(lhs.name, rhs.name),
+            compare(lhs.subtitle, rhs.subtitle),
+            compare(lhs.sellerName, rhs.sellerName),
+            compare(lhs.iconURLString, rhs.iconURLString),
+            compare(
+                lhs.releaseDate.map { $0.timeIntervalSinceReferenceDate.bitPattern },
+                rhs.releaseDate.map { $0.timeIntervalSinceReferenceDate.bitPattern }
+            ),
+            compare(
+                lhs.currentVersionReleaseDate.map { $0.timeIntervalSinceReferenceDate.bitPattern },
+                rhs.currentVersionReleaseDate.map { $0.timeIntervalSinceReferenceDate.bitPattern }
+            ),
+            compare(lhs.version, rhs.version),
+            compare(lhs.primaryGenreID, rhs.primaryGenreID),
+            compare(lhs.primaryGenreName, rhs.primaryGenreName),
+            compare(lhs.descriptionText, rhs.descriptionText),
+            compare(lhs.releaseNotes, rhs.releaseNotes),
+            compare(lhs.supportedLanguageCodes, rhs.supportedLanguageCodes),
+            compare(lhs.screenshotURLs, rhs.screenshotURLs),
+            compare(lhs.ipadScreenshotURLs, rhs.ipadScreenshotURLs),
+            compare(lhs.appletvScreenshotURLs, rhs.appletvScreenshotURLs),
+            compare(lhs.ratingCount, rhs.ratingCount),
+            compare(
+                lhs.averageRating.map(\.bitPattern),
+                rhs.averageRating.map(\.bitPattern)
+            ),
+            compare(lhs.platform.rawValue, rhs.platform.rawValue),
+        ]
+        return comparisons.first { $0 != .orderedSame } == .orderedAscending
+    }
+
+    private static func compare<Value: Comparable>(
+        _ lhs: Value,
+        _ rhs: Value
+    ) -> ComparisonResult {
+        if lhs < rhs { return .orderedAscending }
+        if lhs > rhs { return .orderedDescending }
+        return .orderedSame
+    }
+
+    private static func compare<Value: Comparable>(
+        _ lhs: Value?,
+        _ rhs: Value?
+    ) -> ComparisonResult {
+        switch (lhs, rhs) {
+        case (.none, .none):
+            return .orderedSame
+        case (.none, .some):
+            return .orderedAscending
+        case (.some, .none):
+            return .orderedDescending
+        case (.some(let lhs), .some(let rhs)):
+            return compare(lhs, rhs)
+        }
+    }
+
+    private static func compare<Value: Comparable>(
+        _ lhs: [Value],
+        _ rhs: [Value]
+    ) -> ComparisonResult {
+        for (lhsValue, rhsValue) in zip(lhs, rhs) {
+            let comparison = compare(lhsValue, rhsValue)
+            if comparison != .orderedSame {
+                return comparison
+            }
+        }
+        return compare(lhs.count, rhs.count)
+    }
 }

@@ -320,7 +320,7 @@ struct RankingRefreshCoordinatorTests {
         let catalogService = AppCatalogService(appResolver: resolver)
         let coordinator = RankingRefreshCoordinator(rankingProvider: provider, appCatalogService: catalogService)
 
-        let result = await coordinator.refresh(track: track, in: modelContext, limit: 10)
+        let result = await coordinator.refresh(track: track, in: modelContext)
 
         switch result {
         case .success(let snapshot):
@@ -378,6 +378,210 @@ struct RankingRefreshCoordinatorTests {
         #expect(ratingSnapshots.first?.storefront == "us")
         #expect(ratingSnapshots.first?.ratingCount == 513_197)
         #expect(ratingSnapshots.first?.averageRating == 4.65041)
+    }
+
+    @Test
+    func persistenceFailureAfterMutationRollsBackTheEntireRefresh() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        modelContext.autosaveEnabled = false
+        let trackedApp = TrackedApp(
+            appStoreID: 700,
+            bundleID: "example.tracked.700",
+            name: "Tracked",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let track = try makeTrackedAppKeyword(
+            term: "rollback test",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(trackedApp)
+        modelContext.insert(track)
+        try modelContext.save()
+        let baseline = try rankingPersistenceState(in: modelContext)
+
+        let checkpoint = FailingRankingPersistenceCheckpoint(failingOnCall: 1)
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: StubRankingProvider(
+                page: SearchRankingPage(items: [], source: .iTunesFallback)
+            ),
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver()),
+            persistenceMutationCheckpoint: checkpoint.call
+        )
+        let pageResult = RankingRefreshPageResult(
+            request: RankingRefreshRequest(track: track),
+            page: SearchRankingPage(
+                items: [SearchRankingItem(
+                    position: 1,
+                    appStoreID: 701,
+                    bundleID: "example.result.701",
+                    name: "Result",
+                    sellerName: "Example",
+                    screenshotURLs: ["https://example.com/result-701.png"],
+                    ratingCount: 42,
+                    averageRating: 4.5,
+                    platform: .iphone
+                )],
+                source: .iTunesFallback
+            ),
+            searchedAt: date(
+                year: 2026,
+                month: 7,
+                day: 19,
+                hour: 12,
+                minute: 0,
+                calendar: utcCalendar()
+            ),
+            observedHour: nil,
+            submissionCount: 1,
+            winningCount: 1,
+            confidence: "single_source"
+        )
+
+        #expect(throws: OpenASOError.unexpectedResponse) {
+            _ = try coordinator.persistRankingPage(pageResult, in: modelContext)
+        }
+
+        #expect(checkpoint.callCount() == 1)
+        #expect(!modelContext.hasChanges)
+        #expect(try rankingPersistenceState(in: modelContext) == baseline)
+    }
+
+    @Test
+    func pendingUnrelatedEditArrivingDuringFetchIsNeitherCommittedNorRolledBack() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        modelContext.autosaveEnabled = false
+        let trackedApp = TrackedApp(
+            appStoreID: 710,
+            bundleID: "example.tracked.710",
+            name: "Tracked",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let track = try makeTrackedAppKeyword(
+            term: "pending edit test",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(trackedApp)
+        modelContext.insert(track)
+        let unrelatedStorefront = Storefront(
+            code: "zz",
+            name: "Persisted storefront name",
+            flagEmoji: "ZZ",
+            languageCode: "en"
+        )
+        modelContext.insert(unrelatedStorefront)
+        try modelContext.save()
+        let baseline = try rankingPersistenceState(in: modelContext)
+
+        let provider = GatedRankingProvider()
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: provider,
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        )
+        let refreshTask = Task { @MainActor in
+            await coordinator.refresh(tracks: [track], in: modelContext)
+        }
+        await provider.waitUntilStarted()
+
+        unrelatedStorefront.name = "Pending storefront name"
+        #expect(modelContext.hasChanges)
+        await provider.succeed(SearchRankingPage(
+            items: [rankingItem(position: 1, appStoreID: trackedApp.appStoreID, platform: .iphone)],
+            source: .iTunesFallback
+        ))
+        let outcomes = await refreshTask.value
+
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.error != nil)
+        #expect(outcomes.first?.snapshotID == nil)
+        #expect(modelContext.hasChanges)
+        #expect(unrelatedStorefront.name == "Pending storefront name")
+
+        let verificationContext = ModelContext(container)
+        verificationContext.autosaveEnabled = false
+        let durableStorefront = try #require(
+            verificationContext.fetch(FetchDescriptor<Storefront>())
+                .first(where: { $0.code == "zz" })
+        )
+        #expect(durableStorefront.name == "Persisted storefront name")
+        #expect(try rankingPersistenceState(in: verificationContext) == baseline)
+        #expect(try verificationContext.fetchCount(FetchDescriptor<TrackedKeywordRefreshStatus>()) == 0)
+    }
+
+    @Test
+    func pendingEditFromProgressSkipsFinalStatsWithoutCommitOrRollback() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        modelContext.autosaveEnabled = false
+        let trackedApp = TrackedApp(
+            appStoreID: 720,
+            bundleID: "example.tracked.720",
+            name: "Tracked",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let track = try makeTrackedAppKeyword(
+            term: "stats reentrancy test",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(trackedApp)
+        modelContext.insert(track)
+        let unrelatedStorefront = Storefront(
+            code: "yy",
+            name: "Persisted stats storefront name",
+            flagEmoji: "YY",
+            languageCode: "en"
+        )
+        modelContext.insert(unrelatedStorefront)
+        try modelContext.save()
+
+        let provider = StubRankingProvider(page: SearchRankingPage(
+            items: [rankingItem(position: 1, appStoreID: trackedApp.appStoreID, platform: .iphone)],
+            source: .iTunesFallback
+        ))
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: provider,
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        )
+        let editInjector = RankingPendingEditInjector(
+            storefront: unrelatedStorefront,
+            pendingName: "Pending stats storefront name"
+        )
+
+        let outcomes = await coordinator.refresh(
+            tracks: [track],
+            in: modelContext,
+            progress: { completed, _, _ in
+                await editInjector.injectIfPagePersistenceCompleted(completed)
+            }
+        )
+
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.error == nil)
+        #expect(outcomes.first?.rank == 1)
+        #expect(editInjector.injectionCount == 1)
+        #expect(modelContext.hasChanges)
+        #expect(unrelatedStorefront.name == "Pending stats storefront name")
+
+        let verificationContext = ModelContext(container)
+        verificationContext.autosaveEnabled = false
+        let durableStorefront = try #require(
+            verificationContext.fetch(FetchDescriptor<Storefront>())
+                .first(where: { $0.code == "yy" })
+        )
+        #expect(durableStorefront.name == "Persisted stats storefront name")
+        #expect(try verificationContext.fetchCount(FetchDescriptor<KeywordRankingCrawl>()) == 1)
+        #expect(try verificationContext.fetchCount(FetchDescriptor<TrackedKeywordDailyRanking>()) == 1)
+        #expect(try verificationContext.fetchCount(FetchDescriptor<AppKeywordStats>()) == 0)
     }
 
     @Test
@@ -1141,7 +1345,7 @@ struct RankingRefreshCoordinatorTests {
             appCatalogService: AppCatalogService(appResolver: StubAppResolver())
         )
 
-        _ = await coordinator.refresh(track: track, in: modelContext, limit: 10)
+        _ = await coordinator.refresh(track: track, in: modelContext)
 
         provider.page = SearchRankingPage(
             items: [
@@ -1158,7 +1362,7 @@ struct RankingRefreshCoordinatorTests {
             source: .iTunesFallback
         )
 
-        let result = await coordinator.refresh(track: track, in: modelContext, limit: 10)
+        let result = await coordinator.refresh(track: track, in: modelContext)
 
         guard case .success(let snapshot) = result else {
             Issue.record("Expected refresh to succeed")
@@ -1517,6 +1721,274 @@ struct AppDetailRefreshServiceQueueTests {
             appStoreConnectCredentials: AppStoreConnectCredentials(issuerID: "", keyID: "", privateKey: "")
         )
     }
+
+    @Test
+    func appDetailFanOutSchedulesMetadataOnlyForAppliedSharedObservation() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let fixture = try makeDeduplicatedRefreshFixture(in: modelContext)
+        let searchedAt = isoDate("2026-07-18T13:00:00Z")
+        let provider = QueryRankingProvider(responses: [
+            QueryRankingProvider.key(
+                term: fixture.firstTrack.term,
+                storefront: fixture.firstTrack.storefront,
+                platform: fixture.firstTrack.platform
+            ): .page(SearchRankingPage(
+                items: [
+                    rankingItem(position: 1, appStoreID: fixture.firstApp.appStoreID, platform: .iphone),
+                    rankingItem(position: 2, appStoreID: fixture.secondApp.appStoreID, platform: .iphone),
+                ],
+                source: .iTunesFallback
+            )),
+        ])
+        let metadataRecorder = RankingMetadataEnrichmentRecorder()
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: provider,
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver()),
+            now: { searchedAt },
+            metadataEnrichmentScheduler: metadataRecorder.record
+        )
+        let httpClient = MockHTTPClient { request in
+            throw OpenASOError.providerUnavailable(
+                "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+            )
+        }
+        let defaults = makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let service = AppDetailRefreshService(
+            backgroundModelStore: BackgroundModelStore(modelContainer: container),
+            refreshCoordinator: coordinator,
+            keywordMetricsService: KeywordMetricsService(
+                httpClient: httpClient,
+                credentialStore: AppleAdsCredentialStore(
+                    defaults: defaults,
+                    keychain: keychain,
+                    loadsEnvironmentCredentials: false
+                ),
+                settingsStore: AppSettingsStore(defaults: defaults),
+                webSessionStore: AppleAdsWebSessionStore(
+                    defaults: defaults,
+                    keychain: keychain
+                )
+            ),
+            appStorefrontRatingService: AppStorefrontRatingService(httpClient: httpClient),
+            appStorefrontReviewService: AppStorefrontReviewService(httpClient: httpClient),
+            appStoreConnectReviewService: AppStoreConnectReviewService(
+                httpClient: httpClient,
+                credentialStore: AppStoreConnectCredentialStore(
+                    defaults: defaults,
+                    keychain: keychain
+                )
+            )
+        )
+
+        let result = await service.refresh(AppDetailRefreshRequest(
+            app: AppDetailRefreshAppSnapshot(
+                appStoreID: fixture.firstApp.appStoreID,
+                bundleID: fixture.firstApp.bundleID,
+                name: fixture.firstApp.name,
+                subtitle: fixture.firstApp.subtitle,
+                sellerName: fixture.firstApp.sellerName,
+                defaultPlatform: fixture.firstApp.defaultPlatform
+            ),
+            workspace: .keywords,
+            storefrontSelection: .storefront(code: "us"),
+            trackIdentityKeys: [fixture.firstTrack.identityKey, fixture.secondTrack.identityKey],
+            trigger: "manual",
+            refreshKeywords: true,
+            refreshMetrics: false,
+            refreshRatings: false,
+            refreshReviews: false,
+            recordsRatingsReviewsRefresh: false,
+            popularityContextAppStoreID: nil,
+            appleAdsWebSession: nil,
+            appStoreConnectCredentials: AppStoreConnectCredentials(
+                issuerID: "",
+                keyID: "",
+                privateKey: ""
+            )
+        ))
+
+        #expect(result.keywordOutcomes.count == 2)
+        #expect(result.keywordOutcomes.allSatisfy { $0.error == nil })
+        #expect(result.firstError == nil)
+        #expect(await provider.callCounts() == ["pages::us::iphone": 1])
+        #expect(metadataRecorder.recordedBatches() == [[
+            RankingMetadataEnrichmentRequest(
+                appStoreID: fixture.firstApp.appStoreID,
+                storefront: "us",
+                platform: .iphone
+            ),
+            RankingMetadataEnrichmentRequest(
+                appStoreID: fixture.secondApp.appStoreID,
+                storefront: "us",
+                platform: .iphone
+            ),
+        ]])
+
+        let state = try await BackgroundModelStore(modelContainer: container).read { modelContext in
+            try rankingPersistenceState(in: modelContext)
+        }
+        #expect(state.crawlCount == 1)
+        #expect(state.snapshotCount == 2)
+    }
+
+    @Test
+    func rankingBatchFailureRollsBackEarlierPagesBeforeRecordingFailures() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let trackedApp = TrackedApp(
+            appStoreID: 800,
+            bundleID: "example.tracked.800",
+            name: "Tracked",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let firstTrack = try makeTrackedAppKeyword(
+            term: "first rollback query",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        let secondTrack = try makeTrackedAppKeyword(
+            term: "second rollback query",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        trackedApp.keywordTracks.append(contentsOf: [firstTrack, secondTrack])
+        modelContext.insert(trackedApp)
+        modelContext.insert(firstTrack)
+        modelContext.insert(secondTrack)
+        try modelContext.save()
+
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let baseline = try await backgroundModelStore.read { modelContext in
+            try rankingPersistenceState(in: modelContext)
+        }
+        let provider = QueryRankingProvider(responses: [
+            QueryRankingProvider.key(
+                term: firstTrack.term,
+                storefront: firstTrack.storefront,
+                platform: firstTrack.platform
+            ): .page(SearchRankingPage(
+                items: [SearchRankingItem(
+                    position: 1,
+                    appStoreID: 801,
+                    bundleID: "example.result.801",
+                    name: "First result",
+                    sellerName: "Example",
+                    screenshotURLs: ["https://example.com/result-801.png"],
+                    ratingCount: 81,
+                    averageRating: 4.1,
+                    platform: .iphone
+                )],
+                source: .iTunesFallback
+            )),
+            QueryRankingProvider.key(
+                term: secondTrack.term,
+                storefront: secondTrack.storefront,
+                platform: secondTrack.platform
+            ): .page(SearchRankingPage(
+                items: [SearchRankingItem(
+                    position: 1,
+                    appStoreID: 802,
+                    bundleID: "example.result.802",
+                    name: "Second result",
+                    sellerName: "Example",
+                    screenshotURLs: ["https://example.com/result-802.png"],
+                    ratingCount: 82,
+                    averageRating: 4.2,
+                    platform: .iphone
+                )],
+                source: .iTunesFallback
+            )),
+        ])
+        let checkpoint = FailingRankingPersistenceCheckpoint(failingOnCall: 2)
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: provider,
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver()),
+            persistenceMutationCheckpoint: checkpoint.call
+        )
+        let httpClient = MockHTTPClient { request in
+            throw OpenASOError.providerUnavailable(
+                "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+            )
+        }
+        let defaults = makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let service = AppDetailRefreshService(
+            backgroundModelStore: backgroundModelStore,
+            refreshCoordinator: coordinator,
+            keywordMetricsService: KeywordMetricsService(
+                httpClient: httpClient,
+                credentialStore: AppleAdsCredentialStore(
+                    defaults: defaults,
+                    keychain: keychain,
+                    loadsEnvironmentCredentials: false
+                ),
+                settingsStore: AppSettingsStore(defaults: defaults),
+                webSessionStore: AppleAdsWebSessionStore(
+                    defaults: defaults,
+                    keychain: keychain
+                )
+            ),
+            appStorefrontRatingService: AppStorefrontRatingService(httpClient: httpClient),
+            appStorefrontReviewService: AppStorefrontReviewService(httpClient: httpClient),
+            appStoreConnectReviewService: AppStoreConnectReviewService(
+                httpClient: httpClient,
+                credentialStore: AppStoreConnectCredentialStore(
+                    defaults: defaults,
+                    keychain: keychain
+                )
+            )
+        )
+        let result = await service.refresh(AppDetailRefreshRequest(
+            app: AppDetailRefreshAppSnapshot(
+                appStoreID: trackedApp.appStoreID,
+                bundleID: trackedApp.bundleID,
+                name: trackedApp.name,
+                subtitle: trackedApp.subtitle,
+                sellerName: trackedApp.sellerName,
+                defaultPlatform: trackedApp.defaultPlatform
+            ),
+            workspace: .keywords,
+            storefrontSelection: .storefront(code: "us"),
+            trackIdentityKeys: [firstTrack.identityKey, secondTrack.identityKey],
+            trigger: "manual",
+            refreshKeywords: true,
+            refreshMetrics: false,
+            refreshRatings: false,
+            refreshReviews: false,
+            recordsRatingsReviewsRefresh: false,
+            popularityContextAppStoreID: nil,
+            appleAdsWebSession: nil,
+            appStoreConnectCredentials: AppStoreConnectCredentials(
+                issuerID: "",
+                keyID: "",
+                privateKey: ""
+            )
+        ))
+
+        #expect(checkpoint.callCount() == 2)
+        #expect(result.keywordOutcomes.count == 2)
+        #expect(result.keywordOutcomes.allSatisfy { $0.error != nil })
+        #expect(result.firstError != nil)
+        let state = try await backgroundModelStore.read { modelContext in
+            try rankingPersistenceState(in: modelContext)
+        }
+        #expect(state.crawlCount == baseline.crawlCount)
+        #expect(state.observationItemCount == baseline.observationItemCount)
+        #expect(state.snapshotCount == baseline.snapshotCount)
+        #expect(state.rankedResultCount == baseline.rankedResultCount)
+        #expect(state.storeAppIDs == baseline.storeAppIDs)
+        #expect(state.storefrontMetadataCount == baseline.storefrontMetadataCount)
+        #expect(state.screenshotCount == baseline.screenshotCount)
+        #expect(state.latestRatingCount == baseline.latestRatingCount)
+        #expect(state.dailyRatingCount == baseline.dailyRatingCount)
+        #expect(state.statsCount == baseline.statsCount)
+        #expect(state.trackStates == baseline.trackStates)
+        #expect(state.statusCount == 2)
+    }
+
 }
 
 @MainActor
@@ -1600,6 +2072,98 @@ private struct DeduplicatedRefreshFixture {
 
     var tracks: [TrackedAppKeyword] {
         [firstTrack, secondTrack, thirdTrack]
+    }
+}
+
+private struct RankingPersistenceTrackState: Equatable, Sendable {
+    let identityKey: String
+    let rankingAppCount: Int?
+    let lastRefreshAt: Date?
+    let snapshotCount: Int
+}
+
+private struct RankingPersistenceState: Equatable, Sendable {
+    let crawlCount: Int
+    let observationItemCount: Int
+    let snapshotCount: Int
+    let rankedResultCount: Int
+    let storeAppIDs: [Int64]
+    let storefrontMetadataCount: Int
+    let screenshotCount: Int
+    let latestRatingCount: Int
+    let dailyRatingCount: Int
+    let statsCount: Int
+    let statusCount: Int
+    let trackStates: [RankingPersistenceTrackState]
+}
+
+private func rankingPersistenceState(in modelContext: ModelContext) throws -> RankingPersistenceState {
+    let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+        .map {
+            RankingPersistenceTrackState(
+                identityKey: $0.identityKey,
+                rankingAppCount: $0.rankingAppCount,
+                lastRefreshAt: $0.lastRefreshAt,
+                snapshotCount: $0.snapshots.count
+            )
+        }
+        .sorted { $0.identityKey < $1.identityKey }
+    return RankingPersistenceState(
+        crawlCount: try modelContext.fetchCount(FetchDescriptor<KeywordRankingCrawl>()),
+        observationItemCount: try modelContext.fetchCount(FetchDescriptor<KeywordAppRanking>()),
+        snapshotCount: try modelContext.fetchCount(FetchDescriptor<TrackedKeywordDailyRanking>()),
+        rankedResultCount: try modelContext.fetchCount(FetchDescriptor<TrackedKeywordRankedResult>()),
+        storeAppIDs: try modelContext.fetch(FetchDescriptor<StoreApp>()).map(\.appStoreID).sorted(),
+        storefrontMetadataCount: try modelContext.fetchCount(FetchDescriptor<AppStorefrontMetadata>()),
+        screenshotCount: try modelContext.fetchCount(FetchDescriptor<AppStoreScreenshot>()),
+        latestRatingCount: try modelContext.fetchCount(FetchDescriptor<LatestAppRating>()),
+        dailyRatingCount: try modelContext.fetchCount(FetchDescriptor<AppDailyRating>()),
+        statsCount: try modelContext.fetchCount(FetchDescriptor<AppKeywordStats>()),
+        statusCount: try modelContext.fetchCount(FetchDescriptor<TrackedKeywordRefreshStatus>()),
+        trackStates: tracks
+    )
+}
+
+private final class FailingRankingPersistenceCheckpoint: Sendable {
+    private struct State: Sendable {
+        var callCount = 0
+    }
+
+    private let failingCall: Int
+    private let state = Mutex(State())
+
+    init(failingOnCall: Int) {
+        self.failingCall = failingOnCall
+    }
+
+    func call() throws {
+        let shouldFail = state.withLock { state in
+            state.callCount += 1
+            return state.callCount == failingCall
+        }
+        if shouldFail {
+            throw OpenASOError.unexpectedResponse
+        }
+    }
+
+    func callCount() -> Int {
+        state.withLock { $0.callCount }
+    }
+}
+
+private final class RankingMetadataEnrichmentRecorder: Sendable {
+    private let batches = Mutex<[[RankingMetadataEnrichmentRequest]]>([])
+
+    func record(_ requests: [RankingMetadataEnrichmentRequest]) {
+        batches.withLock { batches in
+            batches.append(requests)
+        }
+    }
+
+    func recordedBatches() -> [[RankingMetadataEnrichmentRequest]] {
+        batches.withLock { batches in
+            batches
+        }
     }
 }
 
@@ -1746,6 +2310,68 @@ private actor QueryRankingProvider: SearchRankingProvider {
 
     func callCounts() -> [String: Int] {
         queryCallCounts
+    }
+}
+
+private actor GatedRankingProvider: SearchRankingProvider {
+    private var continuation: CheckedContinuation<SearchRankingPage, Never>?
+    private var pendingPage: SearchRankingPage?
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func search(
+        keyword: String,
+        storefrontCode: String,
+        platform: AppPlatform,
+        limit: Int
+    ) async throws -> SearchRankingPage {
+        didStart = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+        if let pendingPage {
+            self.pendingPage = nil
+            return pendingPage
+        }
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func succeed(_ page: SearchRankingPage) {
+        guard let continuation else {
+            pendingPage = page
+            return
+        }
+        self.continuation = nil
+        continuation.resume(returning: page)
+    }
+}
+
+@MainActor
+private final class RankingPendingEditInjector {
+    private let storefront: Storefront
+    private let pendingName: String
+    private(set) var injectionCount = 0
+
+    init(storefront: Storefront, pendingName: String) {
+        self.storefront = storefront
+        self.pendingName = pendingName
+    }
+
+    func injectIfPagePersistenceCompleted(_ completed: Int) {
+        guard completed == 1, injectionCount == 0 else { return }
+        storefront.name = pendingName
+        injectionCount += 1
     }
 }
 
