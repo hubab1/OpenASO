@@ -271,7 +271,13 @@ struct KeywordResearchWorkspaceView: View {
                 storefronts: storefronts,
                 blocksWorkspaceDismissal: $detailBlocksDismissal,
                 reconcileProject: projectsModel.recordAuthoritativeProject,
-                resolveAuthoritativeProject: resolveAuthoritativeProject
+                resolveAuthoritativeProject: resolveAuthoritativeProject,
+                makeHistoryModel: { projectGeneration, keyword in
+                    factory.makeHistoryModel(
+                        projectGeneration: projectGeneration,
+                        keyword: keyword
+                    )
+                }
             )
             .id(project.generation)
         } else {
