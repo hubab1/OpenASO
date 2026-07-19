@@ -113,6 +113,8 @@
 		D20B00000000000000000009 /* EstimatedKeywordDifficultyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */; };
 		D20C00000000000000000001 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000011 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift */; };
 		D20C00000000000000000032 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000011 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift */; };
+		D22000000000000000000001 /* SearchRanking/KeywordMarketInsightsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */; };
+		D22000000000000000000003 /* KeywordMarketInsightsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22000000000000000000012 /* KeywordMarketInsightsServiceTests.swift */; };
 		D20C00000000000000000002 /* Persistence/EstimatedKeywordDifficultyPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */; };
 		D20C00000000000000000003 /* Persistence/EstimatedKeywordDifficultyPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */; };
 		D20C00000000000000000004 /* EstimatedKeywordDifficultySummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20C00000000000000000013 /* EstimatedKeywordDifficultySummaryTests.swift */; };
@@ -372,6 +374,8 @@
 		D20B00000000000000000014 /* Persistence/EstimatedKeywordDifficultyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/EstimatedKeywordDifficultyStore.swift; sourceTree = "<group>"; };
 		D20B00000000000000000015 /* EstimatedKeywordDifficultyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyStoreTests.swift; sourceTree = "<group>"; };
 		D20C00000000000000000011 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift; sourceTree = "<group>"; };
+		D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordMarketInsightsService.swift; sourceTree = "<group>"; };
+		D22000000000000000000012 /* KeywordMarketInsightsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMarketInsightsServiceTests.swift; sourceTree = "<group>"; };
 		D20C00000000000000000012 /* Persistence/EstimatedKeywordDifficultyPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/EstimatedKeywordDifficultyPresentation.swift; sourceTree = "<group>"; };
 		D20C00000000000000000013 /* EstimatedKeywordDifficultySummaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultySummaryTests.swift; sourceTree = "<group>"; };
 		D20C00000000000000000014 /* EstimatedKeywordDifficultyPersistenceAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EstimatedKeywordDifficultyPersistenceAdapterTests.swift; sourceTree = "<group>"; };
@@ -540,6 +544,7 @@
 				D20C00000000000000000017 /* EstimatedKeywordDifficultyCSVExportTests.swift */,
 				D20C00000000000000000050 /* EstimatedKeywordDifficultyDetailModelTests.swift */,
 				D20C00000000000000000051 /* EstimatedKeywordDifficultyWorkspaceUITests.swift */,
+				D22000000000000000000012 /* KeywordMarketInsightsServiceTests.swift */,
 				D02000000000000000000004 /* v0.3.2-v1 */,
 				0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */,
 				0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */,
@@ -631,6 +636,7 @@
 				DEB53B31A2B107CEE141F744 /* SearchRanking/ITunesSearchFallbackProvider.swift */,
 				D20A00000000000000000011 /* SearchRanking/KeywordDifficultyEstimator.swift */,
 				D20C00000000000000000011 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift */,
+				D22000000000000000000011 /* SearchRanking/KeywordMarketInsightsService.swift */,
 				A19000000000000000000011 /* SearchRanking/AppStoreWebRankingProvider.swift */,
 				A19000000000000000000012 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift */,
 				5C5530D41B3742698F02134C /* Credentials/KeychainService.swift */,
@@ -1157,6 +1163,7 @@
 				33B2BE83B4CFC8970D7A3482 /* SearchRanking/RankingRefreshCoordinator.swift in Sources */,
 				D20A00000000000000000001 /* SearchRanking/KeywordDifficultyEstimator.swift in Sources */,
 				D20C00000000000000000001 /* SearchRanking/EstimatedKeywordDifficultyPersistenceAdapter.swift in Sources */,
+				D22000000000000000000001 /* SearchRanking/KeywordMarketInsightsService.swift in Sources */,
 				9A6937276AF0E3CAEDA90C36 /* RankingSource.swift in Sources */,
 				A40000000000000000000003 /* RatingsDetail.swift in Sources */,
 				A40000000000000000000001 /* RatingsDashboardSupport.swift in Sources */,
@@ -1208,6 +1215,7 @@
 				D20C00000000000000000008 /* EstimatedKeywordDifficultyCSVExportTests.swift in Sources */,
 				D20C00000000000000000030 /* EstimatedKeywordDifficultyDetailModelTests.swift in Sources */,
 				D20C00000000000000000031 /* EstimatedKeywordDifficultyWorkspaceUITests.swift in Sources */,
+				D22000000000000000000003 /* KeywordMarketInsightsServiceTests.swift in Sources */,
 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
 				0A5C00000000000000000007 /* AppStoreWebMetadataProviderTests.swift in Sources */,
 				A19000000000000000000003 /* AppStoreWebRankingProviderTests.swift in Sources */,
