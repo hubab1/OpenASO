@@ -18,11 +18,12 @@ final class TrackedKeywordRefreshStatus {
     #Index<TrackedKeywordRefreshStatus>(
         [\.trackIdentityKey],
         [\.appStoreID],
-        [\.trackIdentityKey, \.domainRaw]
+        [\.trackIdentityKey, \.trackCreatedAt, \.domainRaw]
     )
 
     @Attribute(.unique) var statusKey: String
     var trackIdentityKey: String
+    var trackCreatedAt: Date
     var appStoreID: Int64
     var domainRaw: String
     var message: String?
@@ -30,6 +31,7 @@ final class TrackedKeywordRefreshStatus {
 
     init(
         trackIdentityKey: String,
+        trackCreatedAt: Date,
         appStoreID: Int64,
         domain: KeywordRefreshStatusDomain,
         message: String?,
@@ -40,6 +42,7 @@ final class TrackedKeywordRefreshStatus {
             domain: domain
         )
         self.trackIdentityKey = trackIdentityKey
+        self.trackCreatedAt = trackCreatedAt
         self.appStoreID = appStoreID
         self.domainRaw = domain.rawValue
         self.message = message
@@ -68,12 +71,28 @@ struct KeywordRefreshStatusSnapshot: Equatable, Hashable, Sendable {
     let rankingUpdatedAt: Date?
     let popularityMessage: String?
     let popularityUpdatedAt: Date?
+    let trackCreatedAt: Date?
+
+    init(
+        rankingMessage: String?,
+        rankingUpdatedAt: Date?,
+        popularityMessage: String?,
+        popularityUpdatedAt: Date?,
+        trackCreatedAt: Date? = nil
+    ) {
+        self.rankingMessage = rankingMessage
+        self.rankingUpdatedAt = rankingUpdatedAt
+        self.popularityMessage = popularityMessage
+        self.popularityUpdatedAt = popularityUpdatedAt
+        self.trackCreatedAt = trackCreatedAt
+    }
 
     static let empty = KeywordRefreshStatusSnapshot(
         rankingMessage: nil,
         rankingUpdatedAt: nil,
         popularityMessage: nil,
-        popularityUpdatedAt: nil
+        popularityUpdatedAt: nil,
+        trackCreatedAt: nil
     )
 
     var preferredMessage: String? {
@@ -105,9 +124,14 @@ enum TrackedKeywordRefreshStatusStore {
         for track: TrackedAppKeyword,
         persisted: KeywordRefreshStatusSnapshot?
     ) -> KeywordRefreshStatusSnapshot {
-        persisted
-            ?? snapshot(fromLegacyMessage: track.statusMessage, timestamp: legacyTimestamp(for: track))
-            ?? .empty
+        if let persisted, persisted.trackCreatedAt == track.createdAt {
+            return persisted
+        }
+        return snapshot(
+            fromLegacyMessage: track.statusMessage,
+            timestamp: legacyTimestamp(for: track),
+            trackCreatedAt: track.createdAt
+        ) ?? .empty
     }
 
     static func snapshots(
@@ -148,10 +172,12 @@ enum TrackedKeywordRefreshStatusStore {
         let normalizedMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedMessage = normalizedMessage.flatMap { $0.isEmpty ? nil : $0 }
         let trackIdentityKey = track.identityKey
+        let trackCreatedAt = track.createdAt
         let domainRaw = domain.rawValue
         let descriptor = FetchDescriptor<TrackedKeywordRefreshStatus>(
             predicate: #Predicate { status in
                 status.trackIdentityKey == trackIdentityKey
+                    && status.trackCreatedAt == trackCreatedAt
                     && status.domainRaw == domainRaw
             }
         )
@@ -167,6 +193,7 @@ enum TrackedKeywordRefreshStatusStore {
 
         modelContext.insert(TrackedKeywordRefreshStatus(
             trackIdentityKey: track.identityKey,
+            trackCreatedAt: track.createdAt,
             appStoreID: track.appStoreID,
             domain: domain,
             message: resolvedMessage,
@@ -219,10 +246,12 @@ enum TrackedKeywordRefreshStatusStore {
         }
         let domain = domain(forLegacyMessage: legacyMessage)
         let trackIdentityKey = track.identityKey
+        let trackCreatedAt = track.createdAt
         let domainRaw = domain.rawValue
         var descriptor = FetchDescriptor<TrackedKeywordRefreshStatus>(
             predicate: #Predicate { status in
                 status.trackIdentityKey == trackIdentityKey
+                    && status.trackCreatedAt == trackCreatedAt
                     && status.domainRaw == domainRaw
             }
         )
@@ -231,6 +260,7 @@ enum TrackedKeywordRefreshStatusStore {
         if try modelContext.fetch(descriptor).isEmpty {
             modelContext.insert(TrackedKeywordRefreshStatus(
                 trackIdentityKey: track.identityKey,
+                trackCreatedAt: track.createdAt,
                 appStoreID: track.appStoreID,
                 domain: domain,
                 message: legacyMessage,
@@ -252,13 +282,18 @@ enum TrackedKeywordRefreshStatusStore {
     private static func snapshot(
         from records: [TrackedKeywordRefreshStatus]
     ) -> KeywordRefreshStatusSnapshot {
-        let ranking = latestRecord(for: .ranking, in: records)
-        let popularity = latestRecord(for: .popularity, in: records)
+        guard let trackCreatedAt = records.map(\.trackCreatedAt).max() else {
+            return .empty
+        }
+        let generationRecords = records.filter { $0.trackCreatedAt == trackCreatedAt }
+        let ranking = latestRecord(for: .ranking, in: generationRecords)
+        let popularity = latestRecord(for: .popularity, in: generationRecords)
         return KeywordRefreshStatusSnapshot(
             rankingMessage: ranking?.message,
             rankingUpdatedAt: ranking?.updatedAt,
             popularityMessage: popularity?.message,
-            popularityUpdatedAt: popularity?.updatedAt
+            popularityUpdatedAt: popularity?.updatedAt,
+            trackCreatedAt: trackCreatedAt
         )
     }
 
@@ -284,7 +319,8 @@ enum TrackedKeywordRefreshStatusStore {
 
     private static func snapshot(
         fromLegacyMessage message: String?,
-        timestamp: Date
+        timestamp: Date,
+        trackCreatedAt: Date
     ) -> KeywordRefreshStatusSnapshot? {
         guard let message = normalized(message) else { return nil }
         switch domain(forLegacyMessage: message) {
@@ -293,14 +329,16 @@ enum TrackedKeywordRefreshStatusStore {
                 rankingMessage: message,
                 rankingUpdatedAt: timestamp,
                 popularityMessage: nil,
-                popularityUpdatedAt: nil
+                popularityUpdatedAt: nil,
+                trackCreatedAt: trackCreatedAt
             )
         case .popularity:
             return KeywordRefreshStatusSnapshot(
                 rankingMessage: nil,
                 rankingUpdatedAt: nil,
                 popularityMessage: message,
-                popularityUpdatedAt: timestamp
+                popularityUpdatedAt: timestamp,
+                trackCreatedAt: trackCreatedAt
             )
         }
     }

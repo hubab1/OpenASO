@@ -183,6 +183,77 @@ struct TrackedKeywordRefreshStatusTests {
         #expect(snapshot.rankingUpdatedAt == Date(timeIntervalSince1970: 3_000))
     }
 
+    @Test
+    func staleStatusSavedAfterDeletionDoesNotAttachToAReaddedTrack() throws {
+        let fixture = try makeFixture()
+        try fixture.modelContext.save()
+        let identityKey = fixture.track.identityKey
+        let staleRefreshContext = ModelContext(fixture.container)
+        let deletionContext = ModelContext(fixture.container)
+        staleRefreshContext.autosaveEnabled = false
+        deletionContext.autosaveEnabled = false
+        let staleTrack = try #require(staleRefreshContext.fetch(
+            FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    track.identityKey == identityKey
+                }
+            )
+        ).first)
+        try TrackedKeywordRefreshStatusStore.set(
+            "Ranking failed to refresh. Stale deleted generation.",
+            domain: .ranking,
+            for: staleTrack,
+            in: staleRefreshContext
+        )
+
+        let deletingTrack = try #require(deletionContext.fetch(
+            FetchDescriptor<TrackedAppKeyword>(
+                predicate: #Predicate { track in
+                    track.identityKey == identityKey
+                }
+            )
+        ).first)
+        try TrackedKeywordRefreshStatusStore.deleteStatuses(
+            for: [identityKey],
+            in: deletionContext
+        )
+        deletionContext.delete(deletingTrack)
+        try deletionContext.save()
+
+        // The in-flight refresh commits after deletion and leaves an orphaned
+        // event for the old track generation.
+        try staleRefreshContext.save()
+
+        let readdContext = ModelContext(fixture.container)
+        let trackedApp = try #require(readdContext.fetch(FetchDescriptor<TrackedApp>()).first)
+        let query = try KeywordQuery.fetchOrInsert(
+            term: "focus app",
+            storefront: "us",
+            platform: .iphone,
+            in: readdContext
+        )
+        let readdedTrack = TrackedAppKeyword(
+            term: "focus app",
+            storefront: "us",
+            platform: .iphone,
+            trackedApp: trackedApp,
+            query: query,
+            createdAt: Date(timeIntervalSince1970: 9_999)
+        )
+        #expect(readdedTrack.identityKey == identityKey)
+        trackedApp.keywordTracks.append(readdedTrack)
+        readdContext.insert(readdedTrack)
+        try readdContext.save()
+
+        let snapshot = try TrackedKeywordRefreshStatusStore.snapshot(
+            for: readdedTrack,
+            in: readdContext
+        )
+        #expect(snapshot.rankingMessage == nil)
+        #expect(snapshot.popularityMessage == nil)
+        #expect(try readdContext.fetch(FetchDescriptor<TrackedKeywordRefreshStatus>()).count == 1)
+    }
+
     @Test(arguments: [
         ("Popularity failed to fetch. Missing session.", KeywordRefreshStatusDomain.popularity),
         ("Popularity unavailable. Unsupported storefront.", KeywordRefreshStatusDomain.popularity),
