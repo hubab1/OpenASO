@@ -319,13 +319,18 @@ final class AppServices {
         let keywordMetricsService = keywordMetricsService
         let refreshProgressStore = refreshProgressStore
         Task {
-            guard let trackIdentityKeys = try? await keywordMetricsService.stalePopularityTrackIdentityKeys(
+            guard let preparation = try? await keywordMetricsService.prepareStalePopularityRefresh(
                 using: backgroundModelStore
-            ), !trackIdentityKeys.isEmpty else {
+            ) else {
                 return
             }
+            if preparation.clearedStatusCount > 0 {
+                self.markBackgroundModelStoreChanged()
+            }
+            let trackIdentityKeys = preparation.trackIdentityKeys
+            guard !trackIdentityKeys.isEmpty else { return }
 
-            refreshProgressStore.beginAppleAdsPopularityRefresh(total: trackIdentityKeys.count)
+            refreshProgressStore.beginAppleAdsPopularityRefresh(total: preparation.refreshQueryCount)
             guard let outcomes = try? await keywordMetricsService.refreshMetrics(
                 for: trackIdentityKeys,
                 popularityContextAppStoreID: popularityContextAppStoreID,
