@@ -437,7 +437,7 @@ final class OpenASOMCPService: Sendable {
     backgroundModelStore: BackgroundModelStore,
     appResolver: any AppResolver,
     appCatalogService: AppCatalogService,
-    httpClient: any HTTPClient = URLSessionHTTPClient(),
+    httpClient: any HTTPClient,
     screenshotDownloadService: ScreenshotDownloadService = ScreenshotDownloadService(),
     rankingProvider: (any SearchRankingProvider)? = nil,
     rankingRefreshCoordinator: RankingRefreshCoordinator? = nil,

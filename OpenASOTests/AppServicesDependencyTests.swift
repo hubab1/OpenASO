@@ -79,6 +79,64 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func appServicesWiresGateOutsideObservationAndRecordsPhysicalRetry() async throws {
+        let defaults = Self.makeDefaults()
+        let observationClock = RefreshObservationClock(nowNanoseconds: { 1_000 })
+        let recorder = RefreshMetricsRecorder(clock: observationClock)
+        var requestCount = 0
+        let transport = MockHTTPClient { request in
+            requestCount += 1
+            if requestCount == 1 {
+                return (
+                    Data(),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 503)
+                )
+            }
+            return (
+                Data(#"{"results":[{"trackId":123,"trackName":"Example"}]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let policy = ProviderRequestPolicy(
+            minimumIntervalNanoseconds: 0,
+            maximumAttempts: 2,
+            baseBackoffNanoseconds: 0,
+            maximumBackoffNanoseconds: 0,
+            maximumElapsedNanoseconds: 1_000_000_000,
+            jitterFraction: 0
+        )
+        let services = AppServices(
+            httpClient: transport,
+            defaults: defaults,
+            keychain: InMemoryKeychainService(),
+            loadsEnvironmentCredentials: false,
+            allowsIconNetworkFetches: false,
+            refreshObservationClock: observationClock,
+            refreshMetricsRecorder: recorder,
+            providerRequestGateMode: .enabled(ProviderRequestPolicies(default: policy))
+        )
+        let runID = await recorder.begin(
+            trigger: .manual,
+            workspace: .keywords,
+            requestedTrackCount: 0,
+            requestedStorefrontCount: 1
+        )
+
+        let resolved = try await RefreshObservationScope.$runID.withValue(runID) {
+            try await services.appResolver.resolve(appStoreID: 123, storefrontCode: "US")
+        }
+        let summary = try #require(await recorder.finish(runID: runID))
+        let provider = try #require(summary.providers[.iTunesStore])
+
+        #expect(resolved.appStoreID == 123)
+        #expect(requestCount == 2)
+        #expect(provider.requestCount == 2)
+        #expect(provider.retryCount == 1)
+        #expect(provider.resultCounts[.serverFailure] == 1)
+        #expect(provider.resultCounts[.success] == 1)
+    }
+
+    @Test
     func savedKeychainItemsLoadWhenPresenceFlagsExist() throws {
         let defaults = Self.makeDefaults()
         let keychain = InMemoryKeychainService()
