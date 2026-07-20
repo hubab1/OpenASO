@@ -397,7 +397,7 @@ struct ObservedHTTPClient: HTTPClient {
     }
 }
 
-private struct RefreshRequestClassification: Sendable {
+struct RefreshRequestClassification: Sendable {
     let provider: RefreshObservationProvider
     let endpoint: RefreshObservationEndpoint
 
