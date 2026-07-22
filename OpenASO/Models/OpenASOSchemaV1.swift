@@ -37,11 +37,17 @@ enum OpenASOMigrationPlan: SchemaMigrationPlan {
 
     static var schemas: [any VersionedSchema.Type] {
         [
-            OpenASOSchemaV1.self
+            OpenASOSchemaV1.self,
+            OpenASOSchemaV2.self
         ]
     }
 
     static var stages: [MigrationStage] {
-        []
+        [
+            .lightweight(
+                fromVersion: OpenASOSchemaV1.self,
+                toVersion: OpenASOSchemaV2.self
+            )
+        ]
     }
 }

@@ -67,9 +67,14 @@ private actor BackgroundModelContextWorker {
         _ operation: @Sendable (ModelContext) throws -> Value
     ) throws -> Value {
         let modelContext = prepareModelContext()
-        let value = try operation(modelContext)
-        try modelContext.save()
-        return value
+        do {
+            let value = try operation(modelContext)
+            try modelContext.save()
+            return value
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
     }
 
     func fetch<Model: PersistentModel, Value: Sendable>(

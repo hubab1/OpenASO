@@ -6,17 +6,22 @@ import Testing
 @MainActor
 struct PersistenceMigrationTests {
     @Test
-    func migrationPlanUsesTheSingleReleasedV1SchemaAsCurrent() throws {
+    func migrationPlanAppendsV2AndKeepsTheReleasedV1SchemaFrozen() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
-        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(1, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 1)
+        #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
+        #expect(OpenASOSchemaV1.models.count == 17)
+        #expect(OpenASOSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
+        #expect(OpenASOSchemaV2.models.count == 18)
+        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(2, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 2)
         #expect(OpenASOMigrationPlan.schemas[0].versionIdentifier == OpenASOSchemaV1.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas[1].versionIdentifier == OpenASOSchemaV2.versionIdentifier)
         #expect(
             OpenASOMigrationPlan.currentSchema.versionIdentifier
                 == OpenASOMigrationPlan.schemas.last?.versionIdentifier
         )
-        #expect(OpenASOMigrationPlan.stages.isEmpty)
+        #expect(OpenASOMigrationPlan.stages.count == 1)
         #expect(container.migrationPlan != nil)
     }
 
@@ -34,9 +39,17 @@ struct PersistenceMigrationTests {
             )
             let modelContext = ModelContext(container)
             try assertReleasedV1Sentinels(in: modelContext)
+            #expect(try modelContext.fetch(
+                FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+            ).isEmpty)
 
             let track = try #require(modelContext.fetch(FetchDescriptor<TrackedAppKeyword>()).first)
             track.notes = ReleasedV1FixtureSentinel.reopenWriteNotes
+            modelContext.insert(TrackedAppKeywordRefreshAttempt(
+                trackIdentityKey: track.identityKey,
+                appStoreID: track.appStoreID,
+                lastRankingRefreshAttemptAt: ReleasedV1FixtureSentinel.refreshAttemptDate
+            ))
             try modelContext.save()
         }
 
@@ -48,6 +61,15 @@ struct PersistenceMigrationTests {
             try assertReleasedV1Sentinels(
                 in: reopenedContext,
                 expectedTrackNotes: ReleasedV1FixtureSentinel.reopenWriteNotes
+            )
+            let attempt = try #require(reopenedContext.fetch(
+                FetchDescriptor<TrackedAppKeywordRefreshAttempt>()
+            ).first)
+            #expect(attempt.trackIdentityKey == ReleasedV1FixtureSentinel.trackIdentityKey)
+            #expect(attempt.appStoreID == ReleasedV1FixtureSentinel.appStoreID)
+            #expect(
+                attempt.lastRankingRefreshAttemptAt
+                    == ReleasedV1FixtureSentinel.refreshAttemptDate
             )
         }
 
