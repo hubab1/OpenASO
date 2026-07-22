@@ -1,5 +1,7 @@
 import Foundation
+import Observation
 import SwiftData
+import Synchronization
 import Testing
 @testable import OpenASO
 
@@ -896,90 +898,297 @@ struct RankingRefreshCoordinatorTests {
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct AppDetailRefreshServiceQueueTests {
     @Test
     func refreshSerializesConcurrentAppRefreshRequests() async throws {
-        let container = try makeInMemoryContainer()
-        let modelContext = ModelContext(container)
-        modelContext.insert(StoreApp(
-            appStoreID: 1,
-            bundleID: nil,
-            name: "First App",
-            sellerName: nil,
-            iconURLString: nil,
-            defaultPlatform: .iphone
-        ))
-        modelContext.insert(StoreApp(
-            appStoreID: 2,
-            bundleID: nil,
-            name: "Second App",
-            sellerName: nil,
-            iconURLString: nil,
-            defaultPlatform: .iphone
-        ))
-        try modelContext.save()
-
-        let httpClient = ControlledRatingsHTTPClient()
         let progressStore = AppRefreshProgressStore()
-        let service = AppDetailRefreshService(
-            backgroundModelStore: BackgroundModelStore(modelContainer: container),
-            refreshCoordinator: RankingRefreshCoordinator(
-                rankingProvider: StubRankingProvider(page: SearchRankingPage(items: [], source: .iTunesFallback)),
-                appCatalogService: AppCatalogService(appResolver: StubAppResolver())
-            ),
-            keywordMetricsService: KeywordMetricsService(
-                httpClient: httpClient,
-                credentialStore: AppleAdsCredentialStore(
-                    defaults: makeDefaults(),
-                    keychain: InMemoryKeychainService(),
-                    loadsEnvironmentCredentials: false
-                ),
-                settingsStore: AppSettingsStore(defaults: makeDefaults()),
-                webSessionStore: AppleAdsWebSessionStore(defaults: makeDefaults(), keychain: InMemoryKeychainService())
-            ),
-            appStorefrontRatingService: AppStorefrontRatingService(httpClient: httpClient),
-            appStorefrontReviewService: AppStorefrontReviewService(httpClient: httpClient),
-            appStoreConnectReviewService: AppStoreConnectReviewService(
-                httpClient: httpClient,
-                credentialStore: AppStoreConnectCredentialStore(defaults: makeDefaults(), keychain: InMemoryKeychainService())
-            ),
-            progressStore: progressStore
+        let recorder = RefreshMetricsRecorder(clock: .appDetailTestConstant)
+        let httpClient = ControlledRatingsHTTPClient()
+        let fixture = try makeAppDetailRefreshQueueFixture(
+            appStoreIDs: [1, 2],
+            httpClient: httpClient,
+            progressStore: progressStore,
+            recorder: recorder
         )
 
         let firstTask = Task {
-            await service.refresh(Self.request(appStoreID: 1, appName: "First App"))
+            await fixture.service.refresh(Self.request(appStoreID: 1))
         }
-        await httpClient.waitForRequestCount(1)
+        defer { firstTask.cancel() }
+        try await httpClient.waitForRequestCount(1)
         #expect(progressStore.pendingAppRefreshCount == 0)
 
         let secondTask = Task {
-            await service.refresh(Self.request(appStoreID: 2, appName: "Second App"))
+            await fixture.service.refresh(Self.request(appStoreID: 2))
         }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        defer { secondTask.cancel() }
+        try await waitForPendingAppRefreshCount(1, in: progressStore)
         #expect(await httpClient.requestedAppStoreIDs() == [1])
         #expect(progressStore.pendingAppRefreshCount == 1)
 
-        await httpClient.complete(appStoreID: 1)
+        #expect(await httpClient.complete(appStoreID: 1))
         let firstResult = await firstTask.value
         #expect(firstResult.firstError == nil)
         #expect(firstResult.ratingOutcomes.map { $0.storefront } == ["us"])
 
-        await httpClient.waitForRequestCount(2)
+        try await httpClient.waitForRequestCount(2)
         #expect(await httpClient.requestedAppStoreIDs() == [1, 2])
         #expect(progressStore.pendingAppRefreshCount == 0)
 
-        await httpClient.complete(appStoreID: 2)
+        #expect(await httpClient.complete(appStoreID: 2))
         let secondResult = await secondTask.value
         #expect(secondResult.firstError == nil)
         #expect(secondResult.ratingOutcomes.map { $0.storefront } == ["us"])
     }
 
-    private static func request(appStoreID: Int64, appName: String) -> AppDetailRefreshRequest {
+    @Test
+    func queuedMiddleCancellationRemovesOnlyThatWaiterAndPreservesFIFO() async throws {
+        let progressStore = AppRefreshProgressStore()
+        let recorder = RefreshMetricsRecorder(clock: .appDetailTestConstant)
+        let httpClient = ControlledRatingsHTTPClient()
+        let fixture = try makeAppDetailRefreshQueueFixture(
+            appStoreIDs: [1, 2, 3],
+            httpClient: httpClient,
+            progressStore: progressStore,
+            recorder: recorder
+        )
+
+        let firstTask = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 1))
+        }
+        defer { firstTask.cancel() }
+        try await httpClient.waitForRequestCount(1)
+
+        let middleTask = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 2))
+        }
+        defer { middleTask.cancel() }
+        try await waitForPendingAppRefreshCount(1, in: progressStore)
+
+        let lastTask = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 3))
+        }
+        defer { lastTask.cancel() }
+        try await waitForPendingAppRefreshCount(2, in: progressStore)
+
+        middleTask.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await middleTask.value
+        }
+
+        #expect(progressStore.pendingAppRefreshCount == 1)
+        #expect(await httpClient.requestedAppStoreIDs() == [1])
+        #expect(await httpClient.cancellationCount() == 0)
+        #expect(await recorder.activeRunCount() == 1)
+        #expect(await recorder.completedSummaries().isEmpty)
+
+        #expect(await httpClient.complete(appStoreID: 1))
+        let firstResult = try await firstTask.value
+        #expect(firstResult.firstError == nil)
+
+        try await httpClient.waitForRequestCount(2)
+        #expect(progressStore.pendingAppRefreshCount == 0)
+        #expect(await httpClient.requestedAppStoreIDs() == [1, 3])
+
+        #expect(await httpClient.complete(appStoreID: 3))
+        let lastResult = try await lastTask.value
+        #expect(lastResult.firstError == nil)
+
+        let summaries = await recorder.completedSummaries()
+        #expect(summaries.map(\.result) == [.success, .success])
+        #expect(await recorder.activeRunCount() == 0)
+    }
+
+    @Test
+    func activeCancellationCancelsTransportAndCleansProgressAndObservation() async throws {
+        let progressStore = AppRefreshProgressStore()
+        let recorder = RefreshMetricsRecorder(clock: .appDetailTestConstant)
+        let httpClient = ControlledRatingsHTTPClient()
+        let fixture = try makeAppDetailRefreshQueueFixture(
+            appStoreIDs: [1],
+            httpClient: httpClient,
+            progressStore: progressStore,
+            recorder: recorder
+        )
+
+        let task = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 1))
+        }
+        defer { task.cancel() }
+        try await httpClient.waitForRequestCount(1)
+        #expect(progressStore.activeRefresh?.appStoreID == 1)
+
+        task.cancel()
+        try await httpClient.waitForCancellationCount(1)
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+
+        #expect(progressStore.pendingAppRefreshCount == 0)
+        #expect(progressStore.activeRefresh == nil)
+        #expect(await recorder.activeRunCount() == 0)
+
+        let completedSummaries = await recorder.completedSummaries()
+        #expect(completedSummaries.count == 1)
+        let summary = try #require(completedSummaries.first)
+        let provider = try #require(summary.providers[.iTunesStore])
+        #expect(summary.result == .cancelled)
+        #expect(summary.observedCancellation)
+        #expect(provider.resultCounts[.cancelled] == 1)
+        #expect(await httpClient.cancellationCount() == 1)
+        #expect((summary.stages[.ratings]?.failureCount ?? 0) == 0)
+
+        let persistedRatingCount = try await fixture.backgroundModelStore.read { modelContext in
+            let latestCount = try modelContext.fetch(FetchDescriptor<LatestAppRating>()).count
+            let dailyCount = try modelContext.fetch(FetchDescriptor<AppDailyRating>()).count
+            return latestCount + dailyCount
+        }
+        #expect(persistedRatingCount == 0)
+    }
+
+    @Test
+    func promotedCancellationFinishesCleanupBeforeNextPromotionWithoutWedging() async throws {
+        let progressStore = AppRefreshProgressStore()
+        let recorder = RefreshMetricsRecorder(clock: .appDetailTestConstant)
+        let snapshotRecorder = AppDetailRefreshStartSnapshotRecorder()
+        let httpClient = ControlledRatingsHTTPClient { appStoreID in
+            await snapshotRecorder.recordStart(
+                appStoreID: appStoreID,
+                progressStore: progressStore,
+                recorder: recorder
+            )
+        }
+        let fixture = try makeAppDetailRefreshQueueFixture(
+            appStoreIDs: [1, 2, 3, 4],
+            httpClient: httpClient,
+            progressStore: progressStore,
+            recorder: recorder
+        )
+
+        let firstTask = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 1))
+        }
+        defer { firstTask.cancel() }
+        try await httpClient.waitForRequestCount(1)
+
+        let promotedTask = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 2))
+        }
+        defer { promotedTask.cancel() }
+        try await waitForPendingAppRefreshCount(1, in: progressStore)
+
+        let thirdTask = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 3))
+        }
+        defer { thirdTask.cancel() }
+        try await waitForPendingAppRefreshCount(2, in: progressStore)
+
+        let fourthTask = Task {
+            try await fixture.service.refreshCancellable(Self.request(appStoreID: 4))
+        }
+        defer { fourthTask.cancel() }
+        try await waitForPendingAppRefreshCount(3, in: progressStore)
+
+        firstTask.cancel()
+        try await httpClient.waitForCancellationCount(1)
+        try await httpClient.waitForRequestCount(2)
+        await #expect(throws: CancellationError.self) {
+            _ = try await firstTask.value
+        }
+
+        let promotedSnapshot = try #require(await snapshotRecorder.snapshot(for: 2))
+        #expect(promotedSnapshot.pendingAppRefreshCount == 2)
+        #expect(promotedSnapshot.activeAppStoreID == 2)
+        #expect(promotedSnapshot.activeRunCount == 1)
+        #expect(promotedSnapshot.completedResults == [.cancelled])
+
+        promotedTask.cancel()
+        try await httpClient.waitForCancellationCount(2)
+        try await httpClient.waitForRequestCount(3)
+
+        let thirdSnapshot = try #require(await snapshotRecorder.snapshot(for: 3))
+        let thirdRefreshID = try #require(thirdSnapshot.activeRefreshID)
+        #expect(thirdSnapshot.pendingAppRefreshCount == 1)
+        #expect(thirdSnapshot.activeAppStoreID == 3)
+        #expect(thirdSnapshot.activeRunCount == 1)
+        #expect(thirdSnapshot.completedResults == [.cancelled, .cancelled])
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await promotedTask.value
+        }
+        #expect(progressStore.activeRefresh?.id == thirdRefreshID)
+        #expect(progressStore.activeRefresh?.appStoreID == 3)
+
+        #expect(await httpClient.complete(appStoreID: 3))
+        let thirdResult = try await thirdTask.value
+        #expect(thirdResult.firstError == nil)
+
+        try await httpClient.waitForRequestCount(4)
+        let fourthSnapshot = try #require(await snapshotRecorder.snapshot(for: 4))
+        #expect(fourthSnapshot.pendingAppRefreshCount == 0)
+        #expect(fourthSnapshot.activeAppStoreID == 4)
+        #expect(fourthSnapshot.activeRunCount == 1)
+        #expect(fourthSnapshot.completedResults == [.cancelled, .cancelled, .success])
+
+        #expect(await httpClient.complete(appStoreID: 4))
+        let fourthResult = try await fourthTask.value
+        #expect(fourthResult.firstError == nil)
+
+        #expect(await httpClient.requestedAppStoreIDs() == [1, 2, 3, 4])
+        #expect(await httpClient.cancellationCount() == 2)
+        #expect(progressStore.pendingAppRefreshCount == 0)
+        #expect(await recorder.activeRunCount() == 0)
+        #expect(await recorder.completedSummaries().map(\.result) == [
+            .cancelled,
+            .cancelled,
+            .success,
+            .success,
+        ])
+    }
+
+    @Test
+    func ordinaryProviderFailureReturnsResultAndReleasesPermit() async throws {
+        let progressStore = AppRefreshProgressStore()
+        let recorder = RefreshMetricsRecorder(clock: .appDetailTestConstant)
+        let httpClient = ScriptedRatingsHTTPClient(steps: [
+            .failure(.notConnectedToInternet),
+            .failure(.notConnectedToInternet),
+            .success,
+        ])
+        let fixture = try makeAppDetailRefreshQueueFixture(
+            appStoreIDs: [1, 2],
+            httpClient: httpClient,
+            progressStore: progressStore,
+            recorder: recorder
+        )
+
+        let failedResult = try await fixture.service.refreshCancellable(Self.request(appStoreID: 1))
+        #expect(failedResult.firstError != nil)
+        #expect(!failedResult.wasCancelled)
+        #expect(failedResult.ratingOutcomes.count == 1)
+        #expect(failedResult.ratingOutcomes.first?.error != nil)
+
+        let successfulResult = try await fixture.service.refreshCancellable(Self.request(appStoreID: 2))
+        #expect(successfulResult.firstError == nil)
+        #expect(!successfulResult.wasCancelled)
+        #expect(successfulResult.ratingOutcomes.map(\.storefront) == ["us"])
+
+        #expect(await httpClient.requestCount() == 3)
+        #expect(progressStore.pendingAppRefreshCount == 0)
+        #expect(await recorder.activeRunCount() == 0)
+
+        let summaries = await recorder.completedSummaries()
+        #expect(summaries.map(\.result) == [.failure, .success])
+        #expect(summaries.allSatisfy { !$0.observedCancellation })
+    }
+
+    private static func request(appStoreID: Int64) -> AppDetailRefreshRequest {
         AppDetailRefreshRequest(
             app: AppDetailRefreshAppSnapshot(
                 appStoreID: appStoreID,
                 bundleID: nil,
-                name: appName,
+                name: "App \(appStoreID)",
                 subtitle: nil,
                 sellerName: nil,
                 defaultPlatform: .iphone
@@ -998,6 +1207,77 @@ struct AppDetailRefreshServiceQueueTests {
             appStoreConnectCredentials: AppStoreConnectCredentials(issuerID: "", keyID: "", privateKey: "")
         )
     }
+}
+
+@MainActor
+private struct AppDetailRefreshQueueFixture {
+    let service: AppDetailRefreshService
+    let backgroundModelStore: BackgroundModelStore
+}
+
+@MainActor
+private func makeAppDetailRefreshQueueFixture(
+    appStoreIDs: [Int64],
+    httpClient: any HTTPClient,
+    progressStore: AppRefreshProgressStore,
+    recorder: RefreshMetricsRecorder
+) throws -> AppDetailRefreshQueueFixture {
+    let container = try makeInMemoryContainer()
+    let modelContext = ModelContext(container)
+    for appStoreID in appStoreIDs {
+        modelContext.insert(StoreApp(
+            appStoreID: appStoreID,
+            bundleID: nil,
+            name: "App \(appStoreID)",
+            sellerName: nil,
+            iconURLString: nil,
+            defaultPlatform: .iphone
+        ))
+    }
+    try modelContext.save()
+
+    let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+    let observedHTTPClient = ProviderHTTPClientPipeline.make(
+        transport: httpClient,
+        mode: .disabled,
+        refreshMetricsRecorder: recorder,
+        refreshObservationClock: .appDetailTestConstant
+    )
+    let defaults = makeDefaults()
+    let keychain = InMemoryKeychainService()
+    let service = AppDetailRefreshService(
+        backgroundModelStore: backgroundModelStore,
+        refreshCoordinator: RankingRefreshCoordinator(
+            rankingProvider: StubRankingProvider(page: SearchRankingPage(items: [], source: .iTunesFallback)),
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        ),
+        keywordMetricsService: KeywordMetricsService(
+            httpClient: observedHTTPClient,
+            credentialStore: AppleAdsCredentialStore(
+                defaults: defaults,
+                keychain: keychain,
+                loadsEnvironmentCredentials: false
+            ),
+            settingsStore: AppSettingsStore(defaults: defaults),
+            webSessionStore: AppleAdsWebSessionStore(defaults: defaults, keychain: keychain)
+        ),
+        appStorefrontRatingService: AppStorefrontRatingService(httpClient: observedHTTPClient),
+        appStorefrontReviewService: AppStorefrontReviewService(httpClient: observedHTTPClient),
+        appStoreConnectReviewService: AppStoreConnectReviewService(
+            httpClient: observedHTTPClient,
+            credentialStore: AppStoreConnectCredentialStore(defaults: defaults, keychain: keychain)
+        ),
+        progressStore: progressStore,
+        refreshMetricsRecorder: recorder
+    )
+    return AppDetailRefreshQueueFixture(
+        service: service,
+        backgroundModelStore: backgroundModelStore
+    )
+}
+
+private extension RefreshObservationClock {
+    static let appDetailTestConstant = RefreshObservationClock(nowNanoseconds: { 1_000 })
 }
 
 private struct DeduplicatedRefreshFixture {
@@ -1192,18 +1472,177 @@ private final class StubAppResolver: AppResolver {
     }
 }
 
+private final class AppDetailOneShotSignal: Sendable {
+    private enum Resolution: Sendable {
+        case signalled
+        case cancelled
+    }
+
+    private struct State {
+        var continuation: CheckedContinuation<Void, any Error>?
+        var resolution: Resolution?
+    }
+
+    private let state = Mutex(State())
+
+    func wait() async throws {
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let resolution = state.withLock { state -> Resolution? in
+                    if let resolution = state.resolution {
+                        return resolution
+                    }
+                    precondition(state.continuation == nil)
+                    state.continuation = continuation
+                    return nil
+                }
+                if let resolution {
+                    Self.resume(continuation, with: resolution)
+                }
+            }
+        } onCancel: {
+            self.resolve(.cancelled)
+        }
+    }
+
+    func signal() {
+        resolve(.signalled)
+    }
+
+    private func resolve(_ resolution: Resolution) {
+        let continuation = state.withLock { state -> CheckedContinuation<Void, any Error>? in
+            guard case nil = state.resolution else { return nil }
+            state.resolution = resolution
+            let continuation = state.continuation
+            state.continuation = nil
+            return continuation
+        }
+        if let continuation {
+            Self.resume(continuation, with: resolution)
+        }
+    }
+
+    private static func resume(
+        _ continuation: CheckedContinuation<Void, any Error>,
+        with resolution: Resolution
+    ) {
+        switch resolution {
+        case .signalled:
+            continuation.resume()
+        case .cancelled:
+            continuation.resume(throwing: CancellationError())
+        }
+    }
+}
+
+@MainActor
+private func waitForPendingAppRefreshCount(
+    _ expectedCount: Int,
+    in progressStore: AppRefreshProgressStore
+) async throws {
+    precondition(expectedCount >= 0)
+    while progressStore.pendingAppRefreshCount != expectedCount {
+        try Task.checkCancellation()
+        let signal = AppDetailOneShotSignal()
+        _ = withObservationTracking {
+            progressStore.pendingAppRefreshCount
+        } onChange: {
+            signal.signal()
+        }
+        if progressStore.pendingAppRefreshCount == expectedCount {
+            signal.signal()
+        }
+        try await signal.wait()
+    }
+}
+
+private struct AppDetailRefreshStartSnapshot: Sendable {
+    let pendingAppRefreshCount: Int
+    let activeRefreshID: UUID?
+    let activeAppStoreID: Int64?
+    let activeRunCount: Int
+    let completedResults: [RefreshRunResult]
+}
+
+private actor AppDetailRefreshStartSnapshotRecorder {
+    private var snapshotsByAppStoreID: [Int64: AppDetailRefreshStartSnapshot] = [:]
+
+    func recordStart(
+        appStoreID: Int64,
+        progressStore: AppRefreshProgressStore,
+        recorder: RefreshMetricsRecorder
+    ) async {
+        let progressSnapshot = await MainActor.run {
+            (
+                pendingCount: progressStore.pendingAppRefreshCount,
+                activeRefreshID: progressStore.activeRefresh?.id,
+                activeAppStoreID: progressStore.activeRefresh?.appStoreID
+            )
+        }
+        let activeRunCount = await recorder.activeRunCount()
+        let completedResults = await recorder.completedSummaries().map(\.result)
+        precondition(snapshotsByAppStoreID[appStoreID] == nil)
+        snapshotsByAppStoreID[appStoreID] = AppDetailRefreshStartSnapshot(
+            pendingAppRefreshCount: progressSnapshot.pendingCount,
+            activeRefreshID: progressSnapshot.activeRefreshID,
+            activeAppStoreID: progressSnapshot.activeAppStoreID,
+            activeRunCount: activeRunCount,
+            completedResults: completedResults
+        )
+    }
+
+    func snapshot(for appStoreID: Int64) -> AppDetailRefreshStartSnapshot? {
+        snapshotsByAppStoreID[appStoreID]
+    }
+}
+
 private actor ControlledRatingsHTTPClient: HTTPClient {
+    private struct PendingResponse {
+        let requestID: UUID
+        let continuation: CheckedContinuation<(Data, URLResponse), any Error>
+    }
+
+    private struct CountWaiter {
+        let id: UUID
+        let count: Int
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+
+    private let onRequestStart: (@Sendable (Int64) async -> Void)?
     private var requestedIDs: [Int64] = []
-    private var pendingResponses: [Int64: CheckedContinuation<(Data, URLResponse), any Error>] = [:]
-    private var requestCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var pendingResponses: [Int64: PendingResponse] = [:]
+    private var requestCountWaiters: [CountWaiter] = []
+    private var cancellationCountWaiters: [CountWaiter] = []
+    private var cancellations = 0
+
+    init(onRequestStart: (@Sendable (Int64) async -> Void)? = nil) {
+        self.onRequestStart = onRequestStart
+    }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        let appStoreID = Self.appStoreID(from: request)
+        let appStoreID = ratingAppStoreID(from: request)
         requestedIDs.append(appStoreID)
-        resumeSatisfiedWaiters()
+        await onRequestStart?(appStoreID)
+        resumeSatisfiedRequestCountWaiters()
 
-        return try await withCheckedThrowingContinuation { continuation in
-            pendingResponses[appStoreID] = continuation
+        let requestID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                precondition(pendingResponses[appStoreID] == nil)
+                pendingResponses[appStoreID] = PendingResponse(
+                    requestID: requestID,
+                    continuation: continuation
+                )
+            }
+        } onCancel: {
+            Task {
+                await self.cancelRequest(appStoreID: appStoreID, requestID: requestID)
+            }
         }
     }
 
@@ -1211,43 +1650,158 @@ private actor ControlledRatingsHTTPClient: HTTPClient {
         requestedIDs
     }
 
-    func waitForRequestCount(_ count: Int) async {
-        guard requestedIDs.count < count else { return }
+    func cancellationCount() -> Int {
+        cancellations
+    }
 
-        await withCheckedContinuation { continuation in
-            requestCountWaiters.append((count, continuation))
+    func waitForRequestCount(_ count: Int) async throws {
+        try Task.checkCancellation()
+        guard requestedIDs.count < count else { return }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (
+                continuation: CheckedContinuation<Void, any Error>
+            ) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                requestCountWaiters.append(CountWaiter(
+                    id: waiterID,
+                    count: count,
+                    continuation: continuation
+                ))
+            }
+        } onCancel: {
+            Task { await self.cancelRequestCountWaiter(id: waiterID) }
         }
     }
 
-    func complete(appStoreID: Int64) {
-        guard let continuation = pendingResponses.removeValue(forKey: appStoreID) else { return }
+    func waitForCancellationCount(_ count: Int) async throws {
+        try Task.checkCancellation()
+        guard cancellations < count else { return }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (
+                continuation: CheckedContinuation<Void, any Error>
+            ) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                cancellationCountWaiters.append(CountWaiter(
+                    id: waiterID,
+                    count: count,
+                    continuation: continuation
+                ))
+            }
+        } onCancel: {
+            Task { await self.cancelCancellationCountWaiter(id: waiterID) }
+        }
+    }
+
+    func complete(appStoreID: Int64) -> Bool {
+        guard let pending = pendingResponses.removeValue(forKey: appStoreID) else { return false }
         let url = URL(string: "https://itunes.apple.com/lookup?id=\(appStoreID)&country=us")!
         let data = Data(#"{"results":[{"trackId":\#(appStoreID),"userRatingCount":42,"averageUserRating":4.5}]}"#.utf8)
-        continuation.resume(returning: (
+        pending.continuation.resume(returning: (
             data,
             makeHTTPURLResponse(url: url, statusCode: 200)
         ))
+        return true
     }
 
-    private func resumeSatisfiedWaiters() {
-        let readyWaiters = requestCountWaiters.filter { requestedIDs.count >= $0.count }
-        requestCountWaiters.removeAll { requestedIDs.count >= $0.count }
-        for waiter in readyWaiters {
-            waiter.continuation.resume()
+    private func cancelRequest(appStoreID: Int64, requestID: UUID) {
+        cancellations += 1
+        if pendingResponses[appStoreID]?.requestID == requestID {
+            let continuation = pendingResponses.removeValue(forKey: appStoreID)?.continuation
+            continuation?.resume(throwing: CancellationError())
+        }
+        resumeSatisfiedCancellationCountWaiters()
+    }
+
+    private func resumeSatisfiedRequestCountWaiters() {
+        var remaining: [CountWaiter] = []
+        for waiter in requestCountWaiters {
+            if requestedIDs.count >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        requestCountWaiters = remaining
+    }
+
+    private func resumeSatisfiedCancellationCountWaiters() {
+        var remaining: [CountWaiter] = []
+        for waiter in cancellationCountWaiters {
+            if cancellations >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        cancellationCountWaiters = remaining
+    }
+
+    private func cancelRequestCountWaiter(id: UUID) {
+        guard let index = requestCountWaiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = requestCountWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func cancelCancellationCountWaiter(id: UUID) {
+        guard let index = cancellationCountWaiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = cancellationCountWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+}
+
+private actor ScriptedRatingsHTTPClient: HTTPClient {
+    enum Step: Sendable {
+        case failure(URLError.Code)
+        case success
+    }
+
+    private var steps: [Step]
+    private var requests: [URLRequest] = []
+
+    init(steps: [Step]) {
+        self.steps = steps
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        requests.append(request)
+        guard !steps.isEmpty else {
+            throw OpenASOError.unexpectedResponse
+        }
+        let step = steps.removeFirst()
+        switch step {
+        case .failure(let code):
+            throw URLError(code)
+        case .success:
+            let appStoreID = ratingAppStoreID(from: request)
+            let url = request.url ?? URL(string: "https://itunes.apple.com/lookup?id=\(appStoreID)&country=us")!
+            let data = Data(#"{"results":[{"trackId":\#(appStoreID),"userRatingCount":42,"averageUserRating":4.5}]}"#.utf8)
+            return (data, makeHTTPURLResponse(url: url, statusCode: 200))
         }
     }
 
-    private static func appStoreID(from request: URLRequest) -> Int64 {
-        guard
-            let url = request.url,
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-            let id = components.queryItems?.first(where: { $0.name == "id" })?.value,
-            let appStoreID = Int64(id)
-        else {
-            return 0
-        }
-        return appStoreID
+    func requestCount() -> Int {
+        requests.count
     }
+}
+
+private func ratingAppStoreID(from request: URLRequest) -> Int64 {
+    guard
+        let url = request.url,
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+        let id = components.queryItems?.first(where: { $0.name == "id" })?.value,
+        let appStoreID = Int64(id)
+    else {
+        return 0
+    }
+    return appStoreID
 }
 
 private func makeInMemoryContainer() throws -> ModelContainer {

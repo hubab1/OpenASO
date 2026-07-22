@@ -339,8 +339,11 @@ final class AppServices {
                     using: backgroundModelStore
                 )
             } catch {
-                refreshProgressStore.beginAppleAdsPopularityRefresh(total: 0)
-                refreshProgressStore.finish(error: OpenASOError.map(error))
+                let refreshID = refreshProgressStore.beginAppleAdsPopularityRefresh(total: 0)
+                refreshProgressStore.finish(
+                    refreshID: refreshID,
+                    error: OpenASOError.map(error)
+                )
                 return
             }
             if preparation.clearedStatusCount > 0 {
@@ -349,7 +352,9 @@ final class AppServices {
             let trackIdentityKeys = preparation.trackIdentityKeys
             guard !trackIdentityKeys.isEmpty else { return }
 
-            refreshProgressStore.beginAppleAdsPopularityRefresh(total: preparation.refreshQueryCount)
+            let refreshID = refreshProgressStore.beginAppleAdsPopularityRefresh(
+                total: preparation.refreshQueryCount
+            )
             do {
                 let result = try await keywordMetricsService.refreshMetricsBatch(
                     for: trackIdentityKeys,
@@ -362,7 +367,8 @@ final class AppServices {
                             status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
                             completed: completed,
                             total: total,
-                            failureCount: failureCount
+                            failureCount: failureCount,
+                            refreshID: refreshID
                         )
                     }
                 )
@@ -373,10 +379,14 @@ final class AppServices {
                     }
                 }
                 refreshProgressStore.finish(
+                    refreshID: refreshID,
                     error: result.firstErrorMessage.map(OpenASOError.providerUnavailable)
                 )
             } catch {
-                refreshProgressStore.finish(error: OpenASOError.map(error))
+                refreshProgressStore.finish(
+                    refreshID: refreshID,
+                    error: OpenASOError.map(error)
+                )
             }
         }
     }
