@@ -503,7 +503,7 @@ final class KeywordMetricsService: Sendable {
     ) async throws -> [KeywordMetricsRefreshOutcome] {
         guard webSession.isComplete else { return [] }
 
-        let trackIdentityKeys = try await stalePopularityTrackIdentityKeys(using: modelStore)
+        let trackIdentityKeys = try await prepareStalePopularityRefresh(using: modelStore).trackIdentityKeys
 
         guard !trackIdentityKeys.isEmpty else { return [] }
 
@@ -517,6 +517,12 @@ final class KeywordMetricsService: Sendable {
     }
 
     func stalePopularityTrackIdentityKeys(using modelStore: BackgroundModelStore) async throws -> [String] {
+        try await prepareStalePopularityRefresh(using: modelStore).trackIdentityKeys
+    }
+
+    func prepareStalePopularityRefresh(
+        using modelStore: BackgroundModelStore
+    ) async throws -> StalePopularityRefreshPreparation {
         let metricsTTL = metricsTTL
         return try await modelStore.write { modelContext in
             let descriptor = FetchDescriptor<TrackedAppKeyword>()
@@ -527,14 +533,21 @@ final class KeywordMetricsService: Sendable {
                 in: modelContext
             )
             var refreshIdentityKeys: [String] = []
+            var refreshQueryCount = 0
+            var clearedStatusCount = 0
             for queryTracks in tracksByQueryKey.values {
                 let sortedTracks = queryTracks.sorted { $0.identityKey < $1.identityKey }
                 guard let track = sortedTracks.first else { continue }
                 let metric = metricsByQueryKey[track.queryKey]
                 if Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metric) {
                     refreshIdentityKeys.append(contentsOf: sortedTracks.map(\.identityKey))
+                    refreshQueryCount += 1
                 } else if let metric {
                     for siblingTrack in sortedTracks {
+                        let previousStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+                            for: siblingTrack,
+                            in: modelContext
+                        ).popularityMessage
                         try TrackedKeywordRefreshStatusStore.set(
                             nil,
                             domain: .popularity,
@@ -542,10 +555,21 @@ final class KeywordMetricsService: Sendable {
                             updatedAt: metric.updatedAt,
                             in: modelContext
                         )
+                        let updatedStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+                            for: siblingTrack,
+                            in: modelContext
+                        ).popularityMessage
+                        if previousStatus != nil, updatedStatus == nil {
+                            clearedStatusCount += 1
+                        }
                     }
                 }
             }
-            return refreshIdentityKeys.sorted()
+            return StalePopularityRefreshPreparation(
+                trackIdentityKeys: refreshIdentityKeys.sorted(),
+                refreshQueryCount: refreshQueryCount,
+                clearedStatusCount: clearedStatusCount
+            )
         }
     }
 
@@ -903,6 +927,12 @@ struct KeywordMetricsRefreshBatchResult: Sendable {
     var firstErrorMessage: String? {
         batchErrors.first?.message ?? outcomes.lazy.compactMap(\.errorMessage).first
     }
+}
+
+struct StalePopularityRefreshPreparation: Sendable {
+    let trackIdentityKeys: [String]
+    let refreshQueryCount: Int
+    let clearedStatusCount: Int
 }
 
 private struct KeywordMetricsRefreshCandidate: Sendable {

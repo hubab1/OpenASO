@@ -677,7 +677,19 @@ struct KeywordMetricsServiceTests {
         #expect(outcomes.allSatisfy { $0.errorMessage == nil })
         #expect(failedTrack.statusMessage == nil)
         #expect(unavailableTrack.statusMessage == nil)
-        #expect(rankingTrack.statusMessage == rankingStatus)
+        #expect(rankingTrack.statusMessage == nil)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: failedTrack,
+            in: modelContext
+        ).popularityMessage == nil)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: unavailableTrack,
+            in: modelContext
+        ).popularityMessage == nil)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: rankingTrack,
+            in: modelContext
+        ).rankingMessage == rankingStatus)
     }
 
     @Test
@@ -811,14 +823,35 @@ struct KeywordMetricsServiceTests {
             guard let persistedTrack = try context.fetch(descriptor).first else {
                 throw OpenASOError.appNotFound
             }
-            persistedTrack.statusMessage = newerStatus
+            try TrackedKeywordRefreshStatusStore.set(
+                newerStatus,
+                domain: .popularity,
+                for: persistedTrack,
+                updatedAt: .now,
+                in: context
+            )
         }
         let persistedStatuses = try await backgroundModelStore.read { context in
             let tracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
+            guard let clearTrack = tracks.first(where: { $0.term == "clear" }),
+                  let newerTrack = tracks.first(where: { $0.term == "newer" }),
+                  let rankingTrack = tracks.first(where: { $0.term == "ranking" })
+            else {
+                throw OpenASOError.appNotFound
+            }
             return (
-                clear: tracks.first { $0.term == "clear" }?.statusMessage,
-                newer: tracks.first { $0.term == "newer" }?.statusMessage,
-                ranking: tracks.first { $0.term == "ranking" }?.statusMessage
+                clear: try TrackedKeywordRefreshStatusStore.snapshot(
+                    for: clearTrack,
+                    in: context
+                ).popularityMessage,
+                newer: try TrackedKeywordRefreshStatusStore.snapshot(
+                    for: newerTrack,
+                    in: context
+                ).popularityMessage,
+                ranking: try TrackedKeywordRefreshStatusStore.snapshot(
+                    for: rankingTrack,
+                    in: context
+                ).rankingMessage
             )
         }
 
