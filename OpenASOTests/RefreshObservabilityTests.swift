@@ -541,9 +541,15 @@ struct RefreshObservabilityTests {
             let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
             let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
             let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+            let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: tracks.map(\.identityKey),
+                in: modelContext
+            )
             return (
                 trackCount: tracks.count,
-                refreshedTrackCount: tracks.filter { $0.lastRefreshAt != nil && $0.statusMessage == nil }.count,
+                refreshedTrackCount: tracks.filter {
+                    $0.lastRefreshAt != nil && statuses[$0.identityKey]?.rankingMessage == nil
+                }.count,
                 snapshotIdentityKeys: Set(snapshots.map(\.trackIdentityKey)),
                 crawlQueryKeys: Set(crawls.map(\.queryKey))
             )
@@ -597,8 +603,14 @@ struct RefreshObservabilityTests {
         let persisted = try await fixture.backgroundModelStore.read { modelContext in
             let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
             let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
+            let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: tracks.map(\.identityKey),
+                in: modelContext
+            )
             return (
-                failedTrackCount: tracks.filter { $0.statusMessage != nil }.count,
+                failedTrackCount: tracks.filter {
+                    statuses[$0.identityKey]?.rankingMessage != nil
+                }.count,
                 snapshotCount: snapshots.count
             )
         }
@@ -631,10 +643,15 @@ struct RefreshObservabilityTests {
         let summary = try #require(await fixture.recorder.completedSummaries().only)
         let rankings = try #require(summary.stages[.rankings])
         let provider = try #require(summary.providers[.iTunesStore])
-        let persistedFailureCount = try await fixture.backgroundModelStore.fetch(
-            FetchDescriptor<TrackedAppKeyword>()
-        ) { tracks in
-            tracks.filter { $0.statusMessage != nil }.count
+        let persistedFailureCount = try await fixture.backgroundModelStore.read { modelContext in
+            let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
+            let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: tracks.map(\.identityKey),
+                in: modelContext
+            )
+            return tracks.filter {
+                statuses[$0.identityKey]?.rankingMessage != nil
+            }.count
         }
 
         #expect(result.keywordOutcomes.count == 1)

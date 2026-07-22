@@ -94,6 +94,11 @@
 		D18000000000000000000004 /* TrackedAppKeywordRefreshAttempt.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18000000000000000000002 /* TrackedAppKeywordRefreshAttempt.swift */; };
 		D18000000000000000000005 /* OpenASOSchemaV2.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18000000000000000000001 /* OpenASOSchemaV2.swift */; };
 		D18000000000000000000006 /* TrackedAppKeywordRefreshAttempt.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18000000000000000000002 /* TrackedAppKeywordRefreshAttempt.swift */; };
+		D09D00000000000000000003 /* OpenASOSchemaV3.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000001 /* OpenASOSchemaV3.swift */; };
+		D09D00000000000000000004 /* TrackedKeywordRefreshStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000002 /* TrackedKeywordRefreshStatus.swift */; };
+		D09D00000000000000000005 /* OpenASOSchemaV3.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000001 /* OpenASOSchemaV3.swift */; };
+		D09D00000000000000000006 /* TrackedKeywordRefreshStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000002 /* TrackedKeywordRefreshStatus.swift */; };
+		D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */; };
 		A20000000000000000000001 /* KeywordTableCells.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* KeywordTableCells.swift */; };
 		A20000000000000000000002 /* KeywordNotesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* KeywordNotesSheet.swift */; };
 		A20000000000000000000003 /* KeywordRankingListSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* KeywordRankingListSheet.swift */; };
@@ -319,6 +324,9 @@
 		A10000000000000000000001 /* OpenASOSchemaV1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV1.swift; sourceTree = "<group>"; };
 		D18000000000000000000001 /* OpenASOSchemaV2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV2.swift; sourceTree = "<group>"; };
 		D18000000000000000000002 /* TrackedAppKeywordRefreshAttempt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedAppKeywordRefreshAttempt.swift; sourceTree = "<group>"; };
+		D09D00000000000000000001 /* OpenASOSchemaV3.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV3.swift; sourceTree = "<group>"; };
+		D09D00000000000000000002 /* TrackedKeywordRefreshStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordRefreshStatus.swift; sourceTree = "<group>"; };
+		D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedKeywordRefreshStatusTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* KeywordTableCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTableCells.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* KeywordNotesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordNotesSheet.swift; sourceTree = "<group>"; };
 		A20000000000000000000013 /* KeywordRankingListSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingListSheet.swift; sourceTree = "<group>"; };
@@ -459,6 +467,7 @@
 				0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */,
 				D02000000000000000000003 /* PersistenceMigrationTests.swift */,
 				D02000000000000000000007 /* ReleasedV1StoreFixture.swift */,
+				D09D00000000000000000007 /* TrackedKeywordRefreshStatusTests.swift */,
 				D02000000000000000000004 /* v0.3.2-v1 */,
 				0A5C00000000000000000006 /* AppStoreConnectReviewServiceTests.swift */,
 				0A5C00000000000000000008 /* AppStoreWebMetadataProviderTests.swift */,
@@ -739,12 +748,14 @@
 				BEEF0000000000000000000F /* LatestAppRating.swift */,
 				A10000000000000000000001 /* OpenASOSchemaV1.swift */,
 				D18000000000000000000001 /* OpenASOSchemaV2.swift */,
+				D09D00000000000000000001 /* OpenASOSchemaV3.swift */,
 				7B98B0F5A49E13B4633818A9 /* RankingSource.swift */,
 				BEEF00000000000000000005 /* StoreApp.swift */,
 				ECBEF6240F66A5F359B09D41 /* Storefront.swift */,
 				B088B3166AF98160A612326C /* TrackedApp.swift */,
 				BEEF00000000000000000011 /* TrackedAppKeyword.swift */,
 				D18000000000000000000002 /* TrackedAppKeywordRefreshAttempt.swift */,
+				D09D00000000000000000002 /* TrackedKeywordRefreshStatus.swift */,
 				BEEF00000000000000000013 /* TrackedKeywordDailyRanking.swift */,
 				BEEF00000000000000000015 /* TrackedKeywordRankedResult.swift */,
 			);
@@ -985,6 +996,7 @@
 				BEEF00000000000000000010 /* LatestAppRating.swift in Sources */,
 				A10000000000000000000002 /* OpenASOSchemaV1.swift in Sources */,
 				D18000000000000000000003 /* OpenASOSchemaV2.swift in Sources */,
+				D09D00000000000000000003 /* OpenASOSchemaV3.swift in Sources */,
 				04E8C4E18F1A4D519C0A1111 /* AppleAds/KeywordMetricsService.swift in Sources */,
 				04E8C4E18F1A4D519C0A1112 /* SearchRanking/KeywordSuggestionService.swift in Sources */,
 				9F18F6F8A4D64BE38FBED4A8 /* KeywordTableView.swift in Sources */,
@@ -1058,6 +1070,7 @@
 				99A4FE5166338C3329CF94EE /* TrackedApp.swift in Sources */,
 				BEEF00000000000000000012 /* TrackedAppKeyword.swift in Sources */,
 				D18000000000000000000004 /* TrackedAppKeywordRefreshAttempt.swift in Sources */,
+				D09D00000000000000000004 /* TrackedKeywordRefreshStatus.swift in Sources */,
 				BEEF00000000000000000014 /* TrackedKeywordDailyRanking.swift in Sources */,
 				BEEF00000000000000000016 /* TrackedKeywordRankedResult.swift in Sources */,
 			);
@@ -1073,6 +1086,7 @@
 				05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */,
 				D02000000000000000000001 /* PersistenceMigrationTests.swift in Sources */,
 				D02000000000000000000006 /* ReleasedV1StoreFixture.swift in Sources */,
+				D09D00000000000000000008 /* TrackedKeywordRefreshStatusTests.swift in Sources */,
 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
 				0A5C00000000000000000007 /* AppStoreWebMetadataProviderTests.swift in Sources */,
 				0A1B2C3D4E5F67890123450D /* AppStorefrontRatingServiceTests.swift in Sources */,
@@ -1112,6 +1126,7 @@
 				C15A00000000000000000106 /* AppNamespace.swift in Sources */,
 				C15A00000000000000000107 /* OpenASOSchemaV1.swift in Sources */,
 				D18000000000000000000005 /* OpenASOSchemaV2.swift in Sources */,
+				D09D00000000000000000005 /* OpenASOSchemaV3.swift in Sources */,
 				C15A00000000000000000108 /* Persistence/BackgroundModelStore.swift in Sources */,
 				C15A00000000000000000109 /* Persistence/ModelContainerFactory.swift in Sources */,
 				C15A0000000000000000010A /* OpenASOError.swift in Sources */,
@@ -1132,6 +1147,7 @@
 				C15A00000000000000000119 /* LatestAppRating.swift in Sources */,
 				C15A0000000000000000011A /* TrackedAppKeyword.swift in Sources */,
 				D18000000000000000000006 /* TrackedAppKeywordRefreshAttempt.swift in Sources */,
+				D09D00000000000000000006 /* TrackedKeywordRefreshStatus.swift in Sources */,
 				C15A0000000000000000011B /* TrackedKeywordDailyRanking.swift in Sources */,
 				C15A0000000000000000011C /* TrackedKeywordRankedResult.swift in Sources */,
 				C15A0000000000000000011D /* TrackedApp.swift in Sources */,

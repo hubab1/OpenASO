@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import SwiftData
 
 struct RankingRefreshRequest: Sendable {
@@ -312,7 +313,12 @@ final class RankingRefreshCoordinator: Sendable {
             return nil
         }
 
-        track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
+        try TrackedKeywordRefreshStatusStore.set(
+            "Ranking failed to refresh. \(error.localizedDescription)",
+            domain: .ranking,
+            for: track,
+            in: modelContext
+        )
         if saveChanges {
             try modelContext.save()
         }
@@ -456,7 +462,13 @@ final class RankingRefreshCoordinator: Sendable {
                 self.rebuildDerivedStats(for: [RankingStatsRebuildRequest(track: track)], in: modelContext)
             }
 
-            track.statusMessage = nil
+            try TrackedKeywordRefreshStatusStore.set(
+                nil,
+                domain: .ranking,
+                for: track,
+                updatedAt: snapshot.searchedAt,
+                in: modelContext
+            )
             track.lastRefreshAt = snapshot.searchedAt
             track.rankingAppCount = page.resultCount
             if isNewSnapshot {
@@ -938,8 +950,19 @@ final class RankingRefreshCoordinator: Sendable {
                         ))
                     } catch {
                         let mappedError = OpenASOError.map(error)
-                        track.statusMessage = "Ranking failed to refresh. \(mappedError.localizedDescription)"
-                        try? modelContext.save()
+                        do {
+                            try TrackedKeywordRefreshStatusStore.set(
+                                "Ranking failed to refresh. \(mappedError.localizedDescription)",
+                                domain: .ranking,
+                                for: track,
+                                in: modelContext
+                            )
+                            try modelContext.save()
+                        } catch {
+                            OpenASOLog.refresh.error(
+                                "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                            )
+                        }
                         outcomes.append(RefreshOutcome(
                             trackID: track.persistentModelID,
                             snapshotID: nil,
@@ -961,8 +984,19 @@ final class RankingRefreshCoordinator: Sendable {
                         continue
                     }
 
-                    track.statusMessage = "Ranking failed to refresh. \(error.localizedDescription)"
-                    try? modelContext.save()
+                    do {
+                        try TrackedKeywordRefreshStatusStore.set(
+                            "Ranking failed to refresh. \(error.localizedDescription)",
+                            domain: .ranking,
+                            for: track,
+                            in: modelContext
+                        )
+                        try modelContext.save()
+                    } catch {
+                        OpenASOLog.refresh.error(
+                            "Failed to persist ranking refresh status: \(String(reflecting: error), privacy: .private(mask: .hash))"
+                        )
+                    }
                     outcomes.append(RefreshOutcome(
                         trackID: track.persistentModelID,
                         snapshotID: nil,

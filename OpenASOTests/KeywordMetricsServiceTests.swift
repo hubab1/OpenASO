@@ -48,12 +48,25 @@ struct KeywordMetricsServiceTests {
         modelContext.insert(trackedApp)
         modelContext.insert(track)
         modelContext.insert(metrics)
+        let rankingStatus = "Ranking failed to refresh. Preserve this failure."
+        try TrackedKeywordRefreshStatusStore.set(
+            rankingStatus,
+            domain: .ranking,
+            for: track,
+            in: modelContext
+        )
         try modelContext.save()
 
         _ = await services.keywordMetricsService.refreshMetrics(for: trackedApp, tracks: [track], in: modelContext)
 
         #expect(metrics.popularityScore == 72)
         #expect(metrics.updatedAt == previousUpdatedAt)
+        let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+            for: track,
+            in: modelContext
+        )
+        #expect(refreshStatus.rankingMessage == rankingStatus)
+        #expect(refreshStatus.popularityMessage == nil)
         #expect(track.statusMessage == nil)
         #expect(services.appleAdsWebSessionStore.requiresReconnect)
         #expect(services.appleAdsWebSessionStore.hasSession)
@@ -84,7 +97,10 @@ struct KeywordMetricsServiceTests {
         let storedMetrics = try #require(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
 
         #expect(storedMetrics.popularityScore == nil)
-        #expect(track.statusMessage == "Popularity failed to fetch. Reconnect Apple Ads in Settings so OpenASO can detect a linked app.")
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: track,
+            in: modelContext
+        ).popularityMessage == "Popularity failed to fetch. Reconnect Apple Ads in Settings so OpenASO can detect a linked app.")
     }
 
     @Test
@@ -413,12 +429,17 @@ struct KeywordMetricsServiceTests {
 
         _ = await services.keywordMetricsService.refreshMetrics(for: trackedApp, tracks: [track], in: modelContext)
 
-        #expect(track.statusMessage == "Popularity unavailable. Apple Ads does not support keyword popularity in Angola.")
+        let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+            for: track,
+            in: modelContext
+        )
+        #expect(refreshStatus.popularityMessage == "Popularity unavailable. Apple Ads does not support keyword popularity in Angola.")
         let storedMetrics = try #require(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
         let row = KeywordWorkspaceRow(
             track: track,
             storefront: nil,
             metrics: storedMetrics,
+            refreshStatus: refreshStatus,
             latestSnapshot: Optional<KeywordRankingCrawlSummary>.none,
             trendSnapshots: [KeywordRankingCrawlSummary](),
             rankingApps: [KeywordRankingAppSummary]()
@@ -656,7 +677,19 @@ struct KeywordMetricsServiceTests {
         #expect(outcomes.allSatisfy { $0.errorMessage == nil })
         #expect(failedTrack.statusMessage == nil)
         #expect(unavailableTrack.statusMessage == nil)
-        #expect(rankingTrack.statusMessage == rankingStatus)
+        #expect(rankingTrack.statusMessage == nil)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: failedTrack,
+            in: modelContext
+        ).popularityMessage == nil)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: unavailableTrack,
+            in: modelContext
+        ).popularityMessage == nil)
+        #expect(try TrackedKeywordRefreshStatusStore.snapshot(
+            for: rankingTrack,
+            in: modelContext
+        ).rankingMessage == rankingStatus)
     }
 
     @Test
@@ -790,14 +823,35 @@ struct KeywordMetricsServiceTests {
             guard let persistedTrack = try context.fetch(descriptor).first else {
                 throw OpenASOError.appNotFound
             }
-            persistedTrack.statusMessage = newerStatus
+            try TrackedKeywordRefreshStatusStore.set(
+                newerStatus,
+                domain: .popularity,
+                for: persistedTrack,
+                updatedAt: .now,
+                in: context
+            )
         }
         let persistedStatuses = try await backgroundModelStore.read { context in
             let tracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
+            guard let clearTrack = tracks.first(where: { $0.term == "clear" }),
+                  let newerTrack = tracks.first(where: { $0.term == "newer" }),
+                  let rankingTrack = tracks.first(where: { $0.term == "ranking" })
+            else {
+                throw OpenASOError.appNotFound
+            }
             return (
-                clear: tracks.first { $0.term == "clear" }?.statusMessage,
-                newer: tracks.first { $0.term == "newer" }?.statusMessage,
-                ranking: tracks.first { $0.term == "ranking" }?.statusMessage
+                clear: try TrackedKeywordRefreshStatusStore.snapshot(
+                    for: clearTrack,
+                    in: context
+                ).popularityMessage,
+                newer: try TrackedKeywordRefreshStatusStore.snapshot(
+                    for: newerTrack,
+                    in: context
+                ).popularityMessage,
+                ranking: try TrackedKeywordRefreshStatusStore.snapshot(
+                    for: rankingTrack,
+                    in: context
+                ).rankingMessage
             )
         }
 
@@ -1249,8 +1303,12 @@ struct KeywordMetricsServiceTests {
         let storedState = try await backgroundModelStore.read { context in
             let persistedTracks = try context.fetch(FetchDescriptor<TrackedAppKeyword>())
             let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
+            let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: persistedTracks.map(\.identityKey),
+                in: context
+            )
             return (
-                statuses: persistedTracks.compactMap(\.statusMessage),
+                statuses: statuses.values.compactMap(\.popularityMessage),
                 metricCount: metrics.count,
                 populatedMetricCount: metrics.compactMap(\.popularityScore).count
             )
