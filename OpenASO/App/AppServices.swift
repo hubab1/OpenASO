@@ -15,6 +15,8 @@ final class AppServices {
     let appStoreConnectReviewService: AppStoreConnectReviewService
     private(set) var dailyRefreshScheduler: DailyRefreshScheduler?
     let headlessRefreshService: HeadlessRefreshService?
+    let headlessRefreshObservationRecorder: HeadlessRefreshObservationRecorder
+    private(set) var headlessRefreshSnapshot = HeadlessRefreshSnapshot.empty
     let storefrontCatalog: StorefrontCatalog
     let appResolver: any AppResolver
     let appStoreWebMetadataProvider: AppStoreWebMetadataProvider
@@ -57,6 +59,7 @@ final class AppServices {
         let refreshMetricsRecorder = refreshMetricsRecorder ?? RefreshMetricsRecorder(
             clock: refreshObservationClock
         )
+        let headlessRefreshObservationRecorder = HeadlessRefreshObservationRecorder()
         let httpClient = ProviderHTTPClientPipeline.make(
             transport: httpClient,
             mode: providerRequestGateMode ?? .production(defaults: defaults),
@@ -269,6 +272,9 @@ final class AppServices {
                     },
                     refreshApp: { plan in
                         try await appAdapter.refresh(plan)
+                    },
+                    recordObservation: { observation in
+                        await headlessRefreshObservationRecorder.record(observation)
                     }
                 )
             )
@@ -285,6 +291,7 @@ final class AppServices {
         self.appStoreConnectReviewService = appStoreConnectReviewService
         self.dailyRefreshScheduler = nil
         self.headlessRefreshService = headlessRefreshService
+        self.headlessRefreshObservationRecorder = headlessRefreshObservationRecorder
         self.storefrontCatalog = storefrontCatalog
         self.appResolver = resolver
         self.appStoreWebMetadataProvider = appStoreWebMetadataProvider
@@ -371,6 +378,14 @@ final class AppServices {
         }
         if summary.ratingsReviewsFullySucceeded {
             settingsStore.markRatingsReviewsRefreshed(on: summary.scheduledFor)
+        }
+    }
+
+    func observeHeadlessRefreshes() async {
+        let updates = await headlessRefreshObservationRecorder.updates()
+        for await snapshot in updates {
+            guard !Task.isCancelled else { return }
+            headlessRefreshSnapshot = snapshot
         }
     }
 

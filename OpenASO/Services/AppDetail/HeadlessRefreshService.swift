@@ -248,6 +248,21 @@ struct HeadlessRefreshRunSummary: Hashable, Sendable {
     let ratingsReviewsAttempted: Bool
     let ratingsReviewsFullySucceeded: Bool
     let issue: HeadlessRefreshIssue?
+
+    var redactedLogMessage: String {
+        let elapsedSeconds = finishedAt.timeIntervalSince(startedAt)
+        let durationMilliseconds: Int
+        if !elapsedSeconds.isFinite || elapsedSeconds <= 0 {
+            durationMilliseconds = 0
+        } else if elapsedSeconds >= TimeInterval(Int.max / 1_000) {
+            durationMilliseconds = Int.max
+        } else {
+            durationMilliseconds = Int(elapsedSeconds * 1_000)
+        }
+        let unfinishedAppCount = max(0, plannedAppCount - completedAppCount)
+        let issueKind = issue?.kind.rawValue ?? "none"
+        return "Headless refresh completed runID=\(runID.uuidString) disposition=\(disposition.rawValue) durationMs=\(durationMilliseconds) planned=\(plannedAppCount) completed=\(completedAppCount) success=\(successfulAppCount) partialFailure=\(partialFailureAppCount) failure=\(failedAppCount) unfinished=\(unfinishedAppCount) ratingsReviewsAttempted=\(ratingsReviewsAttempted) ratingsReviewsFullySucceeded=\(ratingsReviewsFullySucceeded) issue=\(issueKind)"
+    }
 }
 
 enum HeadlessRefreshRunPhase: String, Hashable, Sendable {
@@ -269,6 +284,8 @@ struct HeadlessRefreshActiveSnapshot: Hashable, Sendable {
 struct HeadlessRefreshSnapshot: Hashable, Sendable {
     let activeRun: HeadlessRefreshActiveSnapshot?
     let recentRuns: [HeadlessRefreshRunSummary]
+
+    static let empty = HeadlessRefreshSnapshot(activeRun: nil, recentRuns: [])
 }
 
 enum HeadlessRefreshEvent: Hashable, Sendable {
@@ -295,6 +312,28 @@ enum HeadlessRefreshEvent: Hashable, Sendable {
         at: Date
     )
     case runRejected(requestRunID: UUID, at: Date)
+
+    var redactedLogMessage: String? {
+        switch self {
+        case .runStarted(let runID, _, _):
+            "Headless refresh started runID=\(runID.uuidString)"
+        case .planLoaded, .appStarted, .appFinished:
+            nil
+        case .runFinished(let summary):
+            summary.redactedLogMessage
+        case .runSkipped(let requestRunID, let activeRunID, _):
+            "Headless refresh skipped requestRunID=\(requestRunID.uuidString) activeRunID=\(activeRunID.uuidString)"
+        case .completedRunReused(let requestRunID, let priorDisposition, _):
+            "Headless refresh reused requestRunID=\(requestRunID.uuidString) priorDisposition=\(priorDisposition.rawValue)"
+        case .runRejected(let requestRunID, _):
+            "Headless refresh rejected requestRunID=\(requestRunID.uuidString)"
+        }
+    }
+}
+
+struct HeadlessRefreshObservation: Hashable, Sendable {
+    let event: HeadlessRefreshEvent
+    let snapshot: HeadlessRefreshSnapshot
 }
 
 struct HeadlessRefreshDependencies: Sendable {
@@ -305,7 +344,9 @@ struct HeadlessRefreshDependencies: Sendable {
         _ plan: HeadlessRefreshAppPlan
     ) async throws -> HeadlessRefreshAppExecutionResult
     let now: @Sendable () -> Date
-    let recordEvent: @Sendable (_ event: HeadlessRefreshEvent) async -> Void
+    let recordObservation: @Sendable (
+        _ observation: HeadlessRefreshObservation
+    ) async -> Void
 
     init(
         loadPlan: @escaping @Sendable (
@@ -319,10 +360,32 @@ struct HeadlessRefreshDependencies: Sendable {
             _ event: HeadlessRefreshEvent
         ) async -> Void = { _ in }
     ) {
+        self.init(
+            loadPlan: loadPlan,
+            refreshApp: refreshApp,
+            now: now,
+            recordObservation: { observation in
+                await recordEvent(observation.event)
+            }
+        )
+    }
+
+    init(
+        loadPlan: @escaping @Sendable (
+            _ request: HeadlessRefreshRunRequest
+        ) async throws -> HeadlessRefreshPlan,
+        refreshApp: @escaping @Sendable (
+            _ plan: HeadlessRefreshAppPlan
+        ) async throws -> HeadlessRefreshAppExecutionResult,
+        now: @escaping @Sendable () -> Date = { .now },
+        recordObservation: @escaping @Sendable (
+            _ observation: HeadlessRefreshObservation
+        ) async -> Void
+    ) {
         self.loadPlan = loadPlan
         self.refreshApp = refreshApp
         self.now = now
-        self.recordEvent = recordEvent
+        self.recordObservation = recordObservation
     }
 }
 
@@ -380,7 +443,7 @@ actor HeadlessRefreshService {
             guard completedRun.request == request else {
                 return await rejectConflictingRequest(request)
             }
-            await dependencies.recordEvent(.completedRunReused(
+            await publish(.completedRunReused(
                 requestRunID: request.id,
                 priorDisposition: completedRun.summary.disposition,
                 at: dependencies.now()
@@ -409,7 +472,7 @@ actor HeadlessRefreshService {
                 ratingsReviewsFullySucceeded: false,
                 issue: nil
             )
-            await dependencies.recordEvent(.runSkipped(
+            await publish(.runSkipped(
                 requestRunID: request.id,
                 activeRunID: activeRun.request.id,
                 at: now
@@ -426,7 +489,7 @@ actor HeadlessRefreshService {
             appResults: [],
             currentAppStoreID: nil
         )
-        await dependencies.recordEvent(.runStarted(
+        await publish(.runStarted(
             runID: request.id,
             scheduledFor: request.scheduledFor,
             startedAt: startedAt
@@ -440,7 +503,7 @@ actor HeadlessRefreshService {
                 activeRun.phase = .refreshing
                 activeRun.plannedAppCount = plan.apps.count
             }
-            await dependencies.recordEvent(.planLoaded(
+            await publish(.planLoaded(
                 runID: request.id,
                 plannedAppCount: plan.apps.count
             ))
@@ -452,7 +515,7 @@ actor HeadlessRefreshService {
                 updateActiveRun(id: request.id) { activeRun in
                     activeRun.currentAppStoreID = appPlan.appStoreID
                 }
-                await dependencies.recordEvent(.appStarted(
+                await publish(.appStarted(
                     runID: request.id,
                     appStoreID: appPlan.appStoreID,
                     position: position,
@@ -461,7 +524,7 @@ actor HeadlessRefreshService {
                 do {
                     try Task.checkCancellation()
                 } catch {
-                    await dependencies.recordEvent(.appFinished(
+                    await publish(.appFinished(
                         runID: request.id,
                         appStoreID: appPlan.appStoreID,
                         position: position,
@@ -476,7 +539,7 @@ actor HeadlessRefreshService {
                     result = try await dependencies.refreshApp(appPlan)
                 } catch {
                     if Self.isCancellation(error) {
-                        await dependencies.recordEvent(.appFinished(
+                        await publish(.appFinished(
                             runID: request.id,
                             appStoreID: appPlan.appStoreID,
                             position: position,
@@ -492,7 +555,7 @@ actor HeadlessRefreshService {
                 }
 
                 if result.disposition == .cancelled {
-                    await dependencies.recordEvent(.appFinished(
+                    await publish(.appFinished(
                         runID: request.id,
                         appStoreID: appPlan.appStoreID,
                         position: position,
@@ -506,7 +569,7 @@ actor HeadlessRefreshService {
                     activeRun.appResults.append(result)
                     activeRun.currentAppStoreID = nil
                 }
-                await dependencies.recordEvent(.appFinished(
+                await publish(.appFinished(
                     runID: request.id,
                     appStoreID: appPlan.appStoreID,
                     position: position,
@@ -536,6 +599,13 @@ actor HeadlessRefreshService {
                 issue: cancelled ? nil : HeadlessRefreshIssue(kind: .planUnavailable)
             )
         }
+    }
+
+    private func publish(_ event: HeadlessRefreshEvent) async {
+        await dependencies.recordObservation(HeadlessRefreshObservation(
+            event: event,
+            snapshot: snapshot()
+        ))
     }
 
     private func updateActiveRun(
@@ -596,7 +666,7 @@ actor HeadlessRefreshService {
         if activeRun?.request.id == request.id {
             activeRun = nil
         }
-        await dependencies.recordEvent(.runFinished(summary))
+        await publish(.runFinished(summary))
         return summary
     }
 
@@ -620,7 +690,7 @@ actor HeadlessRefreshService {
             ratingsReviewsFullySucceeded: false,
             issue: HeadlessRefreshIssue(kind: .requestIdentityConflict)
         )
-        await dependencies.recordEvent(.runRejected(
+        await publish(.runRejected(
             requestRunID: request.id,
             at: now
         ))

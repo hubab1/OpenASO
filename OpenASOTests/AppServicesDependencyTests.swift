@@ -210,6 +210,48 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func appServicesPublishesHeadlessObservationToLateUIBridge() async throws {
+        let transport = MockHTTPClient { request in
+            throw OpenASOError.providerUnavailable(
+                "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+            )
+        }
+        let container = try ModelContainerFactory.makeModelContainer(
+            isStoredInMemoryOnly: true
+        )
+        let services = AppServices.mocked(
+            httpClient: transport,
+            modelContainer: container
+        )
+        let service = try #require(services.headlessRefreshService)
+        let request = HeadlessRefreshRunRequest(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000035")!,
+            scheduledFor: Date(timeIntervalSince1970: 1_000),
+            refreshRatingsAndReviews: true
+        )
+
+        let summary = await service.run(request)
+        #expect(summary.disposition == .noWork)
+
+        let recordedSnapshot = await services.headlessRefreshObservationRecorder
+            .currentSnapshot()
+        #expect(recordedSnapshot.activeRun == nil)
+        #expect(recordedSnapshot.recentRuns.first == summary)
+
+        let observationTask = Task { @MainActor in
+            await services.observeHeadlessRefreshes()
+        }
+        defer { observationTask.cancel() }
+
+        for _ in 0..<100 where services.headlessRefreshSnapshot.recentRuns.first != summary {
+            await Task.yield()
+        }
+
+        #expect(services.headlessRefreshSnapshot.activeRun == nil)
+        #expect(services.headlessRefreshSnapshot.recentRuns.first == summary)
+    }
+
+    @Test
     func appServicesWiresGateOutsideObservationAndRecordsPhysicalRetry() async throws {
         let defaults = Self.makeDefaults()
         let observationClock = RefreshObservationClock(nowNanoseconds: { 1_000 })

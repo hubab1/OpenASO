@@ -57,6 +57,11 @@ struct SettingsView: View {
                             services.settingsStore.saveRefreshTime(from: newValue)
                         }
 
+                    DailyRefreshRunStatusView(
+                        activeRun: services.headlessRefreshSnapshot.activeRun,
+                        latestRun: services.headlessRefreshSnapshot.recentRuns.first
+                    )
+
                     if let lastClaimedAt = services.settingsStore.lastAutomaticRefreshClaimedAt {
                         Text("Last automatic attempt \(lastClaimedAt.formatted(date: .abbreviated, time: .shortened))")
                             .foregroundStyle(.secondary)

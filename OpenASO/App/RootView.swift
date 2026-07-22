@@ -13,6 +13,12 @@ struct RootView: View {
             RootDetailView(selectedApp: selectedApp)
         }
         .navigationTitle("OpenASO")
+        .task {
+            guard !Self.isRunningUnderTests else {
+                return
+            }
+            await services.observeHeadlessRefreshes()
+        }
         .task(id: services.settingsStore.scheduleConfiguration) {
             guard !Self.isRunningUnderTests else {
                 return
