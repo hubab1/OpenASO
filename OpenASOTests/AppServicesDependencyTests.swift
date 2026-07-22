@@ -253,6 +253,150 @@ struct AppServicesDependencyTests {
         #expect(popularities["term 101"] == 1)
     }
 
+    @Test
+    func cmPopularityClientClassifiesUnauthorizedAsExpiredSession() async {
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(statusCode: 401)
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesForbiddenAsExpiredSession() async {
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(statusCode: 403)
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesHTMLWhereJSONIsExpectedAsExpiredSession() async {
+        let payload = "  \n\u{FEFF}<!DoCtYpE html><html><body>Sign in</body></html>"
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(
+                data: Data(payload.utf8),
+                statusCode: 200
+            )
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesAppleSignInRedirectAsExpiredSession() async {
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(
+                statusCode: 302,
+                headerFields: ["Location": "https://idmsa.apple.com/appleauth/auth/signin"]
+            )
+        }
+    }
+
+    @Test
+    func cmPopularityClientClassifiesFollowedAppleSignInRedirectAsExpiredSession() async throws {
+        let loginURL = try #require(URL(string: "https://appleid.apple.com/auth/authorize"))
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await cmPopularities(statusCode: 200, responseURL: loginURL)
+        }
+    }
+
+    @Test
+    func cmPopularityClientDoesNotTreatHTMLTextInsideJSONAsExpiredSession() async throws {
+        let payload = #"{"status":"success","data":[{"name":"<html keyword","popularity":57}]}"#
+
+        let popularities = try await cmPopularities(data: Data(payload.utf8), statusCode: 200)
+
+        #expect(popularities["<html keyword"] == 57)
+    }
+
+    @Test
+    func cmPopularityClientPreservesNonAuthenticationHTTPFailures() async {
+        await #expect(throws: OpenASOError.appNotFound) {
+            _ = try await cmPopularities(statusCode: 404)
+        }
+        await #expect(throws: OpenASOError.rateLimited) {
+            _ = try await cmPopularities(statusCode: 429)
+        }
+        await #expect(throws: OpenASOError.providerUnavailable("HTTP 500")) {
+            _ = try await cmPopularities(
+                data: Data("<html>Server error</html>".utf8),
+                statusCode: 500,
+                headerFields: ["Content-Type": "text/html"]
+            )
+        }
+    }
+
+    @Test
+    func cmPopularityClientPreservesCancellation() async {
+        let taskCancellationClient = MockHTTPClient { _ in
+            throw CancellationError()
+        }
+        await #expect(throws: CancellationError.self) {
+            _ = try await self.cmPopularities(using: taskCancellationClient)
+        }
+
+        let urlCancellationClient = MockHTTPClient { _ in
+            throw URLError(.cancelled)
+        }
+        await #expect(throws: URLError.self) {
+            _ = try await self.cmPopularities(using: urlCancellationClient)
+        }
+    }
+
+    @Test
+    func cmPopularityClientPreservesTransportFailures() async {
+        let client = MockHTTPClient { _ in
+            throw URLError(.timedOut)
+        }
+
+        await #expect(throws: URLError.self) {
+            _ = try await self.cmPopularities(using: client)
+        }
+    }
+
+    @Test
+    func cmPopularityClientRejectsNonHTTPResponses() async throws {
+        let client = MockHTTPClient { request in
+            let url = try #require(request.url)
+            return (Data(), URLResponse(url: url, mimeType: nil, expectedContentLength: 0, textEncodingName: nil))
+        }
+
+        await #expect(throws: OpenASOError.unexpectedResponse) {
+            _ = try await self.cmPopularities(using: client)
+        }
+    }
+
+    private func cmPopularities(
+        data: Data = Data(#"{"status":"success","data":[{"name":"focus","popularity":50}]}"#.utf8),
+        statusCode: Int,
+        responseURL: URL? = nil,
+        headerFields: [String: String]? = nil
+    ) async throws -> [String: Int] {
+        let client = MockHTTPClient { request in
+            let requestURL = try #require(request.url)
+            return (
+                data,
+                makeHTTPURLResponse(
+                    url: responseURL ?? requestURL,
+                    statusCode: statusCode,
+                    headerFields: headerFields
+                )
+            )
+        }
+        return try await cmPopularities(using: client)
+    }
+
+    private func cmPopularities(using client: HTTPClient) async throws -> [String: Int] {
+        try await AppleAdsCMPopularityClient(httpClient: client).keywordPopularities(
+            for: ["focus"],
+            storefrontCode: "us",
+            adamId: 123_456_789,
+            session: AppleAdsWebSession(
+                cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+                xsrfToken: "token",
+                updatedAt: .now
+            )
+        )
+    }
+
     private static func makeDefaults() -> UserDefaults {
         let suiteName = "com.thirdtech.openaso.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard

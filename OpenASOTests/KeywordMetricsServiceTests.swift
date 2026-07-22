@@ -10,8 +10,10 @@ struct KeywordMetricsServiceTests {
     func failedRefreshPreservesExistingPopularityScoreAndUpdatedAt() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
+        var requestCount = 0
         let services = AppServices.mocked(
             httpClient: MockHTTPClient { request in
+                requestCount += 1
                 let payload = """
                 <html><body>Sign in</body></html>
                 """
@@ -53,6 +55,7 @@ struct KeywordMetricsServiceTests {
         #expect(metrics.popularityScore == 72)
         #expect(metrics.updatedAt == previousUpdatedAt)
         #expect(track.statusMessage == "Popularity failed to fetch. Apple Ads web session expired. Refresh it in Settings.")
+        #expect(requestCount == 1)
     }
 
     @Test
@@ -191,6 +194,94 @@ struct KeywordMetricsServiceTests {
         #expect(app.adamId == 6_608_976_383)
         #expect(app.appName == "Atten - App Blocker")
         #expect(app.countryOrRegionCodes == ["GB"])
+    }
+
+    @Test
+    func webSessionAuthenticationFailureStopsLinkedAppFallbacks() async throws {
+        var requestedPaths: [String] = []
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                requestedPaths.append(url.path)
+                return (
+                    Data(#"{"error":"unauthorized"}"#.utf8),
+                    makeHTTPURLResponse(url: url, statusCode: 401)
+                )
+            }
+        )
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "searchads.soid=session",
+                xsrfToken: "xsrf",
+                updatedAt: .now,
+                accountName: "Third Tech Ltd"
+            )
+        )
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await services.appleAdsWebSessionManager.resolveDefaultLinkedApp()
+        }
+        #expect(requestedPaths == ["/reporting/graphql"])
+    }
+
+    @Test
+    func campaignAuthenticationFailureStopsLaterEndpointAndSellerFallbacks() async throws {
+        var requestedPaths: [String] = []
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let url = try #require(request.url)
+                requestedPaths.append(url.path)
+                if url.path == "/reporting/graphql" {
+                    let payload = #"{"data":{"reportingV5":{"getReportsByCampaign":{"row":[]}}}}"#
+                    return (
+                        Data(payload.utf8),
+                        makeHTTPURLResponse(url: url, statusCode: 200)
+                    )
+                }
+
+                return (
+                    Data(#"{"error":"forbidden"}"#.utf8),
+                    makeHTTPURLResponse(url: url, statusCode: 403)
+                )
+            }
+        )
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "searchads.soid=session",
+                xsrfToken: "xsrf",
+                updatedAt: .now,
+                accountName: "Third Tech Ltd"
+            )
+        )
+
+        await #expect(throws: AppleAdsWebSessionExpiredError()) {
+            _ = try await services.appleAdsWebSessionManager.resolveDefaultLinkedApp()
+        }
+        #expect(requestedPaths == ["/reporting/graphql", "/cm/api/v5/campaigns"])
+    }
+
+    @Test
+    func webSessionCancellationStopsLinkedAppFallbacks() async throws {
+        var requestCount = 0
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { _ in
+                requestCount += 1
+                throw CancellationError()
+            }
+        )
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "searchads.soid=session",
+                xsrfToken: "xsrf",
+                updatedAt: .now,
+                accountName: "Third Tech Ltd"
+            )
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await services.appleAdsWebSessionManager.resolveDefaultLinkedApp()
+        }
+        #expect(requestCount == 1)
     }
 
     @Test
