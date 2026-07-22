@@ -6,6 +6,7 @@ final class KeywordMetricsService: Sendable {
     private let apiClient: AppleAdsAPIClient
     @MainActor private let popularityClient: AppleAdsPopularityClient
     @MainActor private let settingsStore: AppSettingsStore
+    @MainActor private let webSessionStore: AppleAdsWebSessionStore
     private let freshnessFetchObserver: @Sendable (_ queryKeyCount: Int) -> Void
     private let bulkFreshnessFetchHook: @Sendable () throws -> Void
     private let metricsTTL: TimeInterval = 60 * 60 * 24 * 7
@@ -22,6 +23,7 @@ final class KeywordMetricsService: Sendable {
         self.httpClient = httpClient
         self.apiClient = AppleAdsAPIClient(httpClient: httpClient)
         self.settingsStore = settingsStore
+        self.webSessionStore = webSessionStore
         self.freshnessFetchObserver = freshnessFetchObserver
         self.bulkFreshnessFetchHook = bulkFreshnessFetchHook
         self.popularityClient = AppleAdsPopularityClient(
@@ -86,20 +88,33 @@ final class KeywordMetricsService: Sendable {
         tracks: [TrackedAppKeyword],
         in modelContext: ModelContext
     ) async -> [KeywordMetricsRefreshOutcome] {
-        let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey).compactMapValues(\.first)
-        let metricsByQueryKey = freshnessMetricsMap(for: Array(uniqueTracks.keys), in: modelContext)
+        guard !Task.isCancelled else { return [] }
+
+        let uniqueTracks = Dictionary(grouping: tracks, by: \.queryKey)
+            .compactMapValues(\.first)
+            .values
+            .sorted(by: Self.trackOrdering)
+        let metricsByQueryKey = freshnessMetricsMap(for: uniqueTracks.map(\.queryKey), in: modelContext)
         var outcomes: [KeywordMetricsRefreshOutcome] = []
         var tracksNeedingPopularity: [TrackedAppKeyword] = []
         var clearedFreshStatuses: [(track: TrackedAppKeyword, statusMessage: String)] = []
 
-        for track in uniqueTracks.values {
+        for track in uniqueTracks {
+            guard !Task.isCancelled else { return outcomes }
+
             guard Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey]) else {
                 if let statusMessage = track.statusMessage,
                    Self.isPopularityStatusMessage(statusMessage) {
                     track.statusMessage = nil
                     clearedFreshStatuses.append((track, statusMessage))
                 }
-                outcomes.append(KeywordMetricsRefreshOutcome(trackID: track.persistentModelID, errorMessage: nil))
+                outcomes.append(
+                    KeywordMetricsRefreshOutcome(
+                        trackID: track.persistentModelID,
+                        errorMessage: nil,
+                        disposition: .upToDate
+                    )
+                )
                 continue
             }
 
@@ -123,7 +138,22 @@ final class KeywordMetricsService: Sendable {
         }
 
         if let contextAppStoreID = settingsStore.popularityContextAppStoreID {
-            for (_, storefrontTracks) in Dictionary(grouping: tracksNeedingPopularity, by: \.storefront) {
+            let storefrontGroups = Self.orderedTrackGroups(tracksNeedingPopularity)
+            if webSessionStore.requiresReconnect {
+                outcomes.append(contentsOf: storefrontGroups.flatMap(\.tracks).map {
+                    KeywordMetricsRefreshOutcome(
+                        trackID: $0.persistentModelID,
+                        errorMessage: nil,
+                        disposition: .skipped
+                    )
+                })
+                return outcomes
+            }
+
+            for (groupIndex, group) in storefrontGroups.enumerated() {
+                guard !Task.isCancelled else { return outcomes }
+
+                let storefrontTracks = group.tracks
                 let storefrontCode = storefrontTracks.first?.storefront ?? "US"
                 let popularityResult = await popularityClient.searchPopularities(
                     for: storefrontTracks.map(\.term),
@@ -145,6 +175,20 @@ final class KeywordMetricsService: Sendable {
                     }
                 case .missingCredentials:
                     Self.applyPopularityResult(.missingCredentials, to: storefrontTracks, in: modelContext, outcomes: &outcomes)
+                case .expiredSession(let attemptedSession):
+                    webSessionStore.markReconnectRequired(for: attemptedSession)
+                    let skippedTracks = storefrontGroups[groupIndex...].flatMap(\.tracks)
+                    outcomes.append(contentsOf: skippedTracks.map {
+                        KeywordMetricsRefreshOutcome(
+                            trackID: $0.persistentModelID,
+                            errorMessage: nil,
+                            disposition: .skipped
+                        )
+                    })
+                    try? modelContext.save()
+                    return outcomes
+                case .cancelled:
+                    return outcomes
                 case .failure(let message):
                     Self.applyPopularityResult(.failure(message), to: storefrontTracks, in: modelContext, outcomes: &outcomes)
                 }
@@ -162,7 +206,24 @@ final class KeywordMetricsService: Sendable {
         using modelStore: BackgroundModelStore,
         progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil
     ) async throws -> [KeywordMetricsRefreshOutcome] {
-        guard !trackIdentityKeys.isEmpty else { return [] }
+        (try await refreshMetricsBatch(
+            for: trackIdentityKeys,
+            popularityContextAppStoreID: popularityContextAppStoreID,
+            webSession: webSession,
+            using: modelStore,
+            progress: progress
+        )).outcomes
+    }
+
+    func refreshMetricsBatch(
+        for trackIdentityKeys: [String],
+        popularityContextAppStoreID: Int64?,
+        webSession: AppleAdsWebSession?,
+        using modelStore: BackgroundModelStore,
+        progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil
+    ) async throws -> KeywordMetricsRefreshBatchResult {
+        try Task.checkCancellation()
+        guard !trackIdentityKeys.isEmpty else { return .empty }
 
         let metricsTTL = metricsTTL
         let candidates = try await modelStore.write { modelContext in
@@ -196,20 +257,33 @@ final class KeywordMetricsService: Sendable {
                     shouldRefresh: Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey])
                 )
             }
+            .sorted(by: Self.candidateOrdering)
         }
+        try Task.checkCancellation()
 
         var outcomes: [KeywordMetricsRefreshOutcome] = []
+        var batchErrors: [KeywordMetricsBatchError] = []
         var tracksNeedingPopularity: [KeywordMetricsRefreshCandidate] = []
         let totalCount = candidates.count
         var completedCount = 0
         var failureCount = 0
         await progress?(0, totalCount, 0)
+        try Task.checkCancellation()
 
         for candidate in candidates {
+            try Task.checkCancellation()
+
             guard candidate.shouldRefresh else {
-                outcomes.append(KeywordMetricsRefreshOutcome(trackID: candidate.trackID, errorMessage: nil))
+                outcomes.append(
+                    KeywordMetricsRefreshOutcome(
+                        trackID: candidate.trackID,
+                        errorMessage: nil,
+                        disposition: .upToDate
+                    )
+                )
                 completedCount += 1
                 await progress?(completedCount, totalCount, failureCount)
+                try Task.checkCancellation()
                 continue
             }
 
@@ -223,6 +297,7 @@ final class KeywordMetricsService: Sendable {
                 if outcome.errorMessage != nil { failureCount += 1 }
                 completedCount += 1
                 await progress?(completedCount, totalCount, failureCount)
+                try Task.checkCancellation()
                 continue
             }
 
@@ -230,11 +305,12 @@ final class KeywordMetricsService: Sendable {
         }
 
         guard let popularityContextAppStoreID else {
-            return outcomes
+            return KeywordMetricsRefreshBatchResult(outcomes: outcomes, batchErrors: batchErrors)
         }
 
         guard let webSession, webSession.isComplete else {
             for candidate in tracksNeedingPopularity {
+                try Task.checkCancellation()
                 let outcome = try await persistMetricsPayload(
                     Self.makeAppleAdsMetrics(popularityResult: .missingCredentials),
                     for: candidate,
@@ -244,39 +320,81 @@ final class KeywordMetricsService: Sendable {
                 if outcome.errorMessage != nil { failureCount += 1 }
                 completedCount += 1
                 await progress?(completedCount, totalCount, failureCount)
+                try Task.checkCancellation()
             }
-            return outcomes
+            return KeywordMetricsRefreshBatchResult(outcomes: outcomes, batchErrors: batchErrors)
         }
 
         let cmPopularityClient = AppleAdsCMPopularityClient(httpClient: httpClient)
-        for (_, storefrontTracks) in Dictionary(grouping: tracksNeedingPopularity, by: \.storefront) {
+        let storefrontGroups = Self.orderedCandidateGroups(tracksNeedingPopularity)
+        try Task.checkCancellation()
+        if await webSessionStore.requiresReconnect(for: webSession) {
+            try Task.checkCancellation()
+            batchErrors.append(.appleAdsSessionExpired)
+            failureCount += 1
+            if storefrontGroups.isEmpty {
+                await progress?(completedCount, totalCount, failureCount)
+                try Task.checkCancellation()
+            }
+            for candidate in storefrontGroups.flatMap(\.tracks) {
+                try Task.checkCancellation()
+                outcomes.append(
+                    KeywordMetricsRefreshOutcome(
+                        trackID: candidate.trackID,
+                        errorMessage: nil,
+                        disposition: .skipped
+                    )
+                )
+                completedCount += 1
+                await progress?(completedCount, totalCount, failureCount)
+                try Task.checkCancellation()
+            }
+            return KeywordMetricsRefreshBatchResult(outcomes: outcomes, batchErrors: batchErrors)
+        }
+
+        guard !storefrontGroups.isEmpty else {
+            return KeywordMetricsRefreshBatchResult(outcomes: outcomes, batchErrors: batchErrors)
+        }
+
+        for (groupIndex, group) in storefrontGroups.enumerated() {
+            try Task.checkCancellation()
+            let storefrontTracks = group.tracks
             let storefrontCode = storefrontTracks.first?.storefront ?? "US"
+            let popularities: [String: Int]
             do {
-                let popularities = try await cmPopularityClient.keywordPopularities(
+                popularities = try await cmPopularityClient.keywordPopularities(
                     for: storefrontTracks.map(\.term),
                     storefrontCode: storefrontCode,
                     adamId: popularityContextAppStoreID,
                     session: webSession
                 )
-                for candidate in storefrontTracks {
-                    let result: AppleAdsPopularityResult
-                    if let popularity = popularities[AppleAdsCMPopularityClient.normalizedKeywordKey(candidate.term)] {
-                        result = .success(popularity)
-                    } else {
-                        result = .notFound
-                    }
-                    let outcome = try await persistMetricsPayload(
-                        Self.makeAppleAdsMetrics(popularityResult: result),
-                        for: candidate,
-                        using: modelStore
+            } catch is AppleAdsWebSessionExpiredError {
+                try Task.checkCancellation()
+                await webSessionStore.markReconnectRequired(for: webSession)
+                batchErrors.append(.appleAdsSessionExpired)
+                failureCount += 1
+                let skippedCandidates = storefrontGroups[groupIndex...].flatMap(\.tracks)
+                for candidate in skippedCandidates {
+                    try Task.checkCancellation()
+                    outcomes.append(
+                        KeywordMetricsRefreshOutcome(
+                            trackID: candidate.trackID,
+                            errorMessage: nil,
+                            disposition: .skipped
+                        )
                     )
-                    outcomes.append(outcome)
-                    if outcome.errorMessage != nil { failureCount += 1 }
                     completedCount += 1
                     await progress?(completedCount, totalCount, failureCount)
+                    try Task.checkCancellation()
                 }
+                break
             } catch {
+                try Task.checkCancellation()
+                if Self.isCancellation(error) {
+                    throw error
+                }
                 for candidate in storefrontTracks {
+                    try Task.checkCancellation()
                     let outcome = try await persistMetricsPayload(
                         Self.makeAppleAdsMetrics(popularityResult: .failure(OpenASOError.map(error).localizedDescription)),
                         for: candidate,
@@ -286,11 +404,33 @@ final class KeywordMetricsService: Sendable {
                     if outcome.errorMessage != nil { failureCount += 1 }
                     completedCount += 1
                     await progress?(completedCount, totalCount, failureCount)
+                    try Task.checkCancellation()
                 }
+                continue
+            }
+
+            for candidate in storefrontTracks {
+                try Task.checkCancellation()
+                let result: AppleAdsPopularityResult
+                if let popularity = popularities[AppleAdsCMPopularityClient.normalizedKeywordKey(candidate.term)] {
+                    result = .success(popularity)
+                } else {
+                    result = .notFound
+                }
+                let outcome = try await persistMetricsPayload(
+                    Self.makeAppleAdsMetrics(popularityResult: result),
+                    for: candidate,
+                    using: modelStore
+                )
+                outcomes.append(outcome)
+                if outcome.errorMessage != nil { failureCount += 1 }
+                completedCount += 1
+                await progress?(completedCount, totalCount, failureCount)
+                try Task.checkCancellation()
             }
         }
 
-        return outcomes
+        return KeywordMetricsRefreshBatchResult(outcomes: outcomes, batchErrors: batchErrors)
     }
 
     func refreshStalePopularityMetrics(
@@ -563,11 +703,111 @@ final class KeywordMetricsService: Sendable {
         return statusMessage.hasPrefix(popularityFailedToFetchPrefix)
             || statusMessage.hasPrefix(popularityUnavailablePrefix)
     }
+
+    private static func trackOrdering(_ lhs: TrackedAppKeyword, _ rhs: TrackedAppKeyword) -> Bool {
+        let lhsStorefront = lhs.storefront.lowercased()
+        let rhsStorefront = rhs.storefront.lowercased()
+        if lhsStorefront != rhsStorefront {
+            return lhsStorefront < rhsStorefront
+        }
+        return lhs.identityKey < rhs.identityKey
+    }
+
+    private static func candidateOrdering(
+        _ lhs: KeywordMetricsRefreshCandidate,
+        _ rhs: KeywordMetricsRefreshCandidate
+    ) -> Bool {
+        let lhsStorefront = lhs.storefront.lowercased()
+        let rhsStorefront = rhs.storefront.lowercased()
+        if lhsStorefront != rhsStorefront {
+            return lhsStorefront < rhsStorefront
+        }
+        return lhs.trackIdentityKey < rhs.trackIdentityKey
+    }
+
+    private static func orderedTrackGroups(_ tracks: [TrackedAppKeyword]) -> [KeywordMetricsTrackGroup] {
+        let grouped = Dictionary(grouping: tracks) { $0.storefront.lowercased() }
+        return grouped.keys.sorted().map { storefront in
+            KeywordMetricsTrackGroup(
+                tracks: (grouped[storefront] ?? []).sorted(by: Self.trackOrdering)
+            )
+        }
+    }
+
+    private static func orderedCandidateGroups(
+        _ candidates: [KeywordMetricsRefreshCandidate]
+    ) -> [KeywordMetricsCandidateGroup] {
+        let grouped = Dictionary(grouping: candidates) { $0.storefront.lowercased() }
+        return grouped.keys.sorted().map { storefront in
+            KeywordMetricsCandidateGroup(
+                tracks: (grouped[storefront] ?? []).sorted(by: Self.candidateOrdering)
+            )
+        }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+}
+
+enum KeywordMetricsRefreshDisposition: String, Sendable {
+    case refreshed
+    case upToDate
+    case failed
+    case skipped
 }
 
 struct KeywordMetricsRefreshOutcome: Sendable {
     let trackID: PersistentIdentifier
     let errorMessage: String?
+    let disposition: KeywordMetricsRefreshDisposition
+
+    init(
+        trackID: PersistentIdentifier,
+        errorMessage: String?,
+        disposition: KeywordMetricsRefreshDisposition? = nil
+    ) {
+        self.trackID = trackID
+        self.errorMessage = errorMessage
+        self.disposition = disposition ?? (errorMessage == nil ? .refreshed : .failed)
+    }
+
+    var isSkipped: Bool {
+        disposition == .skipped
+    }
+}
+
+enum KeywordMetricsBatchErrorCode: String, Equatable, Sendable {
+    case appleAdsSessionExpired = "apple_ads_session_expired"
+}
+
+struct KeywordMetricsBatchError: Equatable, Sendable {
+    let code: KeywordMetricsBatchErrorCode
+    let message: String
+
+    static let appleAdsSessionExpired = KeywordMetricsBatchError(
+        code: .appleAdsSessionExpired,
+        message: AppleAdsWebSessionExpiredError.message
+    )
+}
+
+struct KeywordMetricsRefreshBatchResult: Sendable {
+    let outcomes: [KeywordMetricsRefreshOutcome]
+    let batchErrors: [KeywordMetricsBatchError]
+
+    static let empty = KeywordMetricsRefreshBatchResult(outcomes: [], batchErrors: [])
+
+    var skippedCount: Int {
+        outcomes.lazy.filter(\.isSkipped).count
+    }
+
+    var failureCount: Int {
+        outcomes.lazy.filter { $0.errorMessage != nil }.count + batchErrors.count
+    }
+
+    var firstErrorMessage: String? {
+        batchErrors.first?.message ?? outcomes.lazy.compactMap(\.errorMessage).first
+    }
 }
 
 struct StalePopularityRefreshPreparation: Sendable {
@@ -583,6 +823,14 @@ private struct KeywordMetricsRefreshCandidate: Sendable {
     let term: String
     let storefront: String
     let shouldRefresh: Bool
+}
+
+private struct KeywordMetricsTrackGroup {
+    let tracks: [TrackedAppKeyword]
+}
+
+private struct KeywordMetricsCandidateGroup: Sendable {
+    let tracks: [KeywordMetricsRefreshCandidate]
 }
 
 private struct KeywordMetricsPayload: Sendable {
@@ -782,14 +1030,25 @@ private final class AppleAdsPopularityClient {
         }
 
         do {
+            try Task.checkCancellation()
             let popularities = try await cmPopularityClient.keywordPopularities(
                 for: keywords,
                 storefrontCode: storefrontCode,
                 adamId: adamId,
                 session: session
             )
+            try Task.checkCancellation()
             return .success(popularities)
+        } catch is AppleAdsWebSessionExpiredError {
+            return .expiredSession(session)
+        } catch is CancellationError {
+            return .cancelled
+        } catch let error as URLError where error.code == .cancelled {
+            return .cancelled
         } catch {
+            if Task.isCancelled {
+                return .cancelled
+            }
             return .failure(OpenASOError.map(error).localizedDescription)
         }
     }
@@ -815,6 +1074,8 @@ private enum AppleAdsPopularityResult {
 private enum AppleAdsPopularityBatchResult {
     case success([String: Int])
     case missingCredentials
+    case expiredSession(AppleAdsWebSession)
+    case cancelled
     case failure(String)
 }
 

@@ -145,24 +145,33 @@ struct AppleAdsWebLoginCredentials: Codable, Equatable, Sendable {
 @MainActor
 @Observable
 final class AppleAdsWebSessionStore {
+    private let defaults: UserDefaults
     private let keychainItemPresence: KeychainItemPresenceStore
     private let keychain: any KeychainService
     private let keychainService: String
-    private let sessionAccount = "web-session"
+    private let reconnectRequiredDefaultsKey: String
+    private static let sessionAccount = "web-session"
 
     private(set) var session: AppleAdsWebSession?
+    private(set) var requiresReconnect: Bool
 
     init(
         defaults: UserDefaults = .openASOShared,
         keychain: any KeychainService = SystemKeychainService(),
         namespace: AppNamespace = .current
     ) {
-        self.keychainItemPresence = KeychainItemPresenceStore(defaults: defaults)
+        let keychainItemPresence = KeychainItemPresenceStore(defaults: defaults)
+        let keychainService = namespace.keychainService("apple-ads-web")
+        let reconnectRequiredDefaultsKey = "appleAds.webSession.requiresReconnect.\(namespace.bundleIdentifier)"
+        self.defaults = defaults
+        self.keychainItemPresence = keychainItemPresence
         self.keychain = keychain
-        self.keychainService = namespace.keychainService("apple-ads-web")
-        session = keychainItemPresence.contains(service: keychainService, account: sessionAccount)
-            ? Self.readSession(service: keychainService, account: sessionAccount, keychain: keychain)
+        self.keychainService = keychainService
+        self.reconnectRequiredDefaultsKey = reconnectRequiredDefaultsKey
+        session = keychainItemPresence.contains(service: keychainService, account: Self.sessionAccount)
+            ? Self.readSession(service: keychainService, account: Self.sessionAccount, keychain: keychain)
             : nil
+        requiresReconnect = defaults.bool(forKey: reconnectRequiredDefaultsKey)
     }
 
     var hasSession: Bool {
@@ -172,18 +181,43 @@ final class AppleAdsWebSessionStore {
     func save(_ session: AppleAdsWebSession) throws {
         let data = try JSONEncoder().encode(session)
         do {
-            try keychain.save(data, service: keychainService, account: sessionAccount)
-            keychainItemPresence.markPresent(service: keychainService, account: sessionAccount)
+            try keychain.save(data, service: keychainService, account: Self.sessionAccount)
+            keychainItemPresence.markPresent(service: keychainService, account: Self.sessionAccount)
             self.session = session
+            setReconnectRequired(false)
         } catch {
             throw OpenASOError.providerUnavailable("Could not save Apple Ads web session to Keychain.")
         }
     }
 
+    func requiresReconnect(for session: AppleAdsWebSession) -> Bool {
+        requiresReconnect && self.session == session
+    }
+
+    func markReconnectRequired(for session: AppleAdsWebSession) {
+        guard self.session == session else { return }
+        setReconnectRequired(true)
+    }
+
+    func clearReconnectRequirement(for session: AppleAdsWebSession) {
+        guard self.session == session else { return }
+        setReconnectRequired(false)
+    }
+
     func clear() {
-        keychain.delete(service: keychainService, account: sessionAccount)
-        keychainItemPresence.markAbsent(service: keychainService, account: sessionAccount)
+        keychain.delete(service: keychainService, account: Self.sessionAccount)
+        keychainItemPresence.markAbsent(service: keychainService, account: Self.sessionAccount)
         session = nil
+        setReconnectRequired(false)
+    }
+
+    private func setReconnectRequired(_ isRequired: Bool) {
+        if isRequired {
+            defaults.set(true, forKey: reconnectRequiredDefaultsKey)
+        } else {
+            defaults.removeObject(forKey: reconnectRequiredDefaultsKey)
+        }
+        requiresReconnect = isRequired
     }
 
     private static func readSession(
@@ -264,13 +298,21 @@ final class AppleAdsWebSessionManager {
         }
 
         let storefrontCode = settingsStore.popularityContextStorefrontCode ?? "US"
-        guard let popularity = try await AppleAdsCMPopularityClient(httpClient: httpClient)
-            .keywordPopularity(for: keyword, storefrontCode: storefrontCode, adamId: adamId, session: session)
-        else {
-            throw OpenASOError.providerUnavailable("Apple Ads web session worked, but the keyword returned no popularity.")
-        }
+        do {
+            guard let popularity = try await AppleAdsCMPopularityClient(httpClient: httpClient)
+                .keywordPopularity(for: keyword, storefrontCode: storefrontCode, adamId: adamId, session: session)
+            else {
+                throw OpenASOError.providerUnavailable("Apple Ads web session worked, but the keyword returned no popularity.")
+            }
 
-        return popularity
+            sessionStore.clearReconnectRequirement(for: session)
+            return popularity
+        } catch let error as AppleAdsWebSessionExpiredError {
+            sessionStore.markReconnectRequired(for: session)
+            throw error
+        } catch {
+            throw error
+        }
     }
 
     func resolveDefaultLinkedApp() async throws -> AppleAdsPromotedApp {
@@ -278,26 +320,31 @@ final class AppleAdsWebSessionManager {
             throw OpenASOError.providerUnavailable("Connect an Apple Ads web session first.")
         }
 
-        if let app = capturedLinkedApps.first ?? session.linkedApps?.first {
-            return app
-        }
+        do {
+            if let app = capturedLinkedApps.first ?? session.linkedApps?.first {
+                return app
+            }
 
-        let reportingApps = try await fetchReportingCampaignApps(using: session)
-        if let app = reportingApps.first {
-            return app
-        }
+            let reportingApps = try await fetchReportingCampaignApps(using: session)
+            if let app = reportingApps.first {
+                return app
+            }
 
-        let apps = try await fetchCampaignApps(using: session)
-        if let app = apps.first {
-            return app
-        }
+            let apps = try await fetchCampaignApps(using: session)
+            if let app = apps.first {
+                return app
+            }
 
-        if let accountName = capturedAccountName ?? session.accountName,
-           let app = try await fetchSellerApps(named: accountName).first {
-            return app
-        }
+            if let accountName = capturedAccountName ?? session.accountName,
+               let app = try await fetchSellerApps(named: accountName).first {
+                return app
+            }
 
-        throw OpenASOError.providerUnavailable("Apple Ads needs at least one app with an Apple Ads campaign linked to this account to fetch popularity and difficulty data.")
+            throw OpenASOError.providerUnavailable("Apple Ads needs at least one app with an Apple Ads campaign linked to this account to fetch popularity and difficulty data.")
+        } catch let error as AppleAdsWebSessionExpiredError {
+            sessionStore.markReconnectRequired(for: session)
+            throw error
+        }
     }
 
     func checkDependencyStatus() throws -> AppleAdsWebSessionDependencyStatus {

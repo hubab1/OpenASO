@@ -319,9 +319,14 @@ final class AppServices {
         let keywordMetricsService = keywordMetricsService
         let refreshProgressStore = refreshProgressStore
         Task {
-            guard let preparation = try? await keywordMetricsService.prepareStalePopularityRefresh(
-                using: backgroundModelStore
-            ) else {
+            let preparation: StalePopularityRefreshPreparation
+            do {
+                preparation = try await keywordMetricsService.prepareStalePopularityRefresh(
+                    using: backgroundModelStore
+                )
+            } catch {
+                refreshProgressStore.beginAppleAdsPopularityRefresh(total: 0)
+                refreshProgressStore.finish(error: OpenASOError.map(error))
                 return
             }
             if preparation.clearedStatusCount > 0 {
@@ -331,30 +336,34 @@ final class AppServices {
             guard !trackIdentityKeys.isEmpty else { return }
 
             refreshProgressStore.beginAppleAdsPopularityRefresh(total: preparation.refreshQueryCount)
-            guard let outcomes = try? await keywordMetricsService.refreshMetrics(
-                for: trackIdentityKeys,
-                popularityContextAppStoreID: popularityContextAppStoreID,
-                webSession: webSession,
-                using: backgroundModelStore,
-                progress: { completed, total, failureCount in
-                    await refreshProgressStore.updateStep(
-                        .metrics,
-                        status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
-                        completed: completed,
-                        total: total,
-                        failureCount: failureCount
-                    )
-                }
-            ), !outcomes.isEmpty else {
-                refreshProgressStore.finish(error: nil)
-                return
-            }
+            do {
+                let result = try await keywordMetricsService.refreshMetricsBatch(
+                    for: trackIdentityKeys,
+                    popularityContextAppStoreID: popularityContextAppStoreID,
+                    webSession: webSession,
+                    using: backgroundModelStore,
+                    progress: { completed, total, failureCount in
+                        await refreshProgressStore.updateStep(
+                            .metrics,
+                            status: completed >= total ? (failureCount > 0 ? .failed : .completed) : .running,
+                            completed: completed,
+                            total: total,
+                            failureCount: failureCount
+                        )
+                    }
+                )
 
-            await MainActor.run {
-                self.markBackgroundModelStoreChanged()
+                if !result.outcomes.isEmpty {
+                    await MainActor.run {
+                        self.markBackgroundModelStoreChanged()
+                    }
+                }
+                refreshProgressStore.finish(
+                    error: result.firstErrorMessage.map(OpenASOError.providerUnavailable)
+                )
+            } catch {
+                refreshProgressStore.finish(error: OpenASOError.map(error))
             }
-            let firstErrorMessage = outcomes.first { $0.errorMessage != nil }?.errorMessage
-            refreshProgressStore.finish(error: firstErrorMessage.map(OpenASOError.providerUnavailable))
         }
     }
 
