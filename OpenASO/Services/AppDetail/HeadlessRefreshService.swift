@@ -95,6 +95,144 @@ struct HeadlessRefreshAppExecutionResult: Hashable, Sendable {
     }
 }
 
+enum HeadlessRefreshAppStageDisposition: Hashable, Sendable {
+    case success
+    case partialFailure
+    case failure
+}
+
+enum HeadlessRefreshAppResultAdapter {
+    static func map(
+        metadataStatus: AppMetadataRefreshStatus,
+        detailResult: AppDetailRefreshResult?,
+        request: AppDetailRefreshRequest
+    ) -> HeadlessRefreshAppExecutionResult {
+        let ratingsAttempted = request.refreshRatings
+            && !(detailResult?.ratingOutcomes.isEmpty ?? true)
+        let reviewsAttempted = request.refreshReviews
+            && !(detailResult?.reviewOutcomes.isEmpty ?? true)
+        let ratingsReviewsAttempted = ratingsAttempted || reviewsAttempted
+        let ratingsReviewsFullySucceeded = ratingsReviewsAttempted
+            && (!request.refreshRatings || (
+                ratingsAttempted
+                    && detailResult?.ratingOutcomes.allSatisfy { $0.error == nil } == true
+            ))
+            && (!request.refreshReviews || (
+                reviewsAttempted
+                    && detailResult?.reviewOutcomes.allSatisfy { $0.error == nil } == true
+            ))
+
+        if detailResult?.wasCancelled == true {
+            return HeadlessRefreshAppExecutionResult(
+                disposition: .cancelled,
+                ratingsReviewsAttempted: ratingsReviewsAttempted,
+                ratingsReviewsFullySucceeded: false
+            )
+        }
+
+        let metadataDisposition = switch metadataStatus {
+        case .succeeded:
+            HeadlessRefreshAppStageDisposition.success
+        case .partial:
+            HeadlessRefreshAppStageDisposition.partialFailure
+        case .failed:
+            HeadlessRefreshAppStageDisposition.failure
+        }
+        let detailDisposition: HeadlessRefreshAppStageDisposition = detailResult.map {
+            Self.detailDisposition(for: $0, request: request)
+        } ?? .failure
+        let disposition: HeadlessRefreshAppDisposition
+        switch (metadataDisposition, detailDisposition) {
+        case (.success, .success):
+            disposition = .success
+        case (.failure, .failure):
+            disposition = .failure
+        default:
+            disposition = .partialFailure
+        }
+
+        return HeadlessRefreshAppExecutionResult(
+            disposition: disposition,
+            ratingsReviewsAttempted: ratingsReviewsAttempted,
+            ratingsReviewsFullySucceeded: ratingsReviewsFullySucceeded,
+            issue: disposition == .success ? nil : HeadlessRefreshIssue(kind: .appRefreshFailed)
+        )
+    }
+
+    private static func detailDisposition(
+        for result: AppDetailRefreshResult,
+        request: AppDetailRefreshRequest
+    ) -> HeadlessRefreshAppStageDisposition {
+        let isMissingRequestedOutcome =
+            (request.refreshRatings && result.ratingOutcomes.isEmpty)
+            || (request.refreshReviews && result.reviewOutcomes.isEmpty)
+        guard result.firstError != nil || isMissingRequestedOutcome else {
+            return .success
+        }
+        let hasSuccessfulOutcome = result.keywordOutcomes.contains { $0.error == nil }
+            || result.ratingOutcomes.contains { $0.error == nil }
+            || result.reviewOutcomes.contains { $0.error == nil }
+        return hasSuccessfulOutcome ? .partialFailure : .failure
+    }
+}
+
+struct HeadlessRefreshAppAdapter: Sendable {
+    typealias MetadataRefresher = @Sendable (
+        _ request: AppMetadataRefreshRequest
+    ) async throws -> AppMetadataRefreshResult
+    typealias DetailRefresher = @Sendable (
+        _ request: AppDetailRefreshRequest
+    ) async throws -> AppDetailRefreshResult
+
+    private let refreshMetadata: MetadataRefresher
+    private let refreshDetail: DetailRefresher
+
+    init(
+        refreshMetadata: @escaping MetadataRefresher,
+        refreshDetail: @escaping DetailRefresher
+    ) {
+        self.refreshMetadata = refreshMetadata
+        self.refreshDetail = refreshDetail
+    }
+
+    func refresh(
+        _ plan: HeadlessRefreshAppPlan
+    ) async throws -> HeadlessRefreshAppExecutionResult {
+        try Task.checkCancellation()
+        let metadataStatus: AppMetadataRefreshStatus
+        do {
+            metadataStatus = try await refreshMetadata(plan.metadataRequest).status
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
+            metadataStatus = .failed
+        }
+
+        try Task.checkCancellation()
+        let detailResult: AppDetailRefreshResult?
+        do {
+            let result = try await refreshDetail(plan.appDetailRequest)
+            if result.wasCancelled {
+                throw CancellationError()
+            }
+            detailResult = result
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
+            detailResult = nil
+        }
+        try Task.checkCancellation()
+
+        return HeadlessRefreshAppResultAdapter.map(
+            metadataStatus: metadataStatus,
+            detailResult: detailResult,
+            request: plan.appDetailRequest
+        )
+    }
+}
+
 struct HeadlessRefreshRunSummary: Hashable, Sendable {
     let runID: UUID
     let activeRunID: UUID?

@@ -13,7 +13,8 @@ final class AppServices {
     let refreshMetricsRecorder: RefreshMetricsRecorder
     let appStoreConnectCredentialStore: AppStoreConnectCredentialStore
     let appStoreConnectReviewService: AppStoreConnectReviewService
-    let dailyRefreshScheduler: DailyRefreshScheduler
+    private(set) var dailyRefreshScheduler: DailyRefreshScheduler?
+    let headlessRefreshService: HeadlessRefreshService?
     let storefrontCatalog: StorefrontCatalog
     let appResolver: any AppResolver
     let appStoreWebMetadataProvider: AppStoreWebMetadataProvider
@@ -226,7 +227,54 @@ final class AppServices {
                 }
             )
         }
-
+        let headlessRefreshService: HeadlessRefreshService?
+        if let backgroundModelStore,
+           let appMetadataRefreshService,
+           let appDetailRefreshService {
+            let planLoader = DailyRefreshPlanLoader(
+                backgroundModelStore: backgroundModelStore
+            )
+            let appAdapter = HeadlessRefreshAppAdapter(
+                refreshMetadata: { request in
+                    try await appMetadataRefreshService.refresh(request)
+                },
+                refreshDetail: { request in
+                    try await appDetailRefreshService.refreshCancellable(request)
+                }
+            )
+            headlessRefreshService = HeadlessRefreshService(
+                dependencies: HeadlessRefreshDependencies(
+                    loadPlan: { request in
+                        try Task.checkCancellation()
+                        let configuration = try await MainActor.run {
+                            DailyRefreshPlanConfiguration(
+                                fallbackStorefrontCodes: try storefrontCatalog
+                                    .bundledStorefronts()
+                                    .map { storefront in
+                                        storefront.code
+                                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                                            .lowercased()
+                                    }
+                                    .filter { !$0.isEmpty },
+                                refreshRatingsAndReviews: request.refreshRatingsAndReviews,
+                                popularityContextAppStoreID: settingsStore
+                                    .popularityContextAppStoreID,
+                                appleAdsWebSession: appleAdsWebSessionStore.session,
+                                appStoreConnectCredentials: appStoreConnectCredentialStore
+                                    .credentials
+                            )
+                        }
+                        try Task.checkCancellation()
+                        return try await planLoader.load(configuration: configuration)
+                    },
+                    refreshApp: { plan in
+                        try await appAdapter.refresh(plan)
+                    }
+                )
+            )
+        } else {
+            headlessRefreshService = nil
+        }
         self.appleAdsCredentialStore = appleAdsCredentialStore
         self.appleAdsWebSessionStore = appleAdsWebSessionStore
         self.appleAdsWebSessionManager = appleAdsWebSessionManager
@@ -235,29 +283,8 @@ final class AppServices {
         self.refreshMetricsRecorder = refreshMetricsRecorder
         self.appStoreConnectCredentialStore = appStoreConnectCredentialStore
         self.appStoreConnectReviewService = appStoreConnectReviewService
-        self.dailyRefreshScheduler = DailyRefreshScheduler(
-            settingsStore: settingsStore,
-            refreshCoordinator: refreshCoordinator,
-            appDetailRefresh: appDetailRefreshService.map { service in
-                { request in
-                    await service.refresh(request)
-                }
-            },
-            storefrontCodesProvider: {
-                try storefrontCatalog.bundledStorefronts()
-                    .map { $0.code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-                    .filter { !$0.isEmpty }
-            },
-            popularityContextAppStoreIDProvider: {
-                settingsStore.popularityContextAppStoreID
-            },
-            appleAdsWebSessionProvider: {
-                appleAdsWebSessionStore.session
-            },
-            appStoreConnectCredentialsProvider: {
-                appStoreConnectCredentialStore.credentials
-            }
-        )
+        self.dailyRefreshScheduler = nil
+        self.headlessRefreshService = headlessRefreshService
         self.storefrontCatalog = storefrontCatalog
         self.appResolver = resolver
         self.appStoreWebMetadataProvider = appStoreWebMetadataProvider
@@ -311,6 +338,23 @@ final class AppServices {
         }
         self.backgroundModelStore = backgroundModelStore
         self.backgroundModelStoreRevision = backgroundModelStore == nil ? 0 : 1
+        if let headlessRefreshService {
+            self.dailyRefreshScheduler = DailyRefreshScheduler(
+                evaluateAndClaim: { date, calendar in
+                    await settingsStore.evaluateAndClaimAutomaticRefresh(
+                        at: date,
+                        calendar: calendar
+                    )
+                },
+                runHeadlessRefresh: { [weak self] request in
+                    let summary = await headlessRefreshService.run(request)
+                    await MainActor.run {
+                        self?.recordHeadlessRefreshCompletion(summary)
+                    }
+                    return summary
+                }
+            )
+        }
     }
 
     func prepareBackgroundModelStore() async {
@@ -319,6 +363,15 @@ final class AppServices {
 
     func markBackgroundModelStoreChanged() {
         backgroundModelStoreRevision += 1
+    }
+
+    func recordHeadlessRefreshCompletion(_ summary: HeadlessRefreshRunSummary) {
+        if summary.plannedAppCount > 0 {
+            markBackgroundModelStoreChanged()
+        }
+        if summary.ratingsReviewsFullySucceeded {
+            settingsStore.markRatingsReviewsRefreshed(on: summary.scheduledFor)
+        }
     }
 
     func refreshStaleKeywordPopularityAfterAppleAdsConnection() {

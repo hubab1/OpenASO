@@ -1,8 +1,6 @@
-import SwiftData
 import SwiftUI
 
 struct RootView: View {
-    @Environment(\.modelContext) private var modelContext
     @Environment(AppServices.self) private var services
 
     @State private var selectedApp: TrackedApp?
@@ -19,7 +17,7 @@ struct RootView: View {
             guard !Self.isRunningUnderTests else {
                 return
             }
-            await services.dailyRefreshScheduler.run(in: modelContext)
+            await services.dailyRefreshScheduler?.run()
         }
     }
 

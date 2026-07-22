@@ -161,6 +161,55 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func headlessDailyRefreshWiringRequiresABackgroundStore() throws {
+        let transport = MockHTTPClient { request in
+            throw OpenASOError.providerUnavailable(
+                "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+            )
+        }
+        let servicesWithoutStore = AppServices.mocked(httpClient: transport)
+
+        #expect(servicesWithoutStore.headlessRefreshService == nil)
+        #expect(servicesWithoutStore.dailyRefreshScheduler == nil)
+
+        let container = try ModelContainerFactory.makeModelContainer(
+            isStoredInMemoryOnly: true
+        )
+        let servicesWithStore = AppServices.mocked(
+            httpClient: transport,
+            modelContainer: container
+        )
+
+        #expect(servicesWithStore.headlessRefreshService != nil)
+        #expect(servicesWithStore.dailyRefreshScheduler != nil)
+
+        let revisionBeforeCompletion = servicesWithStore.backgroundModelStoreRevision
+        let instant = Date(timeIntervalSince1970: 1_000)
+        servicesWithStore.recordHeadlessRefreshCompletion(
+            HeadlessRefreshRunSummary(
+                runID: UUID(),
+                activeRunID: nil,
+                scheduledFor: instant,
+                startedAt: instant,
+                finishedAt: instant,
+                disposition: .partialFailure,
+                plannedAppCount: 1,
+                completedAppCount: 1,
+                successfulAppCount: 0,
+                partialFailureAppCount: 1,
+                failedAppCount: 0,
+                ratingsReviewsAttempted: false,
+                ratingsReviewsFullySucceeded: false,
+                issue: HeadlessRefreshIssue(kind: .appRefreshFailed)
+            )
+        )
+        #expect(
+            servicesWithStore.backgroundModelStoreRevision
+                == revisionBeforeCompletion + 1
+        )
+    }
+
+    @Test
     func appServicesWiresGateOutsideObservationAndRecordsPhysicalRetry() async throws {
         let defaults = Self.makeDefaults()
         let observationClock = RefreshObservationClock(nowNanoseconds: { 1_000 })

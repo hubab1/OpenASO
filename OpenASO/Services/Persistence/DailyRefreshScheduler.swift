@@ -1,286 +1,174 @@
 import Foundation
-import SwiftData
 
-struct DailyRefreshScheduleConfiguration: Hashable {
+struct DailyRefreshScheduleConfiguration: Hashable, Sendable {
     let isAutomaticRefreshEnabled: Bool
     let refreshTimeMinutes: Int
 }
 
-@MainActor
-@Observable
-final class DailyRefreshScheduler {
-    private let settingsStore: AppSettingsStore
-    private let refreshCoordinator: RankingRefreshCoordinator
-    private let appDetailRefresh: ((AppDetailRefreshRequest) async -> AppDetailRefreshResult)?
-    private let storefrontCodesProvider: () throws -> [String]
-    private let popularityContextAppStoreIDProvider: () -> Int64?
-    private let appleAdsWebSessionProvider: () -> AppleAdsWebSession?
-    private let appStoreConnectCredentialsProvider: () -> AppStoreConnectCredentials
-    private let scheduledLoop: ScheduledLoop
-    private let timing: DailyRefreshSchedulerTiming
+struct DailyRefreshScheduleSlot: Hashable, Sendable {
+    let scheduledFor: Date
+}
 
-    private(set) var isRefreshing = false
-    private(set) var lastOutcome: DailyRefreshOutcome?
+struct DailyRefreshScheduleDecision: Hashable, Sendable {
+    let dueSlot: DailyRefreshScheduleSlot?
+    let nextCheckAt: Date?
+}
+
+enum DailyRefreshDuePolicy {
+    static func evaluate(
+        configuration: DailyRefreshScheduleConfiguration,
+        lastClaimedAt: Date?,
+        now: Date,
+        calendar: Calendar
+    ) -> DailyRefreshScheduleDecision {
+        guard configuration.isAutomaticRefreshEnabled else {
+            return DailyRefreshScheduleDecision(dueSlot: nil, nextCheckAt: nil)
+        }
+
+        guard let scheduledForToday = scheduledDate(
+            on: now,
+            minutesFromMidnight: configuration.refreshTimeMinutes,
+            calendar: calendar
+        ) else {
+            return DailyRefreshScheduleDecision(dueSlot: nil, nextCheckAt: nil)
+        }
+        let scheduledForTomorrow = scheduledDate(
+            on: nextDay(after: now, calendar: calendar),
+            minutesFromMidnight: configuration.refreshTimeMinutes,
+            calendar: calendar
+        )
+
+        if now < scheduledForToday {
+            return DailyRefreshScheduleDecision(
+                dueSlot: nil,
+                nextCheckAt: scheduledForToday
+            )
+        }
+
+        if let lastClaimedAt,
+           calendar.compare(lastClaimedAt, to: now, toGranularity: .day) != .orderedAscending {
+            return DailyRefreshScheduleDecision(
+                dueSlot: nil,
+                nextCheckAt: scheduledForTomorrow
+            )
+        }
+
+        return DailyRefreshScheduleDecision(
+            dueSlot: DailyRefreshScheduleSlot(scheduledFor: scheduledForToday),
+            nextCheckAt: scheduledForTomorrow
+        )
+    }
+
+    private static func scheduledDate(
+        on date: Date,
+        minutesFromMidnight: Int,
+        calendar: Calendar
+    ) -> Date? {
+        let normalizedMinutes = min(max(minutesFromMidnight, 0), (24 * 60) - 1)
+        let startOfDay = calendar.startOfDay(for: date)
+        let searchStart = calendar.date(byAdding: .second, value: -1, to: startOfDay)
+            ?? startOfDay.addingTimeInterval(-1)
+        let nextDayStart = calendar.date(byAdding: .day, value: 1, to: startOfDay)
+            ?? startOfDay
+        let components = DateComponents(
+            hour: normalizedMinutes / 60,
+            minute: normalizedMinutes % 60,
+            second: 0
+        )
+        let match = calendar.nextDate(
+            after: searchStart,
+            matching: components,
+            matchingPolicy: .nextTime,
+            repeatedTimePolicy: .first,
+            direction: .forward
+        )
+        guard let match, match >= startOfDay, match < nextDayStart else {
+            return nil
+        }
+        return match
+    }
+
+    private static func nextDay(after date: Date, calendar: Calendar) -> Date {
+        let startOfDay = calendar.startOfDay(for: date)
+        return calendar.date(byAdding: .day, value: 1, to: startOfDay)
+            ?? startOfDay
+    }
+}
+
+struct DailyRefreshScheduleClaim: Hashable, Sendable {
+    let claimedAt: Date
+    let scheduledFor: Date
+    let refreshRatingsAndReviews: Bool
+}
+
+struct DailyRefreshClaimEvaluation: Hashable, Sendable {
+    let claim: DailyRefreshScheduleClaim?
+    let nextCheckAt: Date?
+}
+
+struct DailyRefreshScheduler: Sendable {
+    private static let maximumSleepInterval: TimeInterval = 60 * 60
+
+    typealias ClaimEvaluator = @Sendable (
+        _ now: Date,
+        _ calendar: Calendar
+    ) async -> DailyRefreshClaimEvaluation
+    typealias RefreshRunner = @Sendable (
+        _ request: HeadlessRefreshRunRequest
+    ) async -> HeadlessRefreshRunSummary
+    typealias DateProvider = @Sendable () -> Date
+    typealias CalendarProvider = @Sendable () -> Calendar
+    typealias Sleeper = @Sendable (_ date: Date) async throws -> Void
+
+    private let evaluateAndClaim: ClaimEvaluator
+    private let runHeadlessRefresh: RefreshRunner
+    private let now: DateProvider
+    private let calendar: CalendarProvider
+    private let sleepUntil: Sleeper
 
     init(
-        settingsStore: AppSettingsStore,
-        refreshCoordinator: RankingRefreshCoordinator,
-        appDetailRefresh: ((AppDetailRefreshRequest) async -> AppDetailRefreshResult)? = nil,
-        storefrontCodesProvider: @escaping () throws -> [String] = { [] },
-        popularityContextAppStoreIDProvider: @escaping () -> Int64? = { nil },
-        appleAdsWebSessionProvider: @escaping () -> AppleAdsWebSession? = { nil },
-        appStoreConnectCredentialsProvider: @escaping () -> AppStoreConnectCredentials = {
-            AppStoreConnectCredentials(issuerID: "", keyID: "", privateKey: "")
-        },
-        scheduledLoop: ScheduledLoop = ScheduledLoop(),
-        timing: DailyRefreshSchedulerTiming = .live
+        evaluateAndClaim: @escaping ClaimEvaluator,
+        runHeadlessRefresh: @escaping RefreshRunner,
+        now: @escaping DateProvider = { .now },
+        calendar: @escaping CalendarProvider = { .current },
+        sleepUntil: @escaping Sleeper = Self.liveSleep
     ) {
-        self.settingsStore = settingsStore
-        self.refreshCoordinator = refreshCoordinator
-        self.appDetailRefresh = appDetailRefresh
-        self.storefrontCodesProvider = storefrontCodesProvider
-        self.popularityContextAppStoreIDProvider = popularityContextAppStoreIDProvider
-        self.appleAdsWebSessionProvider = appleAdsWebSessionProvider
-        self.appStoreConnectCredentialsProvider = appStoreConnectCredentialsProvider
-        self.scheduledLoop = scheduledLoop
-        self.timing = timing
+        self.evaluateAndClaim = evaluateAndClaim
+        self.runHeadlessRefresh = runHeadlessRefresh
+        self.now = now
+        self.calendar = calendar
+        self.sleepUntil = sleepUntil
     }
 
-    func run(in modelContext: ModelContext) async {
-        await scheduledLoop.run {
-            _ = await triggerIfNeeded(in: modelContext)
-        } sleepUntilNextRun: {
-            await sleepUntilNextCheck()
-        }
-    }
-
-    @discardableResult
-    func triggerIfNeeded(
-        in modelContext: ModelContext,
-        now: Date = .now,
-        calendar: Calendar = .current
-    ) async -> Bool {
-        guard !isRefreshing, settingsStore.shouldTriggerRefresh(at: now, calendar: calendar) else {
-            return false
-        }
-
-        isRefreshing = true
-        defer {
-            isRefreshing = false
-        }
-        settingsStore.markRefreshTriggered(on: now)
-        if let appDetailRefresh {
-            await refreshApps(
-                in: modelContext,
-                now: now,
-                calendar: calendar,
-                appDetailRefresh: appDetailRefresh
-            )
-            return true
-        }
-
-        let outcomes = await refreshCoordinator.refreshStaleTracks(in: modelContext)
-        let failureCount = outcomes.filter { $0.error != nil }.count
-        lastOutcome = DailyRefreshOutcome(
-            triggeredAt: now,
-            refreshedCount: outcomes.count,
-            failureCount: failureCount
-        )
-        return true
-    }
-
-    private func refreshApps(
-        in modelContext: ModelContext,
-        now: Date,
-        calendar: Calendar,
-        appDetailRefresh: (AppDetailRefreshRequest) async -> AppDetailRefreshResult
-    ) async {
-        do {
-            let storefrontCodes = try storefrontCodesProvider()
-            let shouldRefreshRatingsReviews = !settingsStore.hasRefreshedRatingsReviews(on: now, calendar: calendar)
-            let requests = try dailyRefreshRequests(
-                in: modelContext,
-                storefrontCodes: storefrontCodes,
-                refreshRatingsReviews: shouldRefreshRatingsReviews
-            )
-            var failureCount = 0
-            var refreshedCount = 0
-            var didAttemptRatingsReviews = false
-            var didRefreshRatingsReviewsSuccessfully = shouldRefreshRatingsReviews
-
-            for request in requests {
-                let result = await appDetailRefresh(request)
-                refreshedCount += 1
-
-                if result.wasCancelled {
-                    failureCount += 1
-                    if request.refreshRatings || request.refreshReviews {
-                        didAttemptRatingsReviews = true
-                        didRefreshRatingsReviewsSuccessfully = false
-                    }
-                    break
-                }
-                if result.firstError != nil {
-                    failureCount += 1
-                }
-
-                if request.refreshRatings || request.refreshReviews {
-                    didAttemptRatingsReviews = true
-                    let ratingsSucceeded = result.ratingOutcomes.allSatisfy { $0.error == nil }
-                    let reviewsSucceeded = result.reviewOutcomes.allSatisfy { $0.error == nil }
-                    didRefreshRatingsReviewsSuccessfully = didRefreshRatingsReviewsSuccessfully
-                        && ratingsSucceeded
-                        && reviewsSucceeded
-                }
-            }
-
-            if didAttemptRatingsReviews, didRefreshRatingsReviewsSuccessfully {
-                settingsStore.markRatingsReviewsRefreshed(on: now)
-            }
-
-            lastOutcome = DailyRefreshOutcome(
-                triggeredAt: now,
-                refreshedCount: refreshedCount,
-                failureCount: failureCount
-            )
-        } catch {
-            lastOutcome = DailyRefreshOutcome(
-                triggeredAt: now,
-                refreshedCount: 0,
-                failureCount: 1
-            )
-        }
-    }
-
-    private func dailyRefreshRequests(
-        in modelContext: ModelContext,
-        storefrontCodes: [String],
-        refreshRatingsReviews: Bool
-    ) throws -> [AppDetailRefreshRequest] {
-        let apps = try modelContext.fetch(FetchDescriptor<TrackedApp>())
-        let normalizedStorefrontCodes = Array(Set(storefrontCodes.map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        }.filter { !$0.isEmpty })).sorted()
-
-        return apps.map { app in
-            // Only refresh ratings/reviews for the storefronts this app actually
-            // tracks keywords in. Falling back to the full catalog made the daily
-            // refresh fan out across every bundled storefront, which timed out for
-            // anyone tracking keywords in more than a handful of countries.
-            let appStorefrontCodes = Self.ratingsReviewsStorefrontCodes(
-                for: app,
-                fallback: normalizedStorefrontCodes
-            )
-
-            return AppDetailRefreshRequest(
-                app: AppDetailRefreshAppSnapshot(
-                    appStoreID: app.appStoreID,
-                    bundleID: app.bundleID,
-                    name: app.name,
-                    subtitle: app.subtitle,
-                    sellerName: app.sellerName,
-                    defaultPlatform: app.defaultPlatform
-                ),
-                workspace: .keywords,
-                storefrontSelection: .all(codes: appStorefrontCodes),
-                trackIdentityKeys: app.keywordTracks.map(\.identityKey),
-                trigger: "daily_refresh",
-                refreshRatings: refreshRatingsReviews,
-                refreshReviews: refreshRatingsReviews,
-                recordsRatingsReviewsRefresh: false,
-                popularityContextAppStoreID: popularityContextAppStoreIDProvider(),
-                appleAdsWebSession: appleAdsWebSessionProvider(),
-                appStoreConnectCredentials: appStoreConnectCredentialsProvider()
-            )
-        }
-    }
-
-    /// The storefronts whose ratings/reviews should be refreshed for `app`.
-    ///
-    /// Scoped to the countries the app actually tracks keywords in. Apps with no
-    /// tracked keywords use their default storefront. If that is unavailable, at
-    /// most one valid storefront is selected from `fallback`, preferring the US.
-    static func ratingsReviewsStorefrontCodes(
-        for app: TrackedApp,
-        fallback: [String]
-    ) -> [String] {
-        let trackedStorefrontCodes = Array(Set(app.keywordTracks.map {
-            $0.storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        }.filter { !$0.isEmpty })).sorted()
-        guard trackedStorefrontCodes.isEmpty else {
-            return trackedStorefrontCodes
-        }
-
-        let defaultStorefront = app.storeApp.defaultStorefront
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        if !defaultStorefront.isEmpty {
-            return [defaultStorefront]
-        }
-
-        var firstValidFallback: String?
-        for code in fallback {
-            let normalizedCode = code
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !normalizedCode.isEmpty else { continue }
-            if normalizedCode == "us" {
-                return [normalizedCode]
-            }
-            if firstValidFallback == nil {
-                firstValidFallback = normalizedCode
-            }
-        }
-        return firstValidFallback.map { [$0] } ?? []
-    }
-
-    func nextCheckSleepNanoseconds(now: Date? = nil) -> UInt64 {
-        let referenceDate = now ?? timing.now()
-        let nextCheckDate = settingsStore.nextRefreshCheckDate(after: referenceDate)
-        let seconds = max(1, min(nextCheckDate.timeIntervalSince(referenceDate), 60 * 60 * 24))
-        return UInt64(seconds * 1_000_000_000)
-    }
-
-    private func sleepUntilNextCheck() async {
-        do {
-            try await timing.sleepNanoseconds(nextCheckSleepNanoseconds())
-        } catch {
-            return
-        }
-    }
-}
-
-@MainActor
-struct ScheduledLoop {
-    func run(
-        operation: () async -> Void,
-        sleepUntilNextRun: () async -> Void
-    ) async {
+    func run() async {
         while !Task.isCancelled {
-            await operation()
-            guard !Task.isCancelled else {
+            let evaluation = await evaluateAndClaim(now(), calendar())
+            guard !Task.isCancelled else { return }
+
+            if let claim = evaluation.claim {
+                _ = await runHeadlessRefresh(HeadlessRefreshRunRequest(
+                    scheduledFor: claim.scheduledFor,
+                    refreshRatingsAndReviews: claim.refreshRatingsAndReviews
+                ))
+                guard !Task.isCancelled else { return }
+            }
+
+            guard let nextCheckAt = evaluation.nextCheckAt else { return }
+            let wakeAt = min(
+                nextCheckAt,
+                now().addingTimeInterval(Self.maximumSleepInterval)
+            )
+            do {
+                try await sleepUntil(wakeAt)
+            } catch {
                 return
             }
-            await sleepUntilNextRun()
         }
     }
-}
 
-@MainActor
-struct DailyRefreshSchedulerTiming {
-    var now: () -> Date
-    var sleepNanoseconds: (UInt64) async throws -> Void
-
-    static let live = DailyRefreshSchedulerTiming(
-        now: { .now },
-        sleepNanoseconds: { nanoseconds in
-            try await Task.sleep(nanoseconds: nanoseconds)
-        }
-    )
-}
-
-struct DailyRefreshOutcome: Equatable {
-    let triggeredAt: Date
-    let refreshedCount: Int
-    let failureCount: Int
+    private static func liveSleep(until date: Date) async throws {
+        let seconds = max(0, date.timeIntervalSinceNow)
+        let nanoseconds = UInt64(min(seconds * 1_000_000_000, Double(UInt64.max)))
+        try await Task.sleep(nanoseconds: nanoseconds)
+    }
 }

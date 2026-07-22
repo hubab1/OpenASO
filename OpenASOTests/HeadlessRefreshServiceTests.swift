@@ -818,6 +818,276 @@ struct HeadlessRefreshServiceTests {
             .runFinished(summaries[2]),
         ])
     }
+
+    @Test
+    func appAdapterReducesEveryMetadataAndDetailStatusCombination() {
+        let plan = makeAppPlan(
+            appStoreID: 901,
+            refreshRatingsAndReviews: false
+        )
+        let expectedError = OpenASOError.providerUnavailable("expected")
+        let detailCases: [(HeadlessRefreshAppStageDisposition, AppDetailRefreshResult)] = [
+            (
+                .success,
+                AppDetailRefreshResult(
+                    keywordOutcomes: [],
+                    ratingOutcomes: [],
+                    reviewOutcomes: [],
+                    firstError: nil
+                )
+            ),
+            (
+                .partialFailure,
+                AppDetailRefreshResult(
+                    keywordOutcomes: [
+                        KeywordBackgroundRefreshOutcome(
+                            trackIdentityKey: "successful",
+                            error: nil
+                        ),
+                        KeywordBackgroundRefreshOutcome(
+                            trackIdentityKey: "failed",
+                            error: expectedError
+                        ),
+                    ],
+                    ratingOutcomes: [],
+                    reviewOutcomes: [],
+                    firstError: expectedError
+                )
+            ),
+            (
+                .failure,
+                AppDetailRefreshResult(
+                    keywordOutcomes: [
+                        KeywordBackgroundRefreshOutcome(
+                            trackIdentityKey: "failed",
+                            error: expectedError
+                        ),
+                    ],
+                    ratingOutcomes: [],
+                    reviewOutcomes: [],
+                    firstError: expectedError
+                )
+            ),
+        ]
+        let metadataCases: [(AppMetadataRefreshStatus, HeadlessRefreshAppStageDisposition)] = [
+            (.succeeded, .success),
+            (.partial, .partialFailure),
+            (.failed, .failure),
+        ]
+
+        for (metadataStatus, metadataDisposition) in metadataCases {
+            for (detailDisposition, detailResult) in detailCases {
+                let result = HeadlessRefreshAppResultAdapter.map(
+                    metadataStatus: metadataStatus,
+                    detailResult: detailResult,
+                    request: plan.appDetailRequest
+                )
+                let expectedDisposition: HeadlessRefreshAppDisposition
+                switch (metadataDisposition, detailDisposition) {
+                case (.success, .success):
+                    expectedDisposition = .success
+                case (.failure, .failure):
+                    expectedDisposition = .failure
+                default:
+                    expectedDisposition = .partialFailure
+                }
+
+                #expect(result.disposition == expectedDisposition)
+                #expect((result.issue == nil) == (expectedDisposition == .success))
+            }
+        }
+    }
+
+    @Test
+    func appAdapterReportsRatingsAndReviewsOnlyFromNonemptySuccessfulOutcomes() {
+        let plan = makeAppPlan(appStoreID: 902)
+        let providerError = OpenASOError.providerUnavailable("expected")
+        let empty = HeadlessRefreshAppResultAdapter.map(
+            metadataStatus: .succeeded,
+            detailResult: AppDetailRefreshResult(
+                keywordOutcomes: [],
+                ratingOutcomes: [],
+                reviewOutcomes: [],
+                firstError: nil
+            ),
+            request: plan.appDetailRequest
+        )
+        let fullySucceeded = HeadlessRefreshAppResultAdapter.map(
+            metadataStatus: .succeeded,
+            detailResult: AppDetailRefreshResult(
+                keywordOutcomes: [
+                    KeywordBackgroundRefreshOutcome(
+                        trackIdentityKey: "failed-keyword",
+                        error: providerError
+                    ),
+                ],
+                ratingOutcomes: [
+                    AppStorefrontRatingRefreshOutcome(
+                        storefront: "us",
+                        result: nil,
+                        error: nil
+                    ),
+                ],
+                reviewOutcomes: [
+                    AppStorefrontReviewRefreshOutcome(
+                        storefront: "us",
+                        fetchedReviews: 0,
+                        storedReviews: 0,
+                        error: nil
+                    ),
+                ],
+                firstError: providerError
+            ),
+            request: plan.appDetailRequest
+        )
+        let partiallySucceeded = HeadlessRefreshAppResultAdapter.map(
+            metadataStatus: .succeeded,
+            detailResult: AppDetailRefreshResult(
+                keywordOutcomes: [],
+                ratingOutcomes: [
+                    AppStorefrontRatingRefreshOutcome(
+                        storefront: "us",
+                        result: nil,
+                        error: providerError
+                    ),
+                ],
+                reviewOutcomes: [],
+                firstError: providerError
+            ),
+            request: plan.appDetailRequest
+        )
+
+        #expect(!empty.ratingsReviewsAttempted)
+        #expect(!empty.ratingsReviewsFullySucceeded)
+        #expect(empty.disposition == .partialFailure)
+        #expect(fullySucceeded.ratingsReviewsAttempted)
+        #expect(fullySucceeded.ratingsReviewsFullySucceeded)
+        #expect(fullySucceeded.disposition == .partialFailure)
+        #expect(partiallySucceeded.ratingsReviewsAttempted)
+        #expect(!partiallySucceeded.ratingsReviewsFullySucceeded)
+    }
+
+    @Test
+    func appAdapterRunsStagesInOrderAndPreservesPartialWorkAfterOrdinaryThrows() async throws {
+        let plan = makeAppPlan(
+            appStoreID: 903,
+            refreshRatingsAndReviews: false
+        )
+        let metadataFailureCalls = HeadlessAppAdapterCallRecorder()
+        let metadataFailureAdapter = HeadlessRefreshAppAdapter(
+            refreshMetadata: { _ in
+                await metadataFailureCalls.record("metadata")
+                throw HeadlessAppAdapterTestError.expected
+            },
+            refreshDetail: { _ in
+                await metadataFailureCalls.record("detail")
+                return AppDetailRefreshResult(
+                    keywordOutcomes: [],
+                    ratingOutcomes: [],
+                    reviewOutcomes: [],
+                    firstError: nil
+                )
+            }
+        )
+
+        let metadataFailureResult = try await metadataFailureAdapter.refresh(plan)
+
+        #expect(await metadataFailureCalls.values() == ["metadata", "detail"])
+        #expect(metadataFailureResult.disposition == .partialFailure)
+
+        let detailFailureCalls = HeadlessAppAdapterCallRecorder()
+        let detailFailureAdapter = HeadlessRefreshAppAdapter(
+            refreshMetadata: { request in
+                await detailFailureCalls.record("metadata")
+                return makeMetadataResult(
+                    appStoreID: request.appStoreID,
+                    status: .succeeded
+                )
+            },
+            refreshDetail: { _ in
+                await detailFailureCalls.record("detail")
+                throw HeadlessAppAdapterTestError.expected
+            }
+        )
+
+        let detailFailureResult = try await detailFailureAdapter.refresh(plan)
+
+        #expect(await detailFailureCalls.values() == ["metadata", "detail"])
+        #expect(detailFailureResult.disposition == .partialFailure)
+
+        let totalFailureAdapter = HeadlessRefreshAppAdapter(
+            refreshMetadata: { _ in throw HeadlessAppAdapterTestError.expected },
+            refreshDetail: { _ in throw HeadlessAppAdapterTestError.expected }
+        )
+        let totalFailureResult = try await totalFailureAdapter.refresh(plan)
+        #expect(totalFailureResult.disposition == .failure)
+    }
+
+    @Test
+    func appAdapterPropagatesTaskCancellationButTreatsProviderURLCancellationAsFailure() async throws {
+        let plan = makeAppPlan(
+            appStoreID: 904,
+            refreshRatingsAndReviews: false
+        )
+        let cancellationCalls = HeadlessAppAdapterCallRecorder()
+        let cancellationAdapter = HeadlessRefreshAppAdapter(
+            refreshMetadata: { _ in
+                await cancellationCalls.record("metadata")
+                throw CancellationError()
+            },
+            refreshDetail: { _ in
+                await cancellationCalls.record("detail")
+                return AppDetailRefreshResult(
+                    keywordOutcomes: [],
+                    ratingOutcomes: [],
+                    reviewOutcomes: [],
+                    firstError: nil
+                )
+            }
+        )
+
+        await #expect(throws: CancellationError.self) {
+            try await cancellationAdapter.refresh(plan)
+        }
+        #expect(await cancellationCalls.values() == ["metadata"])
+
+        let providerCancellationCalls = HeadlessAppAdapterCallRecorder()
+        let providerCancellationAdapter = HeadlessRefreshAppAdapter(
+            refreshMetadata: { _ in
+                await providerCancellationCalls.record("metadata")
+                throw URLError(.cancelled)
+            },
+            refreshDetail: { _ in
+                await providerCancellationCalls.record("detail")
+                return AppDetailRefreshResult(
+                    keywordOutcomes: [],
+                    ratingOutcomes: [],
+                    reviewOutcomes: [],
+                    firstError: nil
+                )
+            }
+        )
+
+        let providerCancellationResult = try await providerCancellationAdapter.refresh(plan)
+
+        #expect(await providerCancellationCalls.values() == ["metadata", "detail"])
+        #expect(providerCancellationResult.disposition == .partialFailure)
+    }
+
+    @Test
+    func appAdapterDefensivelyPropagatesACancelledDetailResult() async {
+        let plan = makeAppPlan(appStoreID: 905)
+        let adapter = HeadlessRefreshAppAdapter(
+            refreshMetadata: { request in
+                makeMetadataResult(appStoreID: request.appStoreID, status: .succeeded)
+            },
+            refreshDetail: { _ in .cancelled }
+        )
+
+        await #expect(throws: CancellationError.self) {
+            try await adapter.refresh(plan)
+        }
+    }
 }
 
 private func insertTrack(
@@ -867,7 +1137,53 @@ private func makePlanConfiguration() -> DailyRefreshPlanConfiguration {
     )
 }
 
-private func makeAppPlan(appStoreID: Int64) -> HeadlessRefreshAppPlan {
+private func makeMetadataResult(
+    appStoreID: Int64,
+    status: AppMetadataRefreshStatus
+) -> AppMetadataRefreshResult {
+    let iTunesFailure = AppMetadataRefreshFailure(
+        provider: .iTunesLookup,
+        stage: .fetch,
+        error: .providerUnavailable("expected")
+    )
+    let webFailure = AppMetadataRefreshFailure(
+        provider: .appStoreWeb,
+        stage: .fetch,
+        error: .providerUnavailable("expected")
+    )
+    let outcome: AppMetadataRefreshStorefrontOutcome
+    switch status {
+    case .succeeded:
+        outcome = AppMetadataRefreshStorefrontOutcome(
+            storefront: "us",
+            iTunesLookup: .succeeded,
+            appStoreWeb: .succeeded
+        )
+    case .partial:
+        outcome = AppMetadataRefreshStorefrontOutcome(
+            storefront: "us",
+            iTunesLookup: .succeeded,
+            appStoreWeb: .failed(webFailure)
+        )
+    case .failed:
+        outcome = AppMetadataRefreshStorefrontOutcome(
+            storefront: "us",
+            iTunesLookup: .failed(iTunesFailure),
+            appStoreWeb: .failed(webFailure)
+        )
+    }
+    return AppMetadataRefreshResult(
+        appStoreID: appStoreID,
+        defaultStorefront: "us",
+        storefronts: [outcome],
+        iconInvalidated: false
+    )
+}
+
+private func makeAppPlan(
+    appStoreID: Int64,
+    refreshRatingsAndReviews: Bool = true
+) -> HeadlessRefreshAppPlan {
     HeadlessRefreshAppPlan(
         appStoreID: appStoreID,
         metadataRequest: AppMetadataRefreshRequest(
@@ -887,8 +1203,8 @@ private func makeAppPlan(appStoreID: Int64) -> HeadlessRefreshAppPlan {
             storefrontSelection: .all(codes: ["us"]),
             trackIdentityKeys: [],
             trigger: "daily_refresh",
-            refreshRatings: true,
-            refreshReviews: true,
+            refreshRatings: refreshRatingsAndReviews,
+            refreshReviews: refreshRatingsAndReviews,
             recordsRatingsReviewsRefresh: false,
             popularityContextAppStoreID: nil,
             appleAdsWebSession: nil,
@@ -911,6 +1227,22 @@ private actor HeadlessRefreshEventRecorder {
     func values() -> [HeadlessRefreshEvent] {
         recordedEvents
     }
+}
+
+private actor HeadlessAppAdapterCallRecorder {
+    private var calls: [String] = []
+
+    func record(_ call: String) {
+        calls.append(call)
+    }
+
+    func values() -> [String] {
+        calls
+    }
+}
+
+private enum HeadlessAppAdapterTestError: Error {
+    case expected
 }
 
 private actor PausingHeadlessEventRecorder {

@@ -21,6 +21,9 @@ final class AppSettingsStore {
     static let isAutomaticRefreshEnabled = "dailyRefresh.isAutomaticRefreshEnabled"
     static let refreshTimeMinutes = "dailyRefresh.timeMinutes"
     static let lastRefreshTriggeredAt = "dailyRefresh.lastTriggeredAt"
+    static let lastAutomaticRefreshClaimedAt = "dailyRefresh.lastAutomaticClaimedAt"
+    static let automaticRefreshClaimMigrationCompleted =
+      "dailyRefresh.automaticClaimMigrationCompleted"
     static let lastRatingsReviewsRefreshAt = "dailyRefresh.lastRatingsReviewsRefreshAt"
     static let mcpServerPort = "mcp.serverPort"
   }
@@ -37,6 +40,7 @@ final class AppSettingsStore {
   private(set) var isAutomaticRefreshEnabled: Bool
   private(set) var refreshTimeMinutes: Int
   private(set) var lastRefreshTriggeredAt: Date?
+  private(set) var lastAutomaticRefreshClaimedAt: Date?
   private(set) var lastRatingsReviewsRefreshAt: Date?
   private(set) var mcpServerPort: Int
   var requestedSettingsFocusSection: AppleAdsSettingsFocusSection?
@@ -51,6 +55,28 @@ final class AppSettingsStore {
     let storedIsEnabled = defaults.object(forKey: DefaultsKey.isAutomaticRefreshEnabled) as? Bool
     let storedMinutes = defaults.object(forKey: DefaultsKey.refreshTimeMinutes) as? Int
     let storedMCPServerPort = defaults.object(forKey: DefaultsKey.mcpServerPort) as? Int
+    let storedLastRefreshTriggeredAt =
+      defaults.object(forKey: DefaultsKey.lastRefreshTriggeredAt) as? Date
+    let storedLastAutomaticRefreshClaimedAt =
+      defaults.object(forKey: DefaultsKey.lastAutomaticRefreshClaimedAt) as? Date
+    let hasCompletedAutomaticClaimMigration =
+      defaults.bool(forKey: DefaultsKey.automaticRefreshClaimMigrationCompleted)
+    let migratedLastAutomaticRefreshClaimedAt: Date?
+    if hasCompletedAutomaticClaimMigration {
+      migratedLastAutomaticRefreshClaimedAt = storedLastAutomaticRefreshClaimedAt
+    } else {
+      migratedLastAutomaticRefreshClaimedAt =
+        storedLastAutomaticRefreshClaimedAt ?? storedLastRefreshTriggeredAt
+      if storedLastAutomaticRefreshClaimedAt == nil,
+        let migratedLastAutomaticRefreshClaimedAt
+      {
+        defaults.set(
+          migratedLastAutomaticRefreshClaimedAt,
+          forKey: DefaultsKey.lastAutomaticRefreshClaimedAt
+        )
+      }
+      defaults.set(true, forKey: DefaultsKey.automaticRefreshClaimMigrationCompleted)
+    }
     self.isAnalyticsEnabled = storedValue ?? Self.defaultIsAnalyticsEnabled
     self.popularityContextAppStoreID = storedPopularityContextAppStoreID.flatMap(Int64.init)
     self.popularityContextStorefrontCode = Self.normalizedStorefrontCode(
@@ -58,8 +84,8 @@ final class AppSettingsStore {
     self.isAutomaticRefreshEnabled = storedIsEnabled ?? Self.defaultIsAutomaticRefreshEnabled
     self.refreshTimeMinutes = Self.normalized(
       minutes: storedMinutes ?? Self.defaultRefreshTimeMinutes)
-    self.lastRefreshTriggeredAt =
-      defaults.object(forKey: DefaultsKey.lastRefreshTriggeredAt) as? Date
+    self.lastRefreshTriggeredAt = storedLastRefreshTriggeredAt
+    self.lastAutomaticRefreshClaimedAt = migratedLastAutomaticRefreshClaimedAt
     self.lastRatingsReviewsRefreshAt =
       defaults.object(forKey: DefaultsKey.lastRatingsReviewsRefreshAt) as? Date
     self.mcpServerPort = Self.normalizedMCPServerPort(storedMCPServerPort)
@@ -135,19 +161,16 @@ final class AppSettingsStore {
 
   func refreshTimeDate(relativeTo referenceDate: Date = .now, calendar: Calendar = .current) -> Date
   {
-    scheduledRefreshDate(on: referenceDate, calendar: calendar)
-  }
-
-  func shouldTriggerRefresh(at date: Date, calendar: Calendar = .current) -> Bool {
-    guard isAutomaticRefreshEnabled else {
-      return false
-    }
-
-    guard !hasTriggeredRefresh(on: date, calendar: calendar) else {
-      return false
-    }
-
-    return date >= scheduledRefreshDate(on: date, calendar: calendar)
+    let decision = DailyRefreshDuePolicy.evaluate(
+      configuration: DailyRefreshScheduleConfiguration(
+        isAutomaticRefreshEnabled: true,
+        refreshTimeMinutes: refreshTimeMinutes
+      ),
+      lastClaimedAt: nil,
+      now: referenceDate,
+      calendar: calendar
+    )
+    return decision.dueSlot?.scheduledFor ?? decision.nextCheckAt ?? referenceDate
   }
 
   func hasTriggeredRefresh(on date: Date, calendar: Calendar = .current) -> Bool {
@@ -163,6 +186,59 @@ final class AppSettingsStore {
     lastRefreshTriggeredAt = date
   }
 
+  func hasClaimedAutomaticRefresh(on date: Date, calendar: Calendar = .current) -> Bool {
+    guard let lastAutomaticRefreshClaimedAt else {
+      return false
+    }
+
+    return calendar.isDate(lastAutomaticRefreshClaimedAt, inSameDayAs: date)
+  }
+
+  func evaluateAndClaimAutomaticRefresh(
+    at date: Date,
+    calendar: Calendar = .current
+  ) -> DailyRefreshClaimEvaluation {
+    let persistedClaim = defaults.object(
+      forKey: DefaultsKey.lastAutomaticRefreshClaimedAt
+    ) as? Date
+    if persistedClaim != lastAutomaticRefreshClaimedAt {
+      lastAutomaticRefreshClaimedAt = persistedClaim
+    }
+    let decision = DailyRefreshDuePolicy.evaluate(
+      configuration: scheduleConfiguration,
+      lastClaimedAt: persistedClaim,
+      now: date,
+      calendar: calendar
+    )
+    guard let dueSlot = decision.dueSlot else {
+      return DailyRefreshClaimEvaluation(
+        claim: nil,
+        nextCheckAt: decision.nextCheckAt
+      )
+    }
+
+    let claim = DailyRefreshScheduleClaim(
+      claimedAt: date,
+      scheduledFor: dueSlot.scheduledFor,
+      refreshRatingsAndReviews: !hasRefreshedRatingsReviews(on: date, calendar: calendar)
+    )
+
+    // The automatic claim is the work gate and must be durable before any
+    // storefront, credential, persistence, or provider dependency is consulted.
+    defaults.set(date, forKey: DefaultsKey.lastAutomaticRefreshClaimedAt)
+    lastAutomaticRefreshClaimedAt = date
+
+    // Preserve the existing user-facing "Last triggered" value without allowing
+    // manual ranking refreshes to mutate the automatic schedule claim.
+    defaults.set(date, forKey: DefaultsKey.lastRefreshTriggeredAt)
+    lastRefreshTriggeredAt = date
+
+    return DailyRefreshClaimEvaluation(
+      claim: claim,
+      nextCheckAt: decision.nextCheckAt
+    )
+  }
+
   func hasRefreshedRatingsReviews(on date: Date, calendar: Calendar = .current) -> Bool {
     guard let lastRatingsReviewsRefreshAt else {
       return false
@@ -172,6 +248,14 @@ final class AppSettingsStore {
   }
 
   func markRatingsReviewsRefreshed(on date: Date = .now) {
+    let persistedDate =
+      defaults.object(forKey: DefaultsKey.lastRatingsReviewsRefreshAt) as? Date
+    if persistedDate != lastRatingsReviewsRefreshAt {
+      lastRatingsReviewsRefreshAt = persistedDate
+    }
+    if let persistedDate, date <= persistedDate {
+      return
+    }
     defaults.set(date, forKey: DefaultsKey.lastRatingsReviewsRefreshAt)
     lastRatingsReviewsRefreshAt = date
   }
@@ -180,30 +264,6 @@ final class AppSettingsStore {
     let normalizedPort = Self.normalizedMCPServerPort(port)
     defaults.set(normalizedPort, forKey: DefaultsKey.mcpServerPort)
     mcpServerPort = normalizedPort
-  }
-
-  func nextRefreshCheckDate(after date: Date, calendar: Calendar = .current) -> Date {
-    guard isAutomaticRefreshEnabled else {
-      return calendar.date(byAdding: .day, value: 1, to: date)
-        ?? date.addingTimeInterval(60 * 60 * 24)
-    }
-
-    let todayScheduledDate = scheduledRefreshDate(on: date, calendar: calendar)
-    if date < todayScheduledDate, !hasTriggeredRefresh(on: date, calendar: calendar) {
-      return todayScheduledDate
-    }
-
-    let tomorrow =
-      calendar.date(byAdding: .day, value: 1, to: date) ?? date.addingTimeInterval(60 * 60 * 24)
-    return scheduledRefreshDate(on: tomorrow, calendar: calendar)
-  }
-
-  private func scheduledRefreshDate(on date: Date, calendar: Calendar) -> Date {
-    var components = calendar.dateComponents([.year, .month, .day], from: date)
-    components.hour = refreshHour
-    components.minute = refreshMinute
-    components.second = 0
-    return calendar.date(from: components) ?? date
   }
 
   private static func normalized(minutes: Int) -> Int {

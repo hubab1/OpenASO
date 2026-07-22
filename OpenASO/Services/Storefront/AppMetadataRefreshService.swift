@@ -435,7 +435,6 @@ final class AppMetadataRefreshService: Sendable {
 
     private static func rethrowCancellationIfNeeded(_ error: Error) throws {
         if error is CancellationError
-            || (error as? URLError)?.code == .cancelled
             || Task.isCancelled {
             throw CancellationError()
         }
