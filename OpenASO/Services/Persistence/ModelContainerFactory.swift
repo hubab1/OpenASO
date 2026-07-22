@@ -54,7 +54,7 @@ enum ModelContainerFactory {
     typealias ContainerOpener = (Schema, ModelConfiguration) throws -> ModelContainer
 
     static var schema: Schema {
-        Schema(OpenASOSchemaV1.models)
+        Schema(versionedSchema: OpenASOMigrationPlan.currentSchema)
     }
 
     static func makeModelContainer(
