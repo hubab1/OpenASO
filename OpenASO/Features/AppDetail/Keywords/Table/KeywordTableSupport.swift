@@ -584,7 +584,7 @@ struct KeywordRankingCrawlSummary: Identifiable, Equatable, Sendable {
     }
 }
 
-struct KeywordRankingAppSummary: Identifiable {
+struct KeywordRankingAppSummary: Identifiable, Sendable {
     let id: Int64
     let position: Int
     let appStoreID: Int64

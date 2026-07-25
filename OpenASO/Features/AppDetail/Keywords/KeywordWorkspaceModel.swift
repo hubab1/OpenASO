@@ -12,15 +12,16 @@ final class KeywordWorkspaceModel {
     private struct Publication {
         let materializedRows: [KeywordWorkspaceRow]
         let rows: [KeywordWorkspaceRow]
+        let insightsSummary: KeywordInsightsSummary
         let completedMaterializationID: KeywordWorkspaceProjection.MaterializationID?
         let materializationGeneration: Int
         let appliedFilterID: KeywordWorkspaceProjection.FilterID?
-
     }
 
     private var publication = Publication(
         materializedRows: [],
         rows: [],
+        insightsSummary: .empty,
         completedMaterializationID: nil,
         materializationGeneration: 0,
         appliedFilterID: nil
@@ -31,10 +32,28 @@ final class KeywordWorkspaceModel {
     @ObservationIgnored private var filterRequestGeneration = 0
 
     var rows: [KeywordWorkspaceRow] { publication.rows }
+    var insightsSummary: KeywordInsightsSummary { publication.insightsSummary }
     var materializationGeneration: Int { publication.materializationGeneration }
 
     func isLoading(for materializationID: KeywordWorkspaceProjection.MaterializationID) -> Bool {
         publication.completedMaterializationID != materializationID
+    }
+
+    func prime(
+        id: KeywordWorkspaceProjection.MaterializationID,
+        rows: [KeywordWorkspaceRow],
+        filters: KeywordWorkspaceProjection.Filters
+    ) {
+        guard publication.completedMaterializationID != id else { return }
+
+        desiredFilters = filters
+        let filteredRows = KeywordWorkspaceProjection.filteredRows(rows, filters: filters)
+        publish(
+            materializedRows: rows,
+            rows: filteredRows,
+            completedMaterializationID: id,
+            filters: filters
+        )
     }
 
     func materialize(
@@ -79,12 +98,14 @@ final class KeywordWorkspaceModel {
 
             let filters = desiredFilters ?? initialFilters
             pendingMaterializationRequestGeneration = nil
-            publish(
-                materializedRows: [],
-                rows: [],
-                completedMaterializationID: id,
-                filters: filters
-            )
+            if publication.completedMaterializationID != id {
+                publish(
+                    materializedRows: [],
+                    rows: [],
+                    completedMaterializationID: id,
+                    filters: filters
+                )
+            }
             return OpenASOError.map(error).localizedDescription
         }
     }
@@ -113,6 +134,7 @@ final class KeywordWorkspaceModel {
             publication = Publication(
                 materializedRows: materializedRows,
                 rows: rows,
+                insightsSummary: KeywordInsightsSummary(dataset: KeywordInsightsDataset(rows: rows)),
                 completedMaterializationID: publication.completedMaterializationID,
                 materializationGeneration: publication.materializationGeneration,
                 appliedFilterID: id
@@ -132,6 +154,7 @@ final class KeywordWorkspaceModel {
         publication = Publication(
             materializedRows: materializedRows,
             rows: rows,
+            insightsSummary: KeywordInsightsSummary(dataset: KeywordInsightsDataset(rows: rows)),
             completedMaterializationID: completedMaterializationID,
             materializationGeneration: nextGeneration,
             appliedFilterID: KeywordWorkspaceProjection.FilterID(

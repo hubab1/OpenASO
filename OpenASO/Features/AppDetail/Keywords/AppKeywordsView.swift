@@ -21,7 +21,6 @@ struct AppKeywordsView: View {
     let refreshToken: Int
     let reportError: (String) -> Void
 
-    @State private var insightsDataset = KeywordInsightsDataset(appStoreID: 0, series: [], source: .local)
     @State private var workspaceModel = KeywordWorkspaceModel()
 
     init(
@@ -83,7 +82,10 @@ struct AppKeywordsView: View {
         }
     }
 
-    private var materializationID: KeywordWorkspaceProjection.MaterializationID {
+    private func materializationID(
+        tracks: [TrackedAppKeyword],
+        refreshStatuses: [TrackedKeywordRefreshStatus]
+    ) -> KeywordWorkspaceProjection.MaterializationID {
         let statusesByIdentityKey = TrackedKeywordRefreshStatusStore.snapshots(
             from: refreshStatuses
         )
@@ -126,27 +128,6 @@ struct AppKeywordsView: View {
         )
     }
 
-    private var isLoadingKeywordRows: Bool {
-        workspaceModel.isLoading(for: materializationID)
-    }
-
-    private func insightsSignature(for rows: [KeywordWorkspaceRow]) -> String {
-        [
-            String(refreshToken),
-            selectedDateRange.id,
-            selectedPlatformFilter.id,
-            rows.map(\.track.identityKey).joined(separator: "|")
-        ].joined(separator: "::")
-    }
-
-    private var insightsSummary: KeywordInsightsSummary {
-        KeywordInsightsSummary(dataset: insightsDataset)
-    }
-
-    private var storefrontLookup: [String: StorefrontDefinition] {
-        Dictionary(uniqueKeysWithValues: storefrontDefinitions.map { ($0.code, $0) })
-    }
-
     private var storefrontDefinitions: [StorefrontDefinition] {
         ((try? services.storefrontCatalog.bundledStorefronts()) ?? []).map {
             StorefrontDefinition(
@@ -158,45 +139,48 @@ struct AppKeywordsView: View {
         }
     }
 
-    private struct SnapshotBuckets {
-        let latestByTrackKey: [String: KeywordRankingCrawlSummary]
-        let trendByTrackKey: [String: [KeywordRankingCrawlSummary]]
-        let topResultsByCrawlKey: [String: [KeywordRankingAppSummary]]
-    }
-
-    private static let rankingFetchChunkSize = 500
-
     private func makeRows(
         from tracks: [TrackedAppKeyword],
-        snapshotBuckets: SnapshotBuckets,
-        metricsByQueryKey: [String: KeywordMetricsSnapshot],
+        workspace: KeywordInsightsService.Workspace?,
+        storefrontLookup: [String: StorefrontDefinition],
         refreshStatusesByIdentityKey: [String: KeywordRefreshStatusSnapshot]
     ) -> [KeywordWorkspaceRow] {
-        let storefrontLookup = storefrontLookup
         var rows: [KeywordWorkspaceRow] = []
         rows.reserveCapacity(tracks.count)
 
         for track in tracks {
-            guard let row = makeRow(
-                for: track,
-                snapshotBuckets: snapshotBuckets,
-                storefrontLookup: storefrontLookup,
-                metricsByQueryKey: metricsByQueryKey,
-                refreshStatusesByIdentityKey: refreshStatusesByIdentityKey
-            ) else {
-                continue
-            }
-
-            rows.append(row)
+            let loadedRow = workspace?.rowsByIdentityKey[track.identityKey]
+            rows.append(
+                KeywordWorkspaceRow(
+                    track: track,
+                    storefront: storefrontLookup[track.storefront],
+                    metrics: loadedRow?.metrics,
+                    refreshStatus: TrackedKeywordRefreshStatusStore.snapshot(
+                        for: track,
+                        persisted: refreshStatusesByIdentityKey[track.identityKey]
+                    ),
+                    latestSnapshot: loadedRow?.latestSnapshot,
+                    trendSnapshots: loadedRow?.trendSnapshots ?? [],
+                    rankingApps: loadedRow?.rankingApps ?? []
+                )
+            )
         }
 
         return KeywordWorkspaceProjection.orderedRows(rows)
     }
 
     var body: some View {
+        let queriedTracks = tracks
+        let queriedRefreshStatuses = refreshStatuses
+        let targetMaterializationID = materializationID(
+            tracks: queriedTracks,
+            refreshStatuses: queriedRefreshStatuses
+        )
+        let targetFilterID = filterID
         let rows = workspaceModel.rows
+        let storefronts = storefrontDefinitions
         VStack(alignment: .leading, spacing: 0) {
-            if tracks.isEmpty {
+            if queriedTracks.isEmpty {
                 ContentUnavailableView(
                     "No Keywords Yet",
                     systemImage: "list.bullet.rectangle",
@@ -207,11 +191,11 @@ struct AppKeywordsView: View {
             } else {
                 KeywordTableView(
                     rows: rows,
-                    isLoadingRows: isLoadingKeywordRows,
+                    isLoadingRows: workspaceModel.isLoading(for: targetMaterializationID),
                     trackedAppStoreID: trackedApp.appStoreID,
                     chartSelectionScope: selectedStorefrontFilter.id,
-                    insightsSummary: insightsSummary,
-                    storefronts: storefrontDefinitions,
+                    insightsSummary: workspaceModel.insightsSummary,
+                    storefronts: storefronts,
                     modelContext: modelContext,
                     appCatalogService: services.appCatalogService,
                     appIconStore: services.appIconStore
@@ -221,39 +205,63 @@ struct AppKeywordsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: materializationID) {
-            await materializeKeywordRows(for: materializationID)
+        .task(id: targetMaterializationID) {
+            await materializeKeywordRows(
+                for: targetMaterializationID,
+                tracks: queriedTracks,
+                refreshStatuses: queriedRefreshStatuses
+            )
         }
-        .task(id: filterID) {
-            await applyRowFilters(for: filterID)
-        }
-        .task(id: insightsSignature(for: rows)) {
-            await reloadInsights(visibleTracks: rows.map(\.track))
+        .task(id: targetFilterID) {
+            await applyRowFilters(for: targetFilterID)
         }
     }
 
     private func materializeKeywordRows(
-        for targetMaterializationID: KeywordWorkspaceProjection.MaterializationID
+        for targetMaterializationID: KeywordWorkspaceProjection.MaterializationID,
+        tracks: [TrackedAppKeyword],
+        refreshStatuses: [TrackedKeywordRefreshStatus]
     ) async {
+        let platformTracks = tracks.filter { selectedPlatformFilter.matches($0.platform) }
+        let refreshStatusesByIdentityKey = TrackedKeywordRefreshStatusStore.snapshots(
+            from: refreshStatuses
+        )
+        let storefrontLookup = Dictionary(
+            uniqueKeysWithValues: storefrontDefinitions.map { ($0.code, $0) }
+        )
+        let primedWorkspace = services.keywordInsightsService.cachedWorkspace(
+            for: targetMaterializationID
+        )
+        workspaceModel.prime(
+            id: targetMaterializationID,
+            rows: makeRows(
+                from: platformTracks,
+                workspace: primedWorkspace,
+                storefrontLookup: storefrontLookup,
+                refreshStatusesByIdentityKey: refreshStatusesByIdentityKey
+            ),
+            filters: filters
+        )
+
         let errorMessage = await workspaceModel.materialize(
             id: targetMaterializationID,
             initialFilters: filters
         ) {
             try Task.checkCancellation()
-            let platformTracks = tracks.filter(matchesPlatform)
-            let loadedMetrics = try await loadMetricsSnapshots(for: platformTracks.map(\.queryKey))
-            try Task.checkCancellation()
-            let snapshotBuckets = try fetchSnapshotBuckets(for: platformTracks)
-            let loadedRows = makeRows(
-                from: platformTracks,
-                snapshotBuckets: snapshotBuckets,
-                metricsByQueryKey: loadedMetrics,
-                refreshStatusesByIdentityKey: TrackedKeywordRefreshStatusStore.snapshots(
-                    from: refreshStatuses
-                )
+            let workspace = try await services.keywordInsightsService.workspace(
+                for: targetMaterializationID,
+                tracks: platformTracks,
+                appStoreID: trackedApp.appStoreID,
+                dateRange: selectedDateRange,
+                using: services.backgroundModelStore,
+                fallbackModelContext: modelContext
             )
-            try Task.checkCancellation()
-            return loadedRows
+            return makeRows(
+                from: platformTracks,
+                workspace: workspace,
+                storefrontLookup: storefrontLookup,
+                refreshStatusesByIdentityKey: refreshStatusesByIdentityKey
+            )
         }
 
         if let errorMessage {
@@ -268,286 +276,6 @@ struct AppKeywordsView: View {
                 filters: filters
             )
         }
-    }
-
-    private func loadMetricsSnapshots(for queryKeys: [String]) async throws -> [String: KeywordMetricsSnapshot] {
-        guard !queryKeys.isEmpty else {
-            return [:]
-        }
-
-        if let backgroundModelStore = services.backgroundModelStore {
-            return try await backgroundModelStore.read { modelContext in
-                try KeywordMetricsSnapshot.map(for: queryKeys, in: modelContext)
-            }
-        }
-
-        return try KeywordMetricsSnapshot.map(for: queryKeys, in: modelContext)
-    }
-
-    private func matchesPlatform(for track: TrackedAppKeyword) -> Bool {
-        selectedPlatformFilter.matches(track.platform)
-    }
-
-    private func reloadInsights(visibleTracks: [TrackedAppKeyword]) async {
-        guard !visibleTracks.isEmpty else {
-            insightsDataset = KeywordInsightsDataset(appStoreID: trackedApp.appStoreID, series: [], source: .local)
-            return
-        }
-
-        insightsDataset = await services.keywordInsightsService.dataset(
-            for: trackedApp,
-            tracks: visibleTracks,
-            dateRange: selectedDateRange,
-            in: modelContext
-        )
-    }
-
-    private func makeRow(
-        for track: TrackedAppKeyword,
-        snapshotBuckets: SnapshotBuckets,
-        storefrontLookup: [String: StorefrontDefinition],
-        metricsByQueryKey: [String: KeywordMetricsSnapshot],
-        refreshStatusesByIdentityKey: [String: KeywordRefreshStatusSnapshot]
-    ) -> KeywordWorkspaceRow? {
-        let latestSnapshot = snapshotBuckets.latestByTrackKey[track.identityKey]
-        let trendSnapshots = snapshotBuckets.trendByTrackKey[track.identityKey] ?? []
-        let rankingApps = latestSnapshot.map { snapshotBuckets.topResultsByCrawlKey[$0.id] ?? [] } ?? []
-
-        return KeywordWorkspaceRow(
-            track: track,
-            storefront: storefrontLookup[track.storefront],
-            metrics: metricsByQueryKey[track.queryKey],
-            refreshStatus: TrackedKeywordRefreshStatusStore.snapshot(
-                for: track,
-                persisted: refreshStatusesByIdentityKey[track.identityKey]
-            ),
-            latestSnapshot: latestSnapshot,
-            trendSnapshots: trendSnapshots,
-            rankingApps: rankingApps
-        )
-    }
-
-    private func fetchSnapshotBuckets(for tracks: [TrackedAppKeyword]) throws -> SnapshotBuckets {
-        guard !tracks.isEmpty else {
-            return SnapshotBuckets(latestByTrackKey: [:], trendByTrackKey: [:], topResultsByCrawlKey: [:])
-        }
-
-        let queryKeys = Array(Set(tracks.map(\.queryKey)))
-        let tracksByQueryKey = Dictionary(grouping: tracks, by: \.queryKey)
-        let trendCrawls = try fetchTrendCrawls(queryKeys: queryKeys)
-        let latestCrawlsByQueryKey = try fetchLatestCrawlsByQueryKey(queryKeys: queryKeys)
-        let latestCrawlKeys = Set(latestCrawlsByQueryKey.values.map(\.observationKey))
-        let trackedItemsByCrawlKey = try fetchTrackedRankingItemsByCrawlKey(
-            queryKeys: queryKeys,
-            cutoffDate: selectedDateRange.cutoffDate,
-            latestCrawlKeys: latestCrawlKeys
-        )
-        let latestItemsByCrawlKey = try fetchRankingItemsByCrawlKey(
-            crawlKeys: latestCrawlKeys
-        )
-        var latestByTrackKey: [String: KeywordRankingCrawlSummary] = [:]
-        var trendByTrackKey: [String: [KeywordRankingCrawlSummary]] = [:]
-        var topResultsByCrawlKey: [String: [KeywordRankingAppSummary]] = [:]
-
-        for (crawlKey, items) in latestItemsByCrawlKey {
-            topResultsByCrawlKey[crawlKey] = items
-                .sorted { $0.position < $1.position }
-                .map(KeywordRankingAppSummary.init)
-        }
-
-        for (queryKey, crawl) in latestCrawlsByQueryKey {
-            guard let crawlTracks = tracksByQueryKey[queryKey] else {
-                continue
-            }
-
-            let trackedItem = trackedItemsByCrawlKey[crawl.observationKey]
-            let summary = KeywordRankingCrawlSummary(crawl: crawl, rank: trackedItem?.position)
-
-            for track in crawlTracks {
-                latestByTrackKey[track.identityKey] = summary
-            }
-        }
-
-        for crawl in trendCrawls {
-            guard let crawlTracks = tracksByQueryKey[crawl.queryKey] else {
-                continue
-            }
-
-            let trackedItem = trackedItemsByCrawlKey[crawl.observationKey]
-            let summary = KeywordRankingCrawlSummary(crawl: crawl, rank: trackedItem?.position)
-
-            for track in crawlTracks {
-                trendByTrackKey[track.identityKey, default: []].append(summary)
-            }
-        }
-
-        return SnapshotBuckets(
-            latestByTrackKey: latestByTrackKey,
-            trendByTrackKey: trendByTrackKey,
-            topResultsByCrawlKey: topResultsByCrawlKey
-        )
-    }
-
-    private func fetchTrendCrawls(queryKeys: [String]) throws -> [KeywordRankingCrawl] {
-        let sortBy = [SortDescriptor(\KeywordRankingCrawl.observedAt, order: .forward)]
-
-        guard let cutoffDate = selectedDateRange.cutoffDate else {
-            let descriptor = FetchDescriptor<KeywordRankingCrawl>(
-                predicate: #Predicate { crawl in
-                    queryKeys.contains(crawl.queryKey)
-                },
-                sortBy: sortBy
-            )
-            return try modelContext.fetch(descriptor)
-        }
-
-        let descriptor = FetchDescriptor<KeywordRankingCrawl>(
-            predicate: #Predicate { crawl in
-                queryKeys.contains(crawl.queryKey) && crawl.observedAt >= cutoffDate
-            },
-            sortBy: sortBy
-        )
-        return try modelContext.fetch(descriptor)
-    }
-
-    private func fetchLatestCrawlsByQueryKey(queryKeys: [String]) throws -> [String: KeywordRankingCrawl] {
-        let descriptor = FetchDescriptor<KeywordRankingCrawl>(
-            predicate: #Predicate { crawl in
-                queryKeys.contains(crawl.queryKey)
-            },
-            sortBy: [
-                SortDescriptor(\KeywordRankingCrawl.queryKey, order: .forward),
-                SortDescriptor(\KeywordRankingCrawl.observedAt, order: .reverse)
-            ]
-        )
-        let crawls = try modelContext.fetch(descriptor)
-        var latestByQueryKey: [String: KeywordRankingCrawl] = [:]
-        latestByQueryKey.reserveCapacity(queryKeys.count)
-
-        for crawl in crawls where latestByQueryKey[crawl.queryKey] == nil {
-            latestByQueryKey[crawl.queryKey] = crawl
-
-            if latestByQueryKey.count == queryKeys.count {
-                break
-            }
-        }
-
-        return latestByQueryKey
-    }
-
-    private func fetchTrackedRankingItemsByCrawlKey(
-        queryKeys: [String],
-        cutoffDate: Date?,
-        latestCrawlKeys: Set<String>
-    ) throws -> [String: KeywordAppRanking] {
-        guard !queryKeys.isEmpty else { return [:] }
-
-        let appStoreID = trackedApp.appStoreID
-        let items = try fetchTrackedRankingItems(
-            queryKeys: queryKeys,
-            appStoreID: appStoreID,
-            cutoffDate: cutoffDate
-        )
-        var itemsByCrawlKey: [String: KeywordAppRanking] = [:]
-        itemsByCrawlKey.reserveCapacity(items.count)
-
-        for item in items {
-            itemsByCrawlKey[item.crawlKey] = item
-        }
-
-        let missingLatestCrawlKeys = latestCrawlKeys.subtracting(itemsByCrawlKey.keys)
-        guard !missingLatestCrawlKeys.isEmpty else {
-            return itemsByCrawlKey
-        }
-
-        for item in try fetchTrackedRankingItemsByCrawlKeys(
-            crawlKeys: missingLatestCrawlKeys,
-            appStoreID: appStoreID
-        ) {
-            itemsByCrawlKey[item.crawlKey] = item
-        }
-
-        return itemsByCrawlKey
-    }
-
-    private func fetchTrackedRankingItems(
-        queryKeys: [String],
-        appStoreID: Int64,
-        cutoffDate: Date?
-    ) throws -> [KeywordAppRanking] {
-        guard let cutoffDate else {
-            let descriptor = FetchDescriptor<KeywordAppRanking>(
-                predicate: #Predicate { ranking in
-                    queryKeys.contains(ranking.queryKey) && ranking.appStoreID == appStoreID
-                },
-                sortBy: [
-                    SortDescriptor(\KeywordAppRanking.queryKey, order: .forward),
-                    SortDescriptor(\KeywordAppRanking.observedAt, order: .forward)
-                ]
-            )
-            return try modelContext.fetch(descriptor)
-        }
-
-        let descriptor = FetchDescriptor<KeywordAppRanking>(
-            predicate: #Predicate { ranking in
-                queryKeys.contains(ranking.queryKey)
-                    && ranking.appStoreID == appStoreID
-                    && ranking.observedAt >= cutoffDate
-            },
-            sortBy: [
-                SortDescriptor(\KeywordAppRanking.queryKey, order: .forward),
-                SortDescriptor(\KeywordAppRanking.observedAt, order: .forward)
-            ]
-        )
-        return try modelContext.fetch(descriptor)
-    }
-
-    private func fetchTrackedRankingItemsByCrawlKeys(
-        crawlKeys: Set<String>,
-        appStoreID: Int64
-    ) throws -> [KeywordAppRanking] {
-        guard !crawlKeys.isEmpty else { return [] }
-
-        let crawlKeyChunks = Array(crawlKeys).chunked(into: Self.rankingFetchChunkSize)
-        var items: [KeywordAppRanking] = []
-
-        for crawlKeyChunk in crawlKeyChunks {
-            let descriptor = FetchDescriptor<KeywordAppRanking>(
-                predicate: #Predicate { ranking in
-                    crawlKeyChunk.contains(ranking.crawlKey) && ranking.appStoreID == appStoreID
-                }
-            )
-            items.append(contentsOf: try modelContext.fetch(descriptor))
-        }
-
-        return items
-    }
-
-    private func fetchRankingItemsByCrawlKey(
-        crawlKeys: Set<String>
-    ) throws -> [String: [KeywordAppRanking]] {
-        guard !crawlKeys.isEmpty else { return [:] }
-
-        let crawlKeyChunks = Array(crawlKeys).chunked(into: Self.rankingFetchChunkSize)
-        var itemsByCrawlKey: [String: [KeywordAppRanking]] = [:]
-
-        for crawlKeyChunk in crawlKeyChunks {
-            let descriptor = FetchDescriptor<KeywordAppRanking>(
-                predicate: #Predicate { ranking in
-                    crawlKeyChunk.contains(ranking.crawlKey) && ranking.position <= 5
-                },
-                sortBy: [
-                    SortDescriptor(\KeywordAppRanking.observedAt, order: .forward),
-                    SortDescriptor(\KeywordAppRanking.position, order: .forward)
-                ]
-            )
-
-            for result in try modelContext.fetch(descriptor) {
-                itemsByCrawlKey[result.crawlKey, default: []].append(result)
-            }
-        }
-
-        return itemsByCrawlKey
     }
 
 }
