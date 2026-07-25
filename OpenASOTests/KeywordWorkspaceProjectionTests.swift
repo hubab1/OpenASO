@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import OpenASO
 
@@ -97,6 +98,181 @@ struct KeywordWorkspaceProjectionTests {
         #expect(errorMessage == nil)
         #expect(!model.isLoading(for: id))
         #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+    }
+
+    @Test
+    func primedRowsRemainVisibleWhileHistoryMaterializes() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let id = materializationID(refreshToken: 1)
+        let shellRow = makeRow(term: "Focus Timer", appStoreID: 1)
+        let hydratedRow = makeRow(term: "Focus Timer", appStoreID: 1, currentRank: 4)
+
+        model.prime(id: id, rows: [shellRow], filters: filters())
+        #expect(model.rows.map(\.track.term) == ["Focus Timer"])
+        #expect(model.rows.first?.currentRank == nil)
+        #expect(!model.isLoading(for: id))
+
+        let loadTask = Task { @MainActor in
+            await model.materialize(
+                id: id,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+
+        #expect(model.rows.map(\.track.term) == ["Focus Timer"])
+        #expect(model.rows.first?.currentRank == nil)
+
+        materializer.succeedRequest(at: 0, with: [hydratedRow])
+        let errorMessage = await loadTask.value
+
+        #expect(errorMessage == nil)
+        #expect(model.rows.first?.currentRank == 4)
+    }
+
+    @Test
+    func failedHydrationDoesNotDiscardPrimedRows() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let id = materializationID(refreshToken: 1)
+        let shellRow = makeRow(term: "Focus Timer", appStoreID: 1)
+
+        model.prime(id: id, rows: [shellRow], filters: filters())
+        let loadTask = Task { @MainActor in
+            await model.materialize(
+                id: id,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+        materializer.failRequest(at: 0)
+
+        let errorMessage = await loadTask.value
+        #expect(errorMessage != nil)
+        #expect(model.rows.map(\.track.term) == ["Focus Timer"])
+    }
+
+    @Test
+    func insightsWorkspaceLoadsOnceInBackgroundAndIsCached() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(
+            isStoredInMemoryOnly: true
+        )
+        let modelContext = ModelContext(container)
+        let appStoreID: Int64 = 101
+        let trackedApp = TrackedApp(
+            appStoreID: appStoreID,
+            bundleID: "com.example.focus",
+            name: "Focus",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let query = KeywordQuery(term: "focus timer", storefront: "us", platform: .iphone)
+        let track = TrackedAppKeyword(
+            term: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            trackedApp: trackedApp,
+            query: query
+        )
+        let oldCrawl = KeywordRankingCrawl(
+            keyword: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            observedAt: Date(timeIntervalSince1970: 1_900_000_000),
+            source: .appStoreWeb,
+            resultCount: 100,
+            query: query
+        )
+        let latestCrawl = KeywordRankingCrawl(
+            keyword: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            observedAt: Date(timeIntervalSince1970: 1_900_086_400),
+            source: .appStoreWeb,
+            resultCount: 100,
+            query: query
+        )
+        let metric = KeywordDailyMetric(
+            queryKey: query.queryKey,
+            keyword: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            popularityScore: 73,
+            difficultyScore: 41,
+            source: .appleAdsPopularity
+        )
+        let rankings = [
+            KeywordAppRanking(
+                position: 8,
+                appStoreID: appStoreID,
+                bundleID: trackedApp.bundleID,
+                name: trackedApp.name,
+                sellerName: trackedApp.sellerName,
+                observation: oldCrawl
+            ),
+            KeywordAppRanking(
+                position: 3,
+                appStoreID: appStoreID,
+                bundleID: trackedApp.bundleID,
+                name: trackedApp.name,
+                sellerName: trackedApp.sellerName,
+                observation: latestCrawl
+            ),
+            KeywordAppRanking(
+                position: 1,
+                appStoreID: 202,
+                bundleID: "com.example.competitor",
+                name: "Competitor",
+                sellerName: "Example",
+                observation: latestCrawl
+            )
+        ]
+
+        modelContext.insert(trackedApp)
+        modelContext.insert(query)
+        modelContext.insert(track)
+        modelContext.insert(oldCrawl)
+        modelContext.insert(latestCrawl)
+        modelContext.insert(metric)
+        rankings.forEach(modelContext.insert)
+        try modelContext.save()
+
+        let materializationID = KeywordWorkspaceProjection.MaterializationID(
+            refreshToken: 0,
+            backgroundStoreRevision: 0,
+            appStoreID: appStoreID,
+            storefrontFilterID: "all",
+            platformFilterID: "all",
+            dateRangeID: TrendDateRange.allTime.id,
+            tracks: [
+                .init(
+                    identityKey: track.identityKey,
+                    lastRefreshAt: track.lastRefreshAt,
+                    rankingAppCount: track.rankingAppCount,
+                    statusMessage: track.statusMessage
+                )
+            ]
+        )
+        let service = KeywordInsightsService()
+        let workspace = try await service.workspace(
+            for: materializationID,
+            tracks: [track],
+            appStoreID: appStoreID,
+            dateRange: .allTime,
+            using: BackgroundModelStore(modelContainer: container),
+            fallbackModelContext: modelContext
+        )
+        let row = try #require(workspace.rowsByIdentityKey[track.identityKey])
+
+        #expect(row.metrics?.popularityScore == 73)
+        #expect(row.metrics?.difficultyScore == 41)
+        #expect(row.latestSnapshot?.rank == 3)
+        #expect(row.trendSnapshots.map(\.rank) == [8, 3])
+        #expect(row.rankingApps.map(\.position) == [1, 3])
+        #expect(service.cachedWorkspace(for: materializationID) != nil)
     }
 
     @Test

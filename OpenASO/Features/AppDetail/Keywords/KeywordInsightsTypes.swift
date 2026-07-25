@@ -16,6 +16,37 @@ struct KeywordInsightsDataset {
     let appStoreID: Int64
     let series: [KeywordInsightSeries]
     let source: KeywordInsightsSource
+
+    init(appStoreID: Int64, series: [KeywordInsightSeries], source: KeywordInsightsSource) {
+        self.appStoreID = appStoreID
+        self.series = series
+        self.source = source
+    }
+
+    init(rows: [KeywordWorkspaceRow]) {
+        self.init(
+            appStoreID: rows.first?.track.appStoreID ?? 0,
+            series: rows.map { row in
+                KeywordInsightSeries(
+                    queryKey: row.track.queryKey,
+                    keyword: row.track.term,
+                    storefront: row.track.storefront,
+                    platform: row.track.platform,
+                    points: row.trendSnapshots.map { snapshot in
+                        KeywordInsightPoint(
+                            date: Calendar.current.startOfDay(for: snapshot.searchedAt),
+                            observedAt: snapshot.searchedAt,
+                            rank: snapshot.rank,
+                            resultCount: snapshot.resultCount,
+                            popularityScore: row.metrics?.popularityScore,
+                            confidence: nil
+                        )
+                    }
+                )
+            },
+            source: .local
+        )
+    }
 }
 
 struct KeywordInsightSeries: Identifiable {
@@ -65,6 +96,10 @@ struct KeywordInsightsSummary {
     var hasHistory: Bool {
         !movementPoints.isEmpty || !visibilityPoints.isEmpty
     }
+
+    static let empty = KeywordInsightsSummary(
+        dataset: KeywordInsightsDataset(appStoreID: 0, series: [], source: .local)
+    )
 
     init(dataset: KeywordInsightsDataset) {
         let movements = dataset.series.compactMap(Self.overallMovement)

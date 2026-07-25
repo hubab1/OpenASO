@@ -322,7 +322,6 @@ private struct KeywordVisibilitySummaryPreviewSurface: View {
 }
 
 extension KeywordInsightsSummary {
-    static let empty = KeywordInsightsSummary(dataset: .preview(series: []))
     static let oneDay = KeywordInsightsSummary(dataset: .preview(series: .previewSeries(days: 1, keywordCount: 6, cadence: .steadyGain)))
     static let littleData = KeywordInsightsSummary(dataset: .preview(series: .previewSeries(days: 3, keywordCount: 6, cadence: .mixed)))
     static let weeks = KeywordInsightsSummary(dataset: .preview(series: .previewSeries(days: 21, keywordCount: 10, cadence: .steadyGain)))
