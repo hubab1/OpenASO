@@ -19,7 +19,11 @@ struct KeywordRankingListSheet: View {
     private let fallbackItems: [KeywordRankingListItem]
 
     @State private var rankingModel = KeywordRankingListModel()
+    @State private var pricingModel = KeywordRankingPricingModel()
     @State private var retryToken = 0
+    @State private var pricingRetryToken = 0
+    @State private var selectedAppStoreIDs = Set<Int64>()
+    @State private var isPricingComparisonPresented = false
     @AppStorage(
         "keywordRankingListShowsScreenshots",
         store: .openASOShared
@@ -73,9 +77,27 @@ struct KeywordRankingListSheet: View {
         )
     }
 
+    private var pricingRequestID: KeywordRankingPricingModel.RequestID {
+        KeywordRankingPricingModel.RequestID(
+            appStoreIDs: rankingModel.snapshot?.rows.map(\.appStoreID) ?? [],
+            storefrontCode: storefrontCode,
+            platform: platform,
+            retryToken: pricingRetryToken
+        )
+    }
+
+    private var comparisonApps: [KeywordPricingComparisonApp] {
+        sortedRows
+            .filter { selectedAppStoreIDs.contains($0.appStoreID) }
+            .prefix(10)
+            .map(KeywordPricingComparisonApp.init)
+    }
+
     var body: some View {
         let snapshot = rankingModel.snapshot
         let sortedRows = (snapshot?.rows ?? []).sorted(using: sortOrder)
+        let priceResultsByAppStoreID = pricingModel.pricesByAppStoreID
+        let pricingIsLoading = pricingModel.isLoading
 
         VStack(spacing: 0) {
             KeywordRankingListHeader(
@@ -108,7 +130,11 @@ struct KeywordRankingListSheet: View {
                             modelContext: modelContext,
                             appCatalogService: appCatalogService,
                             appIconStore: appIconStore,
-                            metadataProgressStore: services.appMetadataRefreshProgressStore
+                            metadataProgressStore: services.appMetadataRefreshProgressStore,
+                            priceResultsByAppStoreID: priceResultsByAppStoreID,
+                            pricingIsLoading: pricingIsLoading,
+                            selectedAppStoreIDs: selectedAppStoreIDs,
+                            toggleComparisonSelection: toggleComparisonSelection
                         )
                     } else {
                         Table(sortedRows, sortOrder: $sortOrder) {
@@ -116,6 +142,17 @@ struct KeywordRankingListSheet: View {
                                 KeywordRankingPositionCell(row: row)
                             }
                             .width(min: 55, ideal: 60)
+
+                            TableColumn("Compare") { row in
+                                KeywordRankingComparisonSelectionCell(
+                                    isSelected: selectedAppStoreIDs.contains(row.appStoreID),
+                                    canSelect: selectedAppStoreIDs.count < 10,
+                                    appName: row.appName
+                                ) {
+                                    toggleComparisonSelection(row.appStoreID)
+                                }
+                            }
+                            .width(min: 58, ideal: 64, max: 72)
 
                             TableColumn("App", value: \.appNameSortValue) { row in
                                 KeywordRankingAppCell(
@@ -144,6 +181,15 @@ struct KeywordRankingListSheet: View {
                                 KeywordRankingAverageRatingCell(row: row)
                             }
                             .width(min: 72, ideal: 78, max: 88)
+
+                            TableColumn("Price") { row in
+                                KeywordRankingPriceCell(
+                                    result: priceResultsByAppStoreID[row.appStoreID],
+                                    isLoading: pricingIsLoading,
+                                    storefrontCode: storefrontCode
+                                )
+                            }
+                            .width(min: 74, ideal: 86, max: 104)
 
                             TableColumn("New Ratings (30d)", value: \.newRatingsSortValue) { row in
                                 KeywordRankingNewRatingsCell(row: row)
@@ -211,13 +257,37 @@ struct KeywordRankingListSheet: View {
                 keyword: keyword,
                 isShowingScreenshots: $isShowingScreenshots,
                 canDownloadScreenshots: !sortedRows.isEmpty,
+                selectedAppCount: comparisonApps.count,
+                pricingIsLoading: pricingIsLoading,
+                pricingErrorMessage: pricingModel.errorMessage,
+                comparePricing: {
+                    isPricingComparisonPresented = true
+                },
+                retryPricing: {
+                    pricingRetryToken &+= 1
+                },
                 downloadTopTenScreenshots: startTopTenScreenshotDownload
             )
         }
         .task(id: requestID) {
             await reloadRankingRows(for: requestID.loadID)
         }
-        .frame(minWidth: 1_260, idealWidth: 1_420, minHeight: 720, idealHeight: 920)
+        .task(id: pricingRequestID) {
+            await pricingModel.load(
+                request: pricingRequestID,
+                using: services.rankedAppPricingService
+            )
+        }
+        .sheet(isPresented: $isPricingComparisonPresented) {
+            KeywordPricingComparisonSheet(
+                keyword: keyword,
+                apps: comparisonApps,
+                storefrontCode: storefrontCode,
+                platform: platform,
+                trackedAppStoreID: trackedAppStoreID
+            )
+        }
+        .frame(minWidth: 1_340, idealWidth: 1_500, minHeight: 720, idealHeight: 920)
     }
 
     private func reloadRankingRows(for targetLoadID: KeywordRankingListLoader.LoadID) async {
@@ -235,6 +305,14 @@ struct KeywordRankingListSheet: View {
 
     private func retryLoading() {
         retryToken &+= 1
+    }
+
+    private func toggleComparisonSelection(_ appStoreID: Int64) {
+        if selectedAppStoreIDs.contains(appStoreID) {
+            selectedAppStoreIDs.remove(appStoreID)
+        } else if selectedAppStoreIDs.count < 10 {
+            selectedAppStoreIDs.insert(appStoreID)
+        }
     }
 
     @ViewBuilder
@@ -1093,6 +1171,10 @@ private struct KeywordRankingScreenshotList: View {
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
     let metadataProgressStore: AppMetadataRefreshProgressStore
+    let priceResultsByAppStoreID: [Int64: RankedAppPriceResult]
+    let pricingIsLoading: Bool
+    let selectedAppStoreIDs: Set<Int64>
+    let toggleComparisonSelection: (Int64) -> Void
 
     var body: some View {
         ScrollView {
@@ -1109,7 +1191,14 @@ private struct KeywordRankingScreenshotList: View {
                             modelContext: modelContext,
                             appCatalogService: appCatalogService,
                             appIconStore: appIconStore,
-                            metadataProgressStore: metadataProgressStore
+                            metadataProgressStore: metadataProgressStore,
+                            priceResultsByAppStoreID: priceResultsByAppStoreID,
+                            pricingIsLoading: pricingIsLoading,
+                            isSelectedForComparison: selectedAppStoreIDs.contains(row.appStoreID),
+                            canSelectForComparison: selectedAppStoreIDs.count < 10,
+                            toggleComparisonSelection: {
+                                toggleComparisonSelection(row.appStoreID)
+                            }
                         )
                     }
                 } header: {
@@ -1126,12 +1215,16 @@ private struct KeywordRankingScreenshotListHeader: View {
         HStack(spacing: 12) {
             Text("Rank")
                 .frame(width: 54, alignment: .leading)
+            Text("Compare")
+                .frame(width: 64, alignment: .center)
             Text("App")
                 .frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
             Text("Ratings")
                 .frame(width: 74, alignment: .trailing)
             Text("Avg.")
                 .frame(width: 66, alignment: .trailing)
+            Text("Price")
+                .frame(width: 86, alignment: .trailing)
             Text("New (30d)")
                 .frame(width: 132, alignment: .leading)
             Text("Localized")
@@ -1163,12 +1256,25 @@ private struct KeywordRankingScreenshotRow: View {
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
     let metadataProgressStore: AppMetadataRefreshProgressStore
+    let priceResultsByAppStoreID: [Int64: RankedAppPriceResult]
+    let pricingIsLoading: Bool
+    let isSelectedForComparison: Bool
+    let canSelectForComparison: Bool
+    let toggleComparisonSelection: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 KeywordRankingPositionCell(row: row)
                     .frame(width: 54, alignment: .leading)
+
+                KeywordRankingComparisonSelectionCell(
+                    isSelected: isSelectedForComparison,
+                    canSelect: canSelectForComparison,
+                    appName: row.appName,
+                    toggle: toggleComparisonSelection
+                )
+                .frame(width: 64, alignment: .center)
 
                 KeywordRankingAppCell(
                     row: row,
@@ -1188,6 +1294,13 @@ private struct KeywordRankingScreenshotRow: View {
 
                 KeywordRankingAverageRatingCell(row: row)
                     .frame(width: 66, alignment: .trailing)
+
+                KeywordRankingPriceCell(
+                    result: priceResultsByAppStoreID[row.appStoreID],
+                    isLoading: pricingIsLoading,
+                    storefrontCode: storefrontCode
+                )
+                .frame(width: 86, alignment: .trailing)
 
                 KeywordRankingNewRatingsCell(row: row)
                     .frame(width: 132, alignment: .leading)
@@ -1210,7 +1323,7 @@ private struct KeywordRankingScreenshotRow: View {
                 desiredPlatform: platform,
                 reloadToken: metadataProgressStore.revision(for: row.appStoreID)
             )
-                .padding(.leading, 82)
+                .padding(.leading, 158)
                 .padding(.trailing, 16)
                 .padding(.bottom, 12)
                 .background(row.position.isMultiple(of: 2) ? Color.secondary.opacity(0.035) : Color.clear)
@@ -1980,6 +2093,11 @@ private struct KeywordRankingListFooter: View {
     let keyword: String
     @Binding var isShowingScreenshots: Bool
     let canDownloadScreenshots: Bool
+    let selectedAppCount: Int
+    let pricingIsLoading: Bool
+    let pricingErrorMessage: String?
+    let comparePricing: () -> Void
+    let retryPricing: () -> Void
     let downloadTopTenScreenshots: () -> Void
 
     var body: some View {
@@ -1991,6 +2109,28 @@ private struct KeywordRankingListFooter: View {
             HStack {
                 Text("Keyword: \(keyword)")
                     .foregroundStyle(.secondary)
+
+                if let pricingErrorMessage {
+                    Label(pricingErrorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Button("Retry Prices", action: retryPricing)
+                } else if pricingIsLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Loading prices")
+                }
+
+                TertiaryActionButton(
+                    "Compare Pricing",
+                    systemImage: "tablecells",
+                    helpText: "Compare 2–10 selected ranking apps across storefronts"
+                ) {
+                    comparePricing()
+                }
+                .disabled(!(2 ... 10).contains(selectedAppCount))
 
                 TertiaryActionButton(
                     isShowingScreenshots ? "Hide Screenshots" : "Show Screenshots",
@@ -2010,6 +2150,11 @@ private struct KeywordRankingListFooter: View {
                 .disabled(!canDownloadScreenshots || services.screenshotDownloadProgressStore.isDownloading)
 
                 Spacer()
+
+                Text("\(selectedAppCount) selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("\(selectedAppCount) ranking apps selected")
 
                 Button {
                     dismiss()

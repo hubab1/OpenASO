@@ -106,6 +106,7 @@
 		A19000000000000000000003 /* AppStoreWebRankingProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19000000000000000000013 /* AppStoreWebRankingProviderTests.swift */; };
 		E24000000000000000000001 /* SearchRanking/RankedAppPricingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24000000000000000000011 /* SearchRanking/RankedAppPricingService.swift */; };
 		E24000000000000000000003 /* RankedAppPricingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24000000000000000000013 /* RankedAppPricingServiceTests.swift */; };
+		E24100000000000000000001 /* KeywordRankingPricingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24100000000000000000011 /* KeywordRankingPricingViews.swift */; };
 		A10000000000000000000002 /* OpenASOSchemaV1.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* OpenASOSchemaV1.swift */; };
 		D18000000000000000000003 /* OpenASOSchemaV2.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18000000000000000000001 /* OpenASOSchemaV2.swift */; };
 		D18000000000000000000004 /* TrackedAppKeywordRefreshAttempt.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18000000000000000000002 /* TrackedAppKeywordRefreshAttempt.swift */; };
@@ -351,6 +352,7 @@
 		A19000000000000000000012 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/PrimaryFallbackSearchRankingProvider.swift; sourceTree = "<group>"; };
 		E24000000000000000000011 /* SearchRanking/RankedAppPricingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/RankedAppPricingService.swift; sourceTree = "<group>"; };
 		E24000000000000000000013 /* RankedAppPricingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankedAppPricingServiceTests.swift; sourceTree = "<group>"; };
+		E24100000000000000000011 /* KeywordRankingPricingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordRankingPricingViews.swift; sourceTree = "<group>"; };
 		A19000000000000000000013 /* AppStoreWebRankingProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreWebRankingProviderTests.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000001 /* AppDetailToolbarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailToolbarViews.swift; sourceTree = "<group>"; };
 		A10C00000000000000000001 /* AppDetailManualRefreshScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailManualRefreshScope.swift; sourceTree = "<group>"; };
@@ -684,6 +686,7 @@
 				B70000000000000000000013 /* KeywordRankingListLoader.swift */,
 				B70000000000000000000018 /* KeywordRankingListModel.swift */,
 				A20000000000000000000013 /* KeywordRankingListSheet.swift */,
+				E24100000000000000000011 /* KeywordRankingPricingViews.swift */,
 				A20000000000000000000016 /* KeywordRankingResultRow.swift */,
 				A20000000000000000000014 /* KeywordTableSupport.swift */,
 				A20000000000000000000015 /* KeywordTablePreviews.swift */,
@@ -1103,6 +1106,7 @@
 				B70000000000000000000003 /* KeywordRankingListLoader.swift in Sources */,
 				B70000000000000000000008 /* KeywordRankingListModel.swift in Sources */,
 				A20000000000000000000003 /* KeywordRankingListSheet.swift in Sources */,
+				E24100000000000000000001 /* KeywordRankingPricingViews.swift in Sources */,
 				A20000000000000000000006 /* KeywordRankingResultRow.swift in Sources */,
 				A20000000000000000000004 /* KeywordTableSupport.swift in Sources */,
 				A20000000000000000000005 /* KeywordTablePreviews.swift in Sources */,
