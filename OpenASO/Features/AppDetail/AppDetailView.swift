@@ -90,7 +90,9 @@ struct AppDetailView: View {
                     isRefreshing: isRefreshingApp,
                     isDisabled: isRefreshDisabled,
                     action: refreshApp,
-                    refreshAllAction: refreshAllApps
+                    refreshAllStorefrontsAction: refreshAllStorefronts,
+                    refreshAllAppsAction: refreshAllApps,
+                    help: refreshHelp
                 )
                 AppDetailWorkspaceViewPicker(selectedWorkspaceView: $selectedWorkspaceView)
                 AppDetailStorefrontPickerButton(
@@ -236,6 +238,14 @@ struct AppDetailView: View {
     }
 
     private func refreshApp() {
+        refreshApp(scope: .focused)
+    }
+
+    private func refreshAllStorefronts() {
+        refreshApp(scope: .allStorefronts)
+    }
+
+    private func refreshApp(scope: AppDetailManualRefreshScope) {
         isRefreshingApp = true
         errorMessage = nil
         let activeWorkspaceView = selectedWorkspaceView
@@ -246,7 +256,10 @@ struct AppDetailView: View {
             guard let service = services.appDetailRefreshService else {
                 throw OpenASOError.providerUnavailable("The background model store is unavailable.")
             }
-            request = try makeRefreshRequest(activeWorkspaceView: activeWorkspaceView)
+            request = try makeRefreshRequest(
+                activeWorkspaceView: activeWorkspaceView,
+                scope: scope
+            )
             refreshService = service
         } catch {
             errorMessage = OpenASOError.map(error).localizedDescription
@@ -255,7 +268,7 @@ struct AppDetailView: View {
         }
 
         OpenASOLog.appDetail.info(
-            "Refresh tapped appStoreID=\(appStoreID, privacy: .public) appName=\(appName, privacy: .public) view=\(activeWorkspaceView.title, privacy: .public) selectedStorefront=\(selectedStorefrontFilter.title, privacy: .public) keywords=\(request.trackIdentityKeys.count, privacy: .public)"
+            "Refresh tapped appStoreID=\(appStoreID, privacy: .public) appName=\(appName, privacy: .public) view=\(activeWorkspaceView.title, privacy: .public) selectedStorefront=\(selectedStorefrontFilter.title, privacy: .public) storefrontCount=\(request.storefrontSelection.codes.count, privacy: .public) keywords=\(request.trackIdentityKeys.count, privacy: .public)"
         )
 
         Task(priority: .userInitiated) {
@@ -468,20 +481,39 @@ struct AppDetailView: View {
         }
     }
 
-    private func makeRefreshRequest(activeWorkspaceView: AppDetailWorkspaceView) throws -> AppDetailRefreshRequest {
-        try makeRefreshRequest(
+    private func makeRefreshRequest(
+        activeWorkspaceView: AppDetailWorkspaceView,
+        scope: AppDetailManualRefreshScope
+    ) throws -> AppDetailRefreshRequest {
+        let allTracks = try fetchTrackedKeywords(for: appStoreID)
+        return try makeRefreshRequest(
             for: appSnapshot,
-            trackIdentityKeys: fetchTrackedKeywords(for: appStoreID, platformFilter: keywordWorkspaceState.selectedPlatformFilter).map(\.identityKey),
+            tracks: allTracks
+                .filter { keywordWorkspaceState.selectedPlatformFilter.matches($0.platform) }
+                .map {
+                    AppDetailManualRefreshTrack(
+                        identityKey: $0.identityKey,
+                        storefront: $0.storefront
+                    )
+                },
+            trackedStorefronts: allTracks.map(\.storefront),
+            defaultStorefront: trackedApp.storeApp.defaultStorefront,
             activeWorkspaceView: activeWorkspaceView,
-            trigger: "manual"
+            trigger: scope == .focused ? "manual" : "manual_all_storefronts",
+            scope: scope
         )
     }
 
     private func makeRefreshAllRequests(activeWorkspaceView: AppDetailWorkspaceView) throws -> [AppDetailRefreshRequest] {
         let orderedApps = trackedAppsForRefreshAll()
         let platformFilter = keywordWorkspaceState.selectedPlatformFilter
+        let allTracks = try fetchAllTrackedKeywords()
         let tracksByAppStoreID = Dictionary(
-            grouping: try fetchAllTrackedKeywords().filter { platformFilter.matches($0.platform) },
+            grouping: allTracks.filter { platformFilter.matches($0.platform) },
+            by: \.appStoreID
+        )
+        let allTracksByAppStoreID = Dictionary(
+            grouping: allTracks,
             by: \.appStoreID
         )
         return try orderedApps.map { app in
@@ -494,9 +526,17 @@ struct AppDetailView: View {
                     sellerName: app.sellerName,
                     defaultPlatform: app.defaultPlatform
                 ),
-                trackIdentityKeys: (tracksByAppStoreID[app.appStoreID] ?? []).map(\.identityKey),
+                tracks: (tracksByAppStoreID[app.appStoreID] ?? []).map {
+                    AppDetailManualRefreshTrack(
+                        identityKey: $0.identityKey,
+                        storefront: $0.storefront
+                    )
+                },
+                trackedStorefronts: (allTracksByAppStoreID[app.appStoreID] ?? []).map(\.storefront),
+                defaultStorefront: app.storeApp.defaultStorefront,
                 activeWorkspaceView: activeWorkspaceView,
-                trigger: "manual_all"
+                trigger: "manual_all",
+                scope: .focused
             )
         }
     }
@@ -526,20 +566,25 @@ struct AppDetailView: View {
 
     private func makeRefreshRequest(
         for app: AppDetailRefreshAppSnapshot,
-        trackIdentityKeys: [String],
+        tracks: [AppDetailManualRefreshTrack],
+        trackedStorefronts: [String],
+        defaultStorefront: String?,
         activeWorkspaceView: AppDetailWorkspaceView,
-        trigger: String
+        trigger: String,
+        scope: AppDetailManualRefreshScope
     ) throws -> AppDetailRefreshRequest {
-        let storefrontSelection: AppDetailRefreshStorefrontSelection
-        switch selectedStorefrontFilter {
-        case .all:
-            let codes = try services.storefrontCatalog.bundledStorefronts()
-                .map { $0.code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-                .filter { !$0.isEmpty }
-            storefrontSelection = .all(codes: Array(Set(codes)).sorted())
-        case .storefront(let code, _):
-            storefrontSelection = .storefront(code: code)
-        }
+        let bundledStorefronts = try services.storefrontCatalog.bundledStorefronts().map(\.code)
+        let storefrontSelection = AppDetailManualRefreshScopeResolver.selection(
+            scope: scope,
+            selectedStorefrontFilter: selectedStorefrontFilter,
+            trackedStorefronts: trackedStorefronts,
+            defaultStorefront: defaultStorefront,
+            bundledStorefronts: bundledStorefronts
+        )
+        let trackIdentityKeys = AppDetailManualRefreshScopeResolver.identityKeys(
+            for: tracks,
+            storefrontSelection: storefrontSelection
+        )
 
         let workspace: AppDetailRefreshWorkspace
         switch activeWorkspaceView {
@@ -559,6 +604,15 @@ struct AppDetailView: View {
             appleAdsWebSession: services.appleAdsWebSessionStore.session,
             appStoreConnectCredentials: services.appStoreConnectCredentialStore.credentials
         )
+    }
+
+    private var refreshHelp: String {
+        switch selectedStorefrontFilter {
+        case .all:
+            return "Refresh Tracked and Default Countries"
+        case .storefront(_, let title):
+            return "Refresh \(title)"
+        }
     }
 
     private func setErrorMessage(_ message: String) {

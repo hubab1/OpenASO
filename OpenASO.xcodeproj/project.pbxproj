@@ -88,6 +88,8 @@
 		A0BEEF000000000000000011 /* Storefront/ScreenshotDownloadProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000013 /* Storefront/ScreenshotDownloadProgressStore.swift */; };
 		A0BEEF000000000000000014 /* ScreenshotDownloadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */; };
 		A0D71B4C0000000000000004 /* AppDetailToolbarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000001 /* AppDetailToolbarViews.swift */; };
+		A10C00000000000000000002 /* AppDetailManualRefreshScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10C00000000000000000001 /* AppDetailManualRefreshScope.swift */; };
+		A10C00000000000000000004 /* AppDetailManualRefreshScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10C00000000000000000003 /* AppDetailManualRefreshScopeTests.swift */; };
 		A0D71B4C0000000000000006 /* AppRatingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000003 /* AppRatingsView.swift */; };
 		A0D71B4C0000000000000009 /* AppDetailSupportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000007 /* AppDetailSupportTypes.swift */; };
 		A0D71B4C000000000000000A /* FilterRangeSlider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D71B4C0000000000000008 /* FilterRangeSlider.swift */; };
@@ -347,6 +349,8 @@
 		A19000000000000000000012 /* SearchRanking/PrimaryFallbackSearchRankingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/PrimaryFallbackSearchRankingProvider.swift; sourceTree = "<group>"; };
 		A19000000000000000000013 /* AppStoreWebRankingProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreWebRankingProviderTests.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000001 /* AppDetailToolbarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailToolbarViews.swift; sourceTree = "<group>"; };
+		A10C00000000000000000001 /* AppDetailManualRefreshScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailManualRefreshScope.swift; sourceTree = "<group>"; };
+		A10C00000000000000000003 /* AppDetailManualRefreshScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailManualRefreshScopeTests.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000003 /* AppRatingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRatingsView.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000007 /* AppDetailSupportTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailSupportTypes.swift; sourceTree = "<group>"; };
 		A0D71B4C0000000000000008 /* FilterRangeSlider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterRangeSlider.swift; sourceTree = "<group>"; };
@@ -526,6 +530,7 @@
 				B16D1F1F736DDAB911B87E77 /* DefaultAppResolverTests.swift */,
 				8C6BDA000FFE3FC055867E78 /* ITunesSearchFallbackProviderTests.swift */,
 				D20A00000000000000000012 /* KeywordDifficultyEstimatorTests.swift */,
+				A10C00000000000000000003 /* AppDetailManualRefreshScopeTests.swift */,
 				04E8C4E18F1A4D519C0A1128 /* KeywordMetricsServiceTests.swift */,
 				A2000000000000000000001B /* KeywordRankingHistoryTests.swift */,
 				B7000000000000000000001A /* AddKeywordsStorefrontProjectionTests.swift */,
@@ -719,6 +724,7 @@
 				A0D71B4C000000000000001C /* AppDetailCSVTransfer.swift */,
 				A0D71B4C000000000000001A /* AppDetailPreviewFixtures.swift */,
 				A0D71B4C0000000000000007 /* AppDetailSupportTypes.swift */,
+				A10C00000000000000000001 /* AppDetailManualRefreshScope.swift */,
 				A0D71B4C0000000000000001 /* AppDetailToolbarViews.swift */,
 				C10000000000000000000002 /* Keywords */,
 				A40000000000000000000020 /* Ratings */,
@@ -1029,6 +1035,7 @@
 				A0D71B4C0000000000000019 /* AppDetailPreviewFixtures.swift in Sources */,
 				A0D71B4C000000000000001B /* AppDetailCSVTransfer.swift in Sources */,
 				A0D71B4C0000000000000004 /* AppDetailToolbarViews.swift in Sources */,
+				A10C00000000000000000002 /* AppDetailManualRefreshScope.swift in Sources */,
 				CB1733C5A8778748B70BA4FD /* AppDetailView.swift in Sources */,
 				A0D71B4C000000000000000A /* FilterRangeSlider.swift in Sources */,
 				04E8C4E18F1A4D519C0A1135 /* AI/FoundationModelsAIService.swift in Sources */,
@@ -1192,6 +1199,7 @@
 				3FBAFA6ACAF90A7959DC4053 /* RankingRefreshCoordinatorTests.swift in Sources */,
 				F00300000000000000000003 /* RefreshObservabilityTests.swift in Sources */,
 				F008A0000000000000000002 /* ProviderRequestGateTests.swift in Sources */,
+				A10C00000000000000000004 /* AppDetailManualRefreshScopeTests.swift in Sources */,
 				3CA890AE264B6EE10E04FC20 /* DailyRefreshSchedulerTests.swift in Sources */,
 				A60000000000000000000003 /* ReviewTranslationIntegrationTests.swift in Sources */,
 			);
