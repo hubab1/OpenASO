@@ -170,6 +170,96 @@ struct KeywordRankingListLoaderTests {
     }
 
     @Test
+    func metadataRevisionIDsIncludeBackgroundOnlyRankingRowsAndFallbacks() async throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        let fallbackAppStoreID: Int64 = 101
+        let backgroundAppStoreID: Int64 = 202
+        let query = KeywordQuery(term: "focus", storefront: "us", platform: .iphone)
+        let crawl = KeywordRankingCrawl(
+            keyword: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            observedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            source: .appStoreWeb,
+            resultCount: 1,
+            query: query
+        )
+        modelContext.insert(query)
+        modelContext.insert(crawl)
+        modelContext.insert(KeywordAppRanking(
+            position: 1,
+            appStoreID: backgroundAppStoreID,
+            bundleID: "com.example.background-only",
+            name: "Background Only",
+            subtitle: nil,
+            sellerName: "Example",
+            observation: crawl
+        ))
+        try modelContext.save()
+
+        let fallbackItem = KeywordRankingListItem(
+            id: fallbackAppStoreID,
+            position: 2,
+            appStoreID: fallbackAppStoreID,
+            name: "Fallback",
+            subtitle: nil,
+            sellerName: nil
+        )
+        let revisionStore = AppMetadataRefreshProgressStore { request, _ in
+            AppMetadataRefreshResult(
+                appStoreID: request.appStoreID,
+                defaultStorefront: "us",
+                storefronts: [
+                    AppMetadataRefreshStorefrontOutcome(
+                        storefront: "us",
+                        iTunesLookup: .succeeded,
+                        appStoreWeb: .succeeded
+                    )
+                ],
+                iconInvalidated: false
+            )
+        }
+        let model = KeywordRankingListModel()
+        let initialAppStoreIDs = model.metadataRevisionAppStoreIDs(
+            fallbackItems: [fallbackItem]
+        )
+        let initialRevisionSignature = revisionStore.revisionSignature(
+            for: initialAppStoreIDs
+        )
+        await model.load(
+            request: KeywordRankingListLoader.LoadID(
+                crawlKey: crawl.observationKey,
+                storefrontCode: "us",
+                includesScreenshots: false
+            ),
+            fallbackItems: [fallbackItem],
+            using: .production(
+                backgroundModelStore: BackgroundModelStore(modelContainer: container),
+                fallbackModelContext: modelContext
+            )
+        )
+
+        #expect(model.snapshot?.rows.map(\.appStoreID) == [backgroundAppStoreID])
+        #expect(
+            model.metadataRevisionAppStoreIDs(fallbackItems: [fallbackItem])
+                == [fallbackAppStoreID, backgroundAppStoreID]
+        )
+        let discoveredRevisionSignature = revisionStore.revisionSignature(
+            for: model.metadataRevisionAppStoreIDs(fallbackItems: [fallbackItem])
+        )
+        #expect(discoveredRevisionSignature == initialRevisionSignature)
+
+        #expect(revisionStore.start(AppMetadataRefreshRequest(appStoreID: backgroundAppStoreID)))
+        await revisionStore.waitForCurrentBatch()
+        #expect(
+            revisionStore.revisionSignature(
+                for: model.metadataRevisionAppStoreIDs(fallbackItems: [fallbackItem])
+            ) == "\(backgroundAppStoreID):1"
+        )
+    }
+
+    @Test
     func loaderChecksCancellationBetweenFetchStages() throws {
         let container = try makeInMemoryContainer()
         let modelContext = ModelContext(container)

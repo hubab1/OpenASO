@@ -13,6 +13,7 @@ final class KeywordRankingListModel {
     struct RequestID: Hashable, Sendable {
         let loadID: KeywordRankingListLoader.LoadID
         let retryToken: Int
+        let metadataRevisionSignature: String
     }
 
     private(set) var state: State = .idle
@@ -41,6 +42,14 @@ final class KeywordRankingListModel {
 
     var includesScreenshots: Bool {
         snapshot?.includesScreenshots == true
+    }
+
+    func metadataRevisionAppStoreIDs(
+        fallbackItems: [KeywordRankingListItem]
+    ) -> [Int64] {
+        let fallbackAppStoreIDs = fallbackItems.map(\.appStoreID)
+        let loadedAppStoreIDs = snapshot?.rows.map(\.appStoreID) ?? []
+        return Array(Set(fallbackAppStoreIDs + loadedAppStoreIDs)).sorted()
     }
 
     func load(

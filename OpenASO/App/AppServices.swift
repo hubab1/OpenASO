@@ -23,6 +23,7 @@ final class AppServices {
     let appCatalogService: AppCatalogService
     let appIconStore: AppIconStore
     let appMetadataRefreshService: AppMetadataRefreshService?
+    let appMetadataRefreshProgressStore: AppMetadataRefreshProgressStore
     let screenshotDownloadService: ScreenshotDownloadService
     let screenshotDownloadProgressStore: ScreenshotDownloadProgressStore
     let appStorefrontRatingService: AppStorefrontRatingService
@@ -111,6 +112,19 @@ final class AppServices {
                 iconInvalidator: appIconStore
             )
         }
+        let appMetadataRefreshProgressStore = AppMetadataRefreshProgressStore(
+            refreshOperation: { request, progress in
+                guard let appMetadataRefreshService else {
+                    throw OpenASOError.providerUnavailable(
+                        "Metadata refresh needs an initialized workspace store."
+                    )
+                }
+                return try await appMetadataRefreshService.refresh(
+                    request,
+                    progress: progress
+                )
+            }
+        )
         let screenshotDownloadService = ScreenshotDownloadService()
         let screenshotDownloadProgressStore = ScreenshotDownloadProgressStore()
         let appStorefrontRatingService = AppStorefrontRatingService(httpClient: httpClient)
@@ -298,6 +312,7 @@ final class AppServices {
         self.appCatalogService = catalogService
         self.appIconStore = appIconStore
         self.appMetadataRefreshService = appMetadataRefreshService
+        self.appMetadataRefreshProgressStore = appMetadataRefreshProgressStore
         self.screenshotDownloadService = screenshotDownloadService
         self.screenshotDownloadProgressStore = screenshotDownloadProgressStore
         self.appStorefrontRatingService = appStorefrontRatingService
@@ -361,6 +376,9 @@ final class AppServices {
                     return summary
                 }
             )
+        }
+        self.appMetadataRefreshProgressStore.setRevisionHandler { [weak self] _, _ in
+            self?.markBackgroundModelStoreChanged()
         }
     }
 
