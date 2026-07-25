@@ -5,14 +5,19 @@ struct AppDetailRefreshToolbarButton: View {
     let isRefreshing: Bool
     let isDisabled: Bool
     let action: () -> Void
-    let refreshAllAction: () -> Void
+    let refreshAllStorefrontsAction: () -> Void
+    let refreshAllAppsAction: () -> Void
+    let help: String
 
     var body: some View {
         Menu {
-            Button {
-                refreshAllAction()
-            } label: {
-                Label("Refresh All Apps", systemImage: "arrow.triangle.2.circlepath")
+            Button(action: refreshAllStorefrontsAction) {
+                Label("Refresh All Storefronts", systemImage: "globe")
+            }
+            .disabled(isDisabled)
+
+            Button(action: refreshAllAppsAction) {
+                Label("Refresh All Apps (Focused Countries)", systemImage: "arrow.triangle.2.circlepath")
             }
             .disabled(isDisabled)
         } label: {
@@ -21,7 +26,7 @@ struct AppDetailRefreshToolbarButton: View {
             action()
         }
         .disabled(isDisabled)
-        .help("Refresh App")
+        .help(help)
     }
 }
 
