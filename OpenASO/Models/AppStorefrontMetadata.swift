@@ -113,4 +113,5 @@ enum AppStorefrontMetadataSource: String, Codable, Sendable {
     case iTunesSearch
     case iTunesLookup
     case appStoreWeb
+    case appStoreWebSearch
 }

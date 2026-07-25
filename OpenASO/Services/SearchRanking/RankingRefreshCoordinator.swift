@@ -429,9 +429,12 @@ final class RankingRefreshCoordinator: Sendable {
             )
 
             for item in page.items {
-                _ = try appCatalogService.upsertStoreApp(
+                let storeApp = try appCatalogService.upsertStoreApp(
                     from: item,
                     storefrontCode: track.storefront,
+                    rankingSource: page.source,
+                    fetchedAt: searchedAt,
+                    requestedPlatform: track.platform,
                     in: modelContext,
                     cache: &catalogCache
                 )
@@ -439,6 +442,8 @@ final class RankingRefreshCoordinator: Sendable {
                     from: item,
                     storefront: track.storefront,
                     observedAt: snapshot.searchedAt,
+                    source: storefrontRatingSource(for: page.source),
+                    storeApp: storeApp,
                     in: modelContext,
                     cache: &ratingCache
                 )
@@ -747,6 +752,8 @@ final class RankingRefreshCoordinator: Sendable {
         from item: SearchRankingItem,
         storefront: String,
         observedAt: Date,
+        source: AppStorefrontSource,
+        storeApp: StoreApp,
         in modelContext: ModelContext,
         cache: inout RatingPageCache
     ) {
@@ -771,7 +778,8 @@ final class RankingRefreshCoordinator: Sendable {
             submissionCount: 1,
             winningCount: 1,
             confidence: "single_source",
-            source: .iTunesSearch
+            source: source,
+            storeApp: storeApp
         )
         if snapshot.modelContext != nil, observedAt < snapshot.observedAt {
             return
@@ -780,6 +788,9 @@ final class RankingRefreshCoordinator: Sendable {
             modelContext.insert(snapshot)
             cache.snapshotsByIdentityKey[snapshotKey] = snapshot
         }
+        if snapshot.storeApp !== storeApp {
+            snapshot.storeApp = storeApp
+        }
         let snapshotChanged = snapshot.modelContext == nil
             || snapshot.ratingCount != item.ratingCount
             || snapshot.averageRating != item.averageRating
@@ -787,7 +798,8 @@ final class RankingRefreshCoordinator: Sendable {
             || snapshot.submissionCount != 1
             || snapshot.winningCount != 1
             || snapshot.confidenceRaw != "single_source"
-            || snapshot.source != .iTunesSearch
+            || snapshot.observedAt != observedAt
+            || snapshot.source != source
         if snapshotChanged {
             snapshot.ratingCount = item.ratingCount
             snapshot.averageRating = item.averageRating
@@ -796,7 +808,7 @@ final class RankingRefreshCoordinator: Sendable {
             snapshot.submissionCount = 1
             snapshot.winningCount = 1
             snapshot.confidenceRaw = "single_source"
-            snapshot.source = .iTunesSearch
+            snapshot.source = source
         }
 
         let latestKey = LatestAppRating.makeIdentityKey(
@@ -813,7 +825,8 @@ final class RankingRefreshCoordinator: Sendable {
             submissionCount: 1,
             winningCount: 1,
             confidence: "single_source",
-            source: .iTunesSearch
+            source: source,
+            storeApp: storeApp
         )
         if latest.modelContext != nil, observedAt < latest.observedAt {
             return
@@ -822,6 +835,9 @@ final class RankingRefreshCoordinator: Sendable {
             modelContext.insert(latest)
             cache.latestByIdentityKey[latestKey] = latest
         }
+        if latest.storeApp !== storeApp {
+            latest.storeApp = storeApp
+        }
         let latestChanged = latest.modelContext == nil
             || latest.ratingCount != item.ratingCount
             || latest.averageRating != item.averageRating
@@ -829,7 +845,8 @@ final class RankingRefreshCoordinator: Sendable {
             || latest.submissionCount != 1
             || latest.winningCount != 1
             || latest.confidenceRaw != "single_source"
-            || latest.source != .iTunesSearch
+            || latest.observedAt != observedAt
+            || latest.source != source
         if latestChanged {
             latest.ratingCount = item.ratingCount
             latest.averageRating = item.averageRating
@@ -838,7 +855,16 @@ final class RankingRefreshCoordinator: Sendable {
             latest.submissionCount = 1
             latest.winningCount = 1
             latest.confidenceRaw = "single_source"
-            latest.source = .iTunesSearch
+            latest.source = source
+        }
+    }
+
+    private func storefrontRatingSource(for rankingSource: RankingSource) -> AppStorefrontSource {
+        switch rankingSource {
+        case .appStoreWeb:
+            return .appStorePage
+        case .iTunesFallback:
+            return .iTunesSearch
         }
     }
 

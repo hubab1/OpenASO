@@ -424,6 +424,47 @@ struct KeywordRankingHistoryTests {
         #expect(makeWorkspaceRow(ranks: [5, 5]).trendAccessibilityText == "Ranking unchanged.")
     }
 
+    @Test
+    func unknownLegacyRankingSourcesDefaultToConservativeFallback() {
+        let trackedApp = TrackedApp(
+            appStoreID: 100,
+            bundleID: "com.example.app",
+            name: "Example",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let query = KeywordQuery(term: "weather", storefront: "us", platform: .iphone)
+        let track = TrackedAppKeyword(
+            term: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            trackedApp: trackedApp,
+            query: query
+        )
+        let snapshot = TrackedKeywordDailyRanking(
+            rank: 3,
+            searchedAt: .now,
+            source: .appStoreWeb,
+            resultCount: 10,
+            keywordTrack: track
+        )
+        let crawl = KeywordRankingCrawl(
+            keyword: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            observedAt: .now,
+            source: .appStoreWeb,
+            resultCount: 10,
+            query: query
+        )
+
+        snapshot.sourceRaw = "legacy-unknown-source"
+        crawl.sourceRaw = "legacy-unknown-source"
+
+        #expect(snapshot.source == .iTunesFallback)
+        #expect(crawl.source == .iTunesFallback)
+    }
+
     private func makeDataSource(
         controlledBy controlledDataSource: ControlledHistoryDataSource
     ) -> KeywordRankingHistoryDataSource {
