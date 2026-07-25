@@ -35,6 +35,7 @@ final class AppServices {
     let keywordInsightsService: KeywordInsightsService
     let keywordSuggestionService: KeywordSuggestionService
     let rankedAppPricingService: RankedAppPricingService
+    let visibleProductPricingService: VisibleProductPricingService
     let rankingProvider: any SearchRankingProvider
     let refreshCoordinator: RankingRefreshCoordinator
     let appDetailRefreshService: AppDetailRefreshService?
@@ -149,6 +150,9 @@ final class AppServices {
         )
         let keywordInsightsService = KeywordInsightsService()
         let rankedAppPricingService = RankedAppPricingService(httpClient: httpClient)
+        let visibleProductPricingService = VisibleProductPricingService(
+            httpClient: httpClient
+        )
         let rankingProvider = SearchRankingProviderFactory.makeProduction(httpClient: httpClient)
         let mcpRankingRefreshScheduler = OpenASOMCPRankingRefreshScheduler()
         let refreshProgressStore = AppRefreshProgressStore()
@@ -326,6 +330,7 @@ final class AppServices {
         self.keywordInsightsService = keywordInsightsService
         self.keywordSuggestionService = KeywordSuggestionService()
         self.rankedAppPricingService = rankedAppPricingService
+        self.visibleProductPricingService = visibleProductPricingService
         self.rankingProvider = rankingProvider
         self.refreshCoordinator = refreshCoordinator
         self.appDetailRefreshService = appDetailRefreshService
