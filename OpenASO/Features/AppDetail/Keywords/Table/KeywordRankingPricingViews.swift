@@ -130,6 +130,74 @@ private final class KeywordPricingComparisonModel {
     }
 }
 
+@Observable
+@MainActor
+private final class VisibleProductPricingModel {
+    struct RequestID: Equatable, Hashable {
+        let appStoreID: Int64
+        let storefrontCodes: [String]
+        let retryToken: Int
+    }
+
+    private enum LoadOutcome: Sendable {
+        case success(VisibleProductPriceResult)
+        case failure(String)
+    }
+
+    private(set) var resultsByStorefront: [String: VisibleProductPriceResult] = [:]
+    private(set) var errorsByStorefront: [String: String] = [:]
+    private(set) var isLoading = false
+
+    func load(
+        request: RequestID,
+        using service: VisibleProductPricingService
+    ) async {
+        resultsByStorefront = [:]
+        errorsByStorefront = [:]
+        isLoading = true
+
+        let outcomes = await withTaskGroup(
+            of: (String, LoadOutcome).self
+        ) { group in
+            for storefrontCode in request.storefrontCodes {
+                group.addTask {
+                    do {
+                        let result = try await service.products(
+                            for: request.appStoreID,
+                            storefrontCode: storefrontCode
+                        )
+                        return (storefrontCode, .success(result))
+                    } catch is CancellationError {
+                        return (storefrontCode, .failure("Loading was cancelled."))
+                    } catch {
+                        return (storefrontCode, .failure(error.localizedDescription))
+                    }
+                }
+            }
+
+            var values: [(String, LoadOutcome)] = []
+            for await outcome in group {
+                values.append(outcome)
+            }
+            return values
+        }
+        guard !Task.isCancelled else {
+            isLoading = false
+            return
+        }
+
+        for (storefrontCode, outcome) in outcomes {
+            switch outcome {
+            case .success(let result):
+                resultsByStorefront[storefrontCode] = result
+            case .failure(let message):
+                errorsByStorefront[storefrontCode] = message
+            }
+        }
+        isLoading = false
+    }
+}
+
 struct KeywordRankingPriceCell: View {
     let result: RankedAppPriceResult?
     let isLoading: Bool
@@ -206,7 +274,10 @@ struct KeywordPricingComparisonSheet: View {
 
     @State private var selectedStorefrontCodes: [String]
     @State private var pricingModel = KeywordPricingComparisonModel()
+    @State private var visibleProductModel = VisibleProductPricingModel()
+    @State private var expandedAppStoreID: Int64?
     @State private var retryToken = 0
+    @State private var visibleProductRetryToken = 0
 
     init(
         keyword: String,
@@ -243,6 +314,15 @@ struct KeywordPricingComparisonSheet: View {
         )
     }
 
+    private var visibleProductRequestID: VisibleProductPricingModel.RequestID? {
+        guard let expandedAppStoreID else { return nil }
+        return VisibleProductPricingModel.RequestID(
+            appStoreID: expandedAppStoreID,
+            storefrontCodes: selectedStorefrontCodes,
+            retryToken: visibleProductRetryToken
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -257,6 +337,13 @@ struct KeywordPricingComparisonSheet: View {
             await pricingModel.load(
                 request: requestID,
                 using: services.rankedAppPricingService
+            )
+        }
+        .task(id: visibleProductRequestID) {
+            guard let visibleProductRequestID else { return }
+            await visibleProductModel.load(
+                request: visibleProductRequestID,
+                using: services.visibleProductPricingService
             )
         }
         .frame(minWidth: 760, idealWidth: 980, minHeight: 480, idealHeight: 640)
@@ -379,6 +466,16 @@ struct KeywordPricingComparisonSheet: View {
 
                     Divider()
                         .gridCellColumns(selectedStorefrontCodes.count + 1)
+
+                    if expandedAppStoreID == app.id {
+                        GridRow {
+                            visibleProductDetails(for: app)
+                                .gridCellColumns(selectedStorefrontCodes.count + 1)
+                        }
+
+                        Divider()
+                            .gridCellColumns(selectedStorefrontCodes.count + 1)
+                    }
                 }
             }
         }
@@ -388,10 +485,36 @@ struct KeywordPricingComparisonSheet: View {
 
     private func comparisonAppCell(_ app: KeywordPricingComparisonApp) -> some View {
         HStack(spacing: 10) {
+            Button {
+                withAnimation(.snappy) {
+                    expandedAppStoreID = expandedAppStoreID == app.id ? nil : app.id
+                }
+            } label: {
+                Image(
+                    systemName: expandedAppStoreID == app.id
+                        ? "chevron.down"
+                        : "chevron.right"
+                )
+                .font(.caption.weight(.semibold))
+                .frame(width: 12)
+            }
+            .buttonStyle(.plain)
+            .help(
+                expandedAppStoreID == app.id
+                    ? "Hide visible purchase prices"
+                    : "Show visible purchase prices"
+            )
+            .accessibilityLabel(
+                expandedAppStoreID == app.id
+                    ? "Hide visible purchases for \(app.name)"
+                    : "Show visible purchases for \(app.name)"
+            )
+            .accessibilityValue(expandedAppStoreID == app.id ? "Expanded" : "Collapsed")
+
             Text("#\(app.rank)")
                 .font(.callout.monospacedDigit().weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .leading)
+                .frame(width: 34, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -412,6 +535,97 @@ struct KeywordPricingComparisonSheet: View {
         }
     }
 
+    private func visibleProductDetails(
+        for app: KeywordPricingComparisonApp
+    ) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                Label("Visible purchases", systemImage: "cart")
+                    .font(.caption.weight(.semibold))
+                Text("Apple may show only a subset.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 300, alignment: .leading)
+
+            ForEach(selectedStorefronts, id: \.code) { storefront in
+                visibleProductStorefrontColumn(
+                    app: app,
+                    storefront: storefront
+                )
+                .frame(width: 128, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.secondary.opacity(0.045))
+    }
+
+    @ViewBuilder
+    private func visibleProductStorefrontColumn(
+        app: KeywordPricingComparisonApp,
+        storefront: BundledStorefront
+    ) -> some View {
+        if visibleProductModel.isLoading,
+           visibleProductModel.resultsByStorefront[storefront.code] == nil,
+           visibleProductModel.errorsByStorefront[storefront.code] == nil {
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityLabel(
+                    "Loading visible purchases for \(app.name) in \(storefront.name)"
+                )
+        } else if let result = visibleProductModel.resultsByStorefront[storefront.code] {
+            if result.products.isEmpty {
+                Text("None shown")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            } else {
+                VStack(alignment: .trailing, spacing: 8) {
+                    ForEach(result.products, id: \.self) { product in
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(product.name)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.trailing)
+                            Text(product.displayPrice)
+                                .font(.caption.monospacedDigit().weight(.medium))
+                                .lineLimit(1)
+                        }
+                    }
+                    if result.isTruncated {
+                        Text("More may be available")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .tooltip(
+                    "Visible App Store purchases in \(storefront.code.uppercased())"
+                        + " · checked "
+                        + result.observedAt.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        )
+                )
+            }
+        } else if let errorMessage = visibleProductModel.errorsByStorefront[storefront.code] {
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("Unavailable")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .tooltip(errorMessage)
+                Button("Retry") {
+                    visibleProductRetryToken &+= 1
+                }
+                .font(.caption)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
     private var footer: some View {
         HStack {
             if let errorMessage = pricingModel.errorMessage {
@@ -429,7 +643,7 @@ struct KeywordPricingComparisonSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("Prices are storefront-specific and may change.")
+                Text("Prices are storefront-specific and may change. Expand an app for visible purchases.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
