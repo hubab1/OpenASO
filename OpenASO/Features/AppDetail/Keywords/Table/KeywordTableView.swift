@@ -190,7 +190,7 @@ struct KeywordTableView: View {
                         )
                         .accessibilityHint("Opens ranking history.")
                     }
-                    .width(min: 104, ideal: 120, max: 132)
+                    .width(min: 120, ideal: 132, max: 152)
 
                     TableColumn("Apps in Ranking") { tableRow in
                         AppsInRankingButton(

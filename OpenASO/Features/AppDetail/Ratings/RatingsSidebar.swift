@@ -149,15 +149,24 @@ private struct RatingsSummaryMetrics: View {
 }
 
 private struct RatingsSummaryMetric: View {
+    private static let layoutPlaceholderTrend = RatingTrendValue(
+        direction: .up,
+        value: "0"
+    )
+
     let value: String
     let trend: RatingTrendValue?
     let label: String
 
     var body: some View {
         VStack(spacing: 4) {
-            if let trend {
-                RatingTrendLabel(trend: trend, font: .callout.weight(.semibold))
-            }
+            RatingTrendLabel(
+                trend: trend ?? Self.layoutPlaceholderTrend,
+                font: .callout.weight(.semibold)
+            )
+            .opacity(trend == nil ? 0 : 1)
+            .accessibilityHidden(trend == nil)
+
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(value)
                     .font(.title.bold())

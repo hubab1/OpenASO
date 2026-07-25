@@ -214,7 +214,8 @@ struct KeywordTrendCell: View {
             Text(row.trendDeltaText)
                 .font(.headline.monospacedDigit())
                 .foregroundStyle(row.trendColor)
-                .frame(width: 34, alignment: .trailing)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 46, alignment: .trailing)
 
             KeywordTrendSparklineView(points: row.trendPoints, color: row.trendColor)
                 .frame(width: 58, height: 22)
