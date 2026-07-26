@@ -29,27 +29,14 @@ struct KeywordResearchHistorySheet: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             historySidebar
-                .navigationSplitViewColumnWidth(min: 300, ideal: 340, max: 420)
-        } detail: {
-            observationDetail
-        }
-        .navigationTitle("Shared Search History")
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button("Reload History", systemImage: "arrow.clockwise") {
-                    Task { await reloadHistory() }
-                }
-                .labelStyle(.iconOnly)
-                .help("Reload Shared Search History")
-                .disabled(model.loadState.isLoading)
+                .frame(width: 320)
 
-                Button("Close") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-            }
+            Divider()
+
+            observationDetail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: services.backgroundModelStoreRevision) {
             model.cancelLoading()
@@ -61,7 +48,7 @@ struct KeywordResearchHistorySheet: View {
         .onChange(of: model.observations) {
             reconcileSelection()
         }
-        .frame(minWidth: 980, minHeight: 640)
+        .frame(minWidth: 840, minHeight: 560)
     }
 
     private var selectedObservation: KeywordResearchRankingObservationSnapshot? {
@@ -75,7 +62,7 @@ struct KeywordResearchHistorySheet: View {
             Divider()
 
             if model.observations.isEmpty {
-                emptyHistoryState
+                compactEmptyHistoryState
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(selection: $selectedObservationID) {
@@ -91,29 +78,71 @@ struct KeywordResearchHistorySheet: View {
         .background(.background)
     }
 
+    @ViewBuilder
+    private var compactEmptyHistoryState: some View {
+        switch model.loadState {
+        case .idle, .loading, .loadingNextPage:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Loading shared search history")
+        case .failed(let error):
+            Label(error.title, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding()
+                .accessibilityLabel(error.accessibilityLabel)
+        case .loaded:
+            Text("No observations yet")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var historyHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(model.keyword.term)
-                .font(.title3)
-                .fontWeight(.semibold)
-                .lineLimit(2)
-            Text(
-                "\(model.keyword.storefront.uppercased()) · "
-                    + model.keyword.platform.displayName
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(model.keyword.term)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .lineLimit(2)
+                    Text(
+                        "\(model.keyword.storefront.uppercased()) · "
+                            + model.keyword.platform.displayName
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(model.accessibilitySummary)
+
+                Spacer()
+
+                Button("Reload History", systemImage: "arrow.clockwise") {
+                    Task { await reloadHistory() }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("Reload Shared Search History")
+                .disabled(model.loadState.isLoading)
+
+                Button("Close Shared Search History", systemImage: "xmark") {
+                    dismiss()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+                .help("Close Shared Search History")
+            }
             Text(KeywordResearchHistoryPresentation.evidenceExplanation)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHint(
+                    "Positions describe returned apps in shared search result sets."
+                )
         }
         .padding(16)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(model.accessibilitySummary)
-        .accessibilityHint(
-            "Positions describe returned apps in shared search result sets."
-        )
     }
 
     @ViewBuilder
