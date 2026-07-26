@@ -28,23 +28,16 @@ struct KeywordResearchProjectCopySheet: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             targetSidebar
-                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
-        } detail: {
+                .frame(width: 320)
+
+            Divider()
+
             detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle("Copy Research Keywords")
-        .frame(minWidth: 920, minHeight: 640)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button(model.workflowState.isComplete ? "Done" : "Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                .disabled(model.blocksDismissal)
-            }
-        }
+        .frame(minWidth: 860, minHeight: 580)
         .task {
             guard model.targetLoadState == .idle else { return }
             await model.reloadTargets()
@@ -116,6 +109,18 @@ struct KeywordResearchProjectCopySheet: View {
                         || model.blocksDismissal
                         || model.workflowState.isComplete
                 )
+
+                Button(
+                    model.workflowState.isComplete ? "Done" : "Cancel",
+                    systemImage: model.workflowState.isComplete ? "checkmark" : "xmark"
+                ) {
+                    dismiss()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+                .help(model.workflowState.isComplete ? "Done" : "Cancel")
+                .disabled(model.blocksDismissal)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
