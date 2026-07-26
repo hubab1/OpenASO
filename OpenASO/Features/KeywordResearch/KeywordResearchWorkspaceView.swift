@@ -64,34 +64,6 @@ struct KeywordResearchWorkspaceView: View {
         }
         .navigationTitle("Keyword Research")
         .frame(minWidth: 900, minHeight: 620)
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                if deletingProjectGeneration != nil {
-                    ProgressView("Deleting Project…")
-                        .controlSize(.small)
-                } else if let selectedProject {
-                    Button {
-                        editorContext = .edit(selectedProject)
-                    } label: {
-                        Label("Edit Project", systemImage: "pencil")
-                    }
-                    .disabled(projectsModel.mutationState.isRunning || detailBlocksDismissal)
-
-                    Button(role: .destructive) {
-                        projectPendingDeletion = selectedProject
-                    } label: {
-                        Label("Delete Project", systemImage: "trash")
-                    }
-                    .disabled(projectsModel.mutationState.isRunning || detailBlocksDismissal)
-                }
-
-                Button("Close") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                .disabled(deletingProjectGeneration != nil || detailBlocksDismissal)
-            }
-        }
         .interactiveDismissDisabled(
             deletingProjectGeneration != nil || detailBlocksDismissal
         )
@@ -172,6 +144,34 @@ struct KeywordResearchWorkspaceView: View {
                 .buttonStyle(.borderless)
                 .help("New Research Project")
                 .disabled(projectsModel.mutationState.isRunning)
+
+                if deletingProjectGeneration != nil {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel("Deleting Project")
+                } else if let selectedProject {
+                    Menu("Project Actions", systemImage: "ellipsis.circle") {
+                        Button("Edit Project", systemImage: "pencil") {
+                            editorContext = .edit(selectedProject)
+                        }
+
+                        Button("Delete Project", systemImage: "trash", role: .destructive) {
+                            projectPendingDeletion = selectedProject
+                        }
+                    }
+                    .labelStyle(.iconOnly)
+                    .menuStyle(.borderlessButton)
+                    .help("Project Actions")
+                    .disabled(projectsModel.mutationState.isRunning)
+                }
+
+                Button("Close Keyword Research", systemImage: "xmark") {
+                    dismiss()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+                .help("Close Keyword Research")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
