@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-07-26
+
+OpenASO 0.4.0 adds a complete pre-live Keyword Research workspace for organizing projects, gathering ranking and popularity evidence, reviewing shared history, and copying selected keywords into tracked apps.
+
+- Add web-first App Store ranking with provider provenance and fallback handling.
+- Add ranked-app pricing comparisons and visible in-app purchase pricing.
+- Make large keyword workspaces and switching between apps substantially faster.
+- Add scoped metadata refresh progress, daily headless refresh, and provider observability.
+- Expand MCP with paginated history, pricing tools, and stdio parity with the in-app server.
+- Improve reliability across request pacing and retries, Apple Ads session expiry, Keychain reads, and versioned database migrations.
+
 ## 0.3.2 - 2026-05-09
 
 OpenASO 0.3.2 makes keyword research more accurate when you track App Store performance across iPhone, iPad, and Mac.  You can now choose the target device when adding keywords, keep platform context through CSV imports and exports, and filter refreshes around the device results you care about. Keyword tables and charts also do a better job of showing platform-specific ranking history, reducing duplicate-looking data when the same keyword is tracked in multiple contexts.  This release also improves refresh reliability by queueing overlapping app refreshes, prevents duplicate CSV import processing, and adds a new OpenASO ASO skill for evidence-led audits, keyword research, metadata recommendations, screenshot planning, competitor review, and localization work.
