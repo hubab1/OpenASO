@@ -239,6 +239,17 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "compare_app_pricing":
+            let result = try await service.compareAppPricing(
+                appStoreIDs: try arguments.requiredInt64Array("appStoreIDs"),
+                storefronts: try arguments.optionalStringArray("storefronts"),
+                platform: try arguments.optionalString("platform"),
+                visibleProductAppStoreID: try arguments.optionalInt64(
+                    "visibleProductAppStoreID"
+                )
+            )
+            return try Self.toolResult(result)
+
         case "fetch_website_markdown":
             let result = try await service.fetchWebsiteMarkdown(urlString: try arguments.requiredString("url"))
             return try Self.toolResult(result)
@@ -506,6 +517,15 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID", "destination_directory_path"],
                 optional: commonAppFilters.merging(["destination_directory_path": .string]) { current, _ in current }
             ), readOnly: false, destructive: false, idempotent: false, openWorld: true),
+            tool("compare_app_pricing", "Compare native public App Store base prices for 1...10 apps across up to five storefronts. Defaults to US and iPhone. Optionally include the potentially incomplete visible purchase rows for one selected app by passing visibleProductAppStoreID.", schema(
+                required: ["appStoreIDs"],
+                optional: [
+                    "appStoreIDs": .integerArray,
+                    "storefronts": .stringArray,
+                    "platform": .string,
+                    "visibleProductAppStoreID": .integer
+                ]
+            ), readOnly: true, openWorld: true),
             tool("fetch_website_markdown", "Fetch markdown for a website through markdown.new.", schema(
                 required: ["url"],
                 optional: ["url": .string]
@@ -810,6 +830,7 @@ private extension OpenASOMCPServerFactory {
 private enum JSONSchemaType: Sendable {
     case boolean
     case integer
+    case integerArray
     case string
     case stringArray
 
@@ -819,6 +840,8 @@ private enum JSONSchemaType: Sendable {
             return ["type": "boolean"]
         case .integer:
             return ["type": "integer"]
+        case .integerArray:
+            return ["type": "array", "items": ["type": "integer"]]
         case .string:
             return ["type": "string"]
         case .stringArray:
@@ -910,6 +933,32 @@ private extension Dictionary where Key == String, Value == MCP.Value {
             throw MCPError.invalidParams("Missing required integer argument: \(key)")
         }
         return Int64(intValue)
+    }
+
+    func optionalInt64(_ key: String) throws -> Int64? {
+        guard let rawValue = self[key] else { return nil }
+        guard let value = Int(rawValue) else {
+            throw MCPError.invalidParams("Argument must be an integer: \(key)")
+        }
+        return Int64(value)
+    }
+
+    func requiredInt64Array(_ key: String) throws -> [Int64] {
+        guard let rawValue = self[key],
+              let values = rawValue.arrayValue,
+              !values.isEmpty else {
+            throw MCPError.invalidParams(
+                "Missing required integer array argument: \(key)"
+            )
+        }
+        return try values.map { value in
+            guard let intValue = Int(value) else {
+                throw MCPError.invalidParams(
+                    "Argument must contain only integers: \(key)"
+                )
+            }
+            return Int64(intValue)
+        }
     }
 
     func bool(_ key: String) -> Bool? {

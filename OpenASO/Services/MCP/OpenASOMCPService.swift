@@ -440,6 +440,21 @@ final class OpenASOMCPService: Sendable {
     static let maximumLocalizationCompetitorLimit = 20
     static let localizationDescriptionCharacters = 1_200
     static let localizationReleaseNotesCharacters = 800
+    static let maximumPricingAppCount = 10
+    static let maximumPricingStorefrontCount = 5
+  }
+
+  private enum PricingFetchOutcome: Sendable {
+    case basePrices(
+      storefront: String,
+      results: [RankedAppPriceResult]?,
+      error: OpenASOMCPErrorDTO?
+    )
+    case visibleProducts(
+      storefront: String,
+      result: VisibleProductPriceResult?,
+      error: OpenASOMCPErrorDTO?
+    )
   }
 
   private static let localizationBaselineStorefront = "us"
@@ -459,6 +474,8 @@ final class OpenASOMCPService: Sendable {
   private let persistRankingRefreshAttempts: RankingRefreshAttemptsPersistence
   private let reviewService: AppStorefrontReviewService?
   private let keywordMetricsService: KeywordMetricsService?
+  private let rankedAppPricingService: RankedAppPricingService
+  private let visibleProductPricingService: VisibleProductPricingService
   private let popularityContextAppStoreIDProvider: @MainActor @Sendable () -> Int64?
   private let appleAdsWebSessionProvider: @MainActor @Sendable () -> AppleAdsWebSession?
   private let now: @Sendable () -> Date
@@ -475,6 +492,8 @@ final class OpenASOMCPService: Sendable {
     persistRankingRefreshAttempts: RankingRefreshAttemptsPersistence? = nil,
     reviewService: AppStorefrontReviewService? = nil,
     keywordMetricsService: KeywordMetricsService? = nil,
+    rankedAppPricingService: RankedAppPricingService? = nil,
+    visibleProductPricingService: VisibleProductPricingService? = nil,
     popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
     appleAdsWebSessionProvider: @escaping @MainActor @Sendable () -> AppleAdsWebSession? = { nil },
     now: @escaping @Sendable () -> Date = { Date() }
@@ -502,6 +521,10 @@ final class OpenASOMCPService: Sendable {
     }
     self.reviewService = reviewService
     self.keywordMetricsService = keywordMetricsService
+    self.rankedAppPricingService = rankedAppPricingService
+      ?? RankedAppPricingService(httpClient: httpClient, now: now)
+    self.visibleProductPricingService = visibleProductPricingService
+      ?? VisibleProductPricingService(httpClient: httpClient, now: now)
     self.popularityContextAppStoreIDProvider = popularityContextAppStoreIDProvider
     self.appleAdsWebSessionProvider = appleAdsWebSessionProvider
     self.now = now
@@ -1535,6 +1558,167 @@ final class OpenASOMCPService: Sendable {
     )
   }
 
+  func compareAppPricing(
+    appStoreIDs: [Int64],
+    storefronts: [String]? = nil,
+    platform: String? = nil,
+    visibleProductAppStoreID: Int64? = nil
+  ) async throws -> OpenASOMCPAppPricingComparison {
+    let appStoreIDs = try Self.validatedPricingAppStoreIDs(appStoreIDs)
+    let storefronts = try Self.validatedPricingStorefronts(storefronts)
+    let platform = try OpenASOMCPValidation.platform(platform)
+    let visibleProductAppStoreID = try visibleProductAppStoreID.map(
+      OpenASOMCPValidation.appStoreID
+    )
+    if let visibleProductAppStoreID,
+       !appStoreIDs.contains(visibleProductAppStoreID) {
+      throw OpenASOError.providerUnavailable(
+        "visibleProductAppStoreID must also appear in appStoreIDs."
+      )
+    }
+
+    let rankedAppPricingService = rankedAppPricingService
+    let visibleProductPricingService = visibleProductPricingService
+    let outcomes = try await withThrowingTaskGroup(
+      of: PricingFetchOutcome.self
+    ) { group in
+      for storefront in storefronts {
+        group.addTask {
+          do {
+            let results = try await rankedAppPricingService.prices(
+              for: appStoreIDs,
+              storefrontCode: storefront,
+              platform: platform
+            )
+            return .basePrices(
+              storefront: storefront,
+              results: results,
+              error: nil
+            )
+          } catch is CancellationError {
+            throw CancellationError()
+          } catch {
+            return .basePrices(
+              storefront: storefront,
+              results: nil,
+              error: OpenASOMCPErrorDTO(OpenASOError.map(error))
+            )
+          }
+        }
+
+        if let visibleProductAppStoreID {
+          group.addTask {
+            do {
+              let result = try await visibleProductPricingService.products(
+                for: visibleProductAppStoreID,
+                storefrontCode: storefront
+              )
+              return .visibleProducts(
+                storefront: storefront,
+                result: result,
+                error: nil
+              )
+            } catch is CancellationError {
+              throw CancellationError()
+            } catch {
+              return .visibleProducts(
+                storefront: storefront,
+                result: nil,
+                error: OpenASOMCPErrorDTO(OpenASOError.map(error))
+              )
+            }
+          }
+        }
+      }
+
+      var collected: [PricingFetchOutcome] = []
+      for try await outcome in group {
+        collected.append(outcome)
+      }
+      return collected
+    }
+    try Task.checkCancellation()
+
+    var baseResultsByStorefront: [String: [RankedAppPriceResult]] = [:]
+    var visibleResultsByStorefront: [String: VisibleProductPriceResult] = [:]
+    var failures: [OpenASOMCPPricingFailure] = []
+    for outcome in outcomes {
+      switch outcome {
+      case .basePrices(let storefront, let results, let error):
+        if let results {
+          baseResultsByStorefront[storefront] = results
+        } else if let error {
+          failures.append(
+            OpenASOMCPPricingFailure(
+              scope: "base_price",
+              appStoreID: nil,
+              storefront: storefront,
+              error: error
+            )
+          )
+        }
+      case .visibleProducts(let storefront, let result, let error):
+        if let result {
+          visibleResultsByStorefront[storefront] = result
+        } else if let error {
+          failures.append(
+            OpenASOMCPPricingFailure(
+              scope: "visible_products",
+              appStoreID: visibleProductAppStoreID.map(String.init),
+              storefront: storefront,
+              error: error
+            )
+          )
+        }
+      }
+    }
+
+    let basePrices = storefronts.flatMap { storefront in
+      let resultsByAppStoreID = Dictionary(
+        uniqueKeysWithValues: (baseResultsByStorefront[storefront] ?? [])
+          .map { ($0.appStoreID, $0) }
+      )
+      return appStoreIDs.compactMap { appStoreID in
+        resultsByAppStoreID[appStoreID].map(Self.mcpBasePrice)
+      }
+    }
+    let visibleProducts = storefronts.compactMap { storefront in
+      visibleResultsByStorefront[storefront].map(Self.mcpVisibleProducts)
+    }
+    let orderedFailures = failures.sorted {
+      if $0.storefront != $1.storefront {
+        let lhsIndex = storefronts.firstIndex(of: $0.storefront)
+          ?? storefronts.endIndex
+        let rhsIndex = storefronts.firstIndex(of: $1.storefront)
+          ?? storefronts.endIndex
+        return lhsIndex < rhsIndex
+      }
+      return $0.scope < $1.scope
+    }
+
+    var notes = [
+      "Base app prices come from Apple's public iTunes lookup endpoint and are cached in memory for six hours.",
+      "Prices are returned exactly as displayed in each storefront; no currency conversion, tax estimate, or developer-proceeds estimate is applied.",
+      "A storefront failure is reported without discarding successful storefront results.",
+    ]
+    if visibleProductAppStoreID != nil {
+      notes.append(
+        "Visible purchases come from the public App Store page, may be incomplete, and are limited to one selected app per request."
+      )
+    }
+
+    return OpenASOMCPAppPricingComparison(
+      generatedAt: now(),
+      appStoreIDs: appStoreIDs.map(String.init),
+      storefronts: storefronts,
+      platform: platform.rawValue,
+      basePrices: basePrices,
+      visibleProducts: visibleProducts,
+      failures: orderedFailures,
+      notes: notes
+    )
+  }
+
   func fetchWebsiteMarkdown(urlString: String) async throws -> OpenASOMCPWebsiteMarkdownResult {
     let sourceURL = try OpenASOMCPValidation.webURL(urlString)
     let markdownURL = try Self.markdownNewURL(for: sourceURL)
@@ -1551,6 +1735,109 @@ final class OpenASOMCPService: Sendable {
       markdown: markdown,
       byteCount: data.count,
       fetchedAt: now()
+    )
+  }
+
+  private static func validatedPricingAppStoreIDs(
+    _ values: [Int64]
+  ) throws -> [Int64] {
+    guard !values.isEmpty else {
+      throw OpenASOError.providerUnavailable(
+        "Select at least one App Store ID."
+      )
+    }
+    guard values.count <= ResponseLimits.maximumPricingAppCount else {
+      throw OpenASOError.providerUnavailable(
+        "Select at most \(ResponseLimits.maximumPricingAppCount) apps for pricing comparison."
+      )
+    }
+
+    var seen = Set<Int64>()
+    return try values.compactMap { value in
+      let appStoreID = try OpenASOMCPValidation.appStoreID(value)
+      return seen.insert(appStoreID).inserted ? appStoreID : nil
+    }
+  }
+
+  private static func validatedPricingStorefronts(
+    _ values: [String]?
+  ) throws -> [String] {
+    let requested = values ?? []
+    guard requested.count <= ResponseLimits.maximumPricingStorefrontCount else {
+      throw OpenASOError.providerUnavailable(
+        "Select at most \(ResponseLimits.maximumPricingStorefrontCount) storefronts for pricing comparison."
+      )
+    }
+    let storefronts = requested.isEmpty ? ["us"] : requested
+
+    var seen = Set<String>()
+    return try storefronts.compactMap { value in
+      let validated = try OpenASOMCPValidation.storefront(value)
+      let storefront = StorefrontCatalog.normalizedStorefrontCode(validated)
+      guard storefront.count == 2,
+            storefront.unicodeScalars.allSatisfy(
+              CharacterSet.lowercaseLetters.contains
+            ) else {
+        throw OpenASOError.providerUnavailable(
+          "Unsupported App Store storefront '\(value)'."
+        )
+      }
+      return seen.insert(storefront).inserted ? storefront : nil
+    }
+  }
+
+  private static func mcpBasePrice(
+    _ result: RankedAppPriceResult
+  ) -> OpenASOMCPAppStorefrontPrice {
+    let kind: String
+    let amount: Decimal?
+    let displayPrice: String?
+    let currencyCode: String?
+    switch result.value {
+    case .free(let value):
+      kind = "free"
+      amount = nil
+      displayPrice = value
+      currencyCode = nil
+    case .paid(let value, let formattedValue, let currency):
+      kind = "paid"
+      amount = value
+      displayPrice = formattedValue
+      currencyCode = currency
+    case .unavailable:
+      kind = "unavailable"
+      amount = nil
+      displayPrice = nil
+      currencyCode = nil
+    }
+    return OpenASOMCPAppStorefrontPrice(
+      appStoreID: String(result.appStoreID),
+      storefront: result.storefrontCode,
+      kind: kind,
+      amount: amount,
+      displayPrice: displayPrice,
+      currencyCode: currencyCode,
+      observedAt: result.observedAt,
+      source: "itunes_lookup"
+    )
+  }
+
+  private static func mcpVisibleProducts(
+    _ result: VisibleProductPriceResult
+  ) -> OpenASOMCPVisibleProductPricing {
+    OpenASOMCPVisibleProductPricing(
+      appStoreID: String(result.appStoreID),
+      storefront: result.storefrontCode,
+      products: result.products.map {
+        OpenASOMCPVisibleProductPrice(
+          name: $0.name,
+          displayPrice: $0.displayPrice
+        )
+      },
+      observedAt: result.observedAt,
+      isPotentiallyIncomplete: result.isPotentiallyIncomplete,
+      isTruncated: result.isTruncated,
+      source: "app_store_page"
     )
   }
 

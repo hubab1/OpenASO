@@ -2945,6 +2945,172 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func compareAppPricingReturnsNativePricesAndBoundedVisibleProductsWithPartialFailures()
+        async throws
+    {
+        let observedAt = isoDate("2026-05-07T12:00:00Z")
+        let visibleHTML = Self.pricingAppStoreHTML(
+            appStoreID: 10,
+            productName: "Pro Monthly",
+            displayPrice: "$4.99"
+        )
+        let context = try MCPTestContext(
+            now: { observedAt },
+            httpHandler: { request in
+                let url = try #require(request.url)
+                if url.host == "itunes.apple.com" {
+                    let country = try #require(
+                        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                            .queryItems?
+                            .first(where: { $0.name == "country" })?
+                            .value
+                    )
+                    let response: String
+                    switch country {
+                    case "us":
+                        response = """
+                        {
+                          "results": [
+                            {
+                              "trackId": 20,
+                              "price": 4.99,
+                              "formattedPrice": "$4.99",
+                              "currency": "USD"
+                            },
+                            {
+                              "trackId": 10,
+                              "price": 0,
+                              "formattedPrice": "Free",
+                              "currency": "USD"
+                            }
+                          ]
+                        }
+                        """
+                    case "gb":
+                        response = """
+                        {
+                          "results": [
+                            {
+                              "trackId": 20,
+                              "price": 3.99,
+                              "formattedPrice": "£3.99",
+                              "currency": "GBP"
+                            }
+                          ]
+                        }
+                        """
+                    default:
+                        Issue.record("Unexpected storefront: \(country)")
+                        response = #"{"results":[]}"#
+                    }
+                    return (
+                        Data(response.utf8),
+                        makeHTTPURLResponse(url: url, statusCode: 200)
+                    )
+                }
+                if url.absoluteString == "https://apps.apple.com/us/app/id10" {
+                    return (
+                        Data(visibleHTML.utf8),
+                        makeHTTPURLResponse(url: url, statusCode: 200)
+                    )
+                }
+                if url.absoluteString == "https://apps.apple.com/gb/app/id10" {
+                    return (
+                        Data(),
+                        makeHTTPURLResponse(url: url, statusCode: 503)
+                    )
+                }
+                Issue.record("Unexpected request: \(url.absoluteString)")
+                return (
+                    Data(),
+                    makeHTTPURLResponse(url: url, statusCode: 404)
+                )
+            }
+        )
+
+        let result = try await context.service.compareAppPricing(
+            appStoreIDs: [20, 10, 20],
+            storefronts: ["US", "GBR"],
+            platform: "ipad",
+            visibleProductAppStoreID: 10
+        )
+
+        #expect(result.generatedAt == observedAt)
+        #expect(result.appStoreIDs == ["20", "10"])
+        #expect(result.storefronts == ["us", "gb"])
+        #expect(result.platform == "ipad")
+        #expect(result.basePrices.map(\.appStoreID) == ["20", "10", "20", "10"])
+        #expect(result.basePrices.map(\.storefront) == ["us", "us", "gb", "gb"])
+        #expect(result.basePrices.map(\.kind) == ["paid", "free", "paid", "unavailable"])
+        #expect(result.basePrices.map(\.displayPrice) == ["$4.99", "Free", "£3.99", nil])
+        #expect(result.basePrices[0].amount == Decimal(string: "4.99"))
+        #expect(result.basePrices[0].currencyCode == "USD")
+        #expect(result.basePrices.allSatisfy { $0.observedAt == observedAt })
+        #expect(result.visibleProducts == [
+            OpenASOMCPVisibleProductPricing(
+                appStoreID: "10",
+                storefront: "us",
+                products: [
+                    OpenASOMCPVisibleProductPrice(
+                        name: "Pro Monthly",
+                        displayPrice: "$4.99"
+                    )
+                ],
+                observedAt: observedAt,
+                isPotentiallyIncomplete: true,
+                isTruncated: false,
+                source: "app_store_page"
+            )
+        ])
+        #expect(result.failures.count == 1)
+        #expect(result.failures[0].scope == "visible_products")
+        #expect(result.failures[0].appStoreID == "10")
+        #expect(result.failures[0].storefront == "gb")
+        #expect(!result.failures[0].error.message.isEmpty)
+        #expect(result.notes.contains {
+            $0.contains("no currency conversion")
+                && $0.contains("tax estimate")
+        })
+    }
+
+    @Test
+    func compareAppPricingRejectsUnboundedOrMismatchedRequestsBeforeNetworking()
+        async throws
+    {
+        let context = try MCPTestContext(httpHandler: { request in
+            Issue.record("Invalid pricing requests must not reach the network: \(String(describing: request.url))")
+            throw OpenASOError.unexpectedResponse
+        })
+
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.compareAppPricing(appStoreIDs: [])
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.compareAppPricing(
+                appStoreIDs: Array(1 ... 11).map(Int64.init)
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.compareAppPricing(
+                appStoreIDs: [10],
+                storefronts: ["us", "gb", "de", "fr", "ca", "au"]
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.compareAppPricing(
+                appStoreIDs: [10],
+                storefronts: ["not-a-storefront"]
+            )
+        }
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.compareAppPricing(
+                appStoreIDs: [10],
+                visibleProductAppStoreID: 20
+            )
+        }
+    }
+
+    @Test
     func validationRejectsUnsafeWebsiteURLsAndCapsPagination() throws {
         #expect(throws: OpenASOError.self) {
             _ = try OpenASOMCPValidation.webURL("file:///tmp/secret")
@@ -2968,6 +3134,44 @@ struct OpenASOMCPServiceTests {
         let request = OpenASOMCPPageRequest(limit: 10_000, cursor: "12")
         #expect(request.limit == 200)
         #expect(request.offset == 12)
+    }
+
+    private static func pricingAppStoreHTML(
+        appStoreID: Int64,
+        productName: String,
+        displayPrice: String
+    ) -> String {
+        """
+        <!doctype html>
+        <script type="application/json" id="serialized-server-data">
+        {
+          "data": [
+            {
+              "data": {
+                "$kind": "ShelfBasedProductPage",
+                "lockup": {"$kind": "Lockup", "adamId": "\(appStoreID)"},
+                "shelfMapping": {
+                  "information": {
+                    "items": [
+                      {
+                        "$kind": "Annotation",
+                        "items": [
+                          {
+                            "textPairs": [
+                              ["\(productName)", "\(displayPrice)"]
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+        </script>
+        """
     }
 }
 

@@ -353,6 +353,8 @@ final class AppServices {
                 rankingRefreshScheduler: mcpRankingRefreshScheduler,
                 reviewService: appStorefrontReviewService,
                 keywordMetricsService: keywordMetricsService,
+                rankedAppPricingService: rankedAppPricingService,
+                visibleProductPricingService: visibleProductPricingService,
                 popularityContextAppStoreIDProvider: {
                     settingsStore.popularityContextAppStoreID
                 },

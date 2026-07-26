@@ -100,6 +100,84 @@ struct OpenASOMCPServerTests {
     }
 
     @Test
+    func serverExposesReadOnlyPricingToolAndReturnsStructuredNativePrices()
+        async throws
+    {
+        let context = try ServerTestContext(httpHandler: { request in
+            let url = try #require(request.url)
+            #expect(url.host == "itunes.apple.com")
+            return (
+                Data(
+                    """
+                    {
+                      "results": [
+                        {
+                          "trackId": 10,
+                          "price": 0,
+                          "formattedPrice": "Free",
+                          "currency": "USD"
+                        },
+                        {
+                          "trackId": 20,
+                          "price": 2.99,
+                          "formattedPrice": "$2.99",
+                          "currency": "USD"
+                        }
+                      ]
+                    }
+                    """.utf8
+                ),
+                makeHTTPURLResponse(url: url, statusCode: 200)
+            )
+        })
+        let server = await OpenASOMCPServerFactory(
+            service: context.service
+        ).makeServer()
+        let client = Client(name: "OpenASO MCP Pricing Client", version: "1.0")
+        let transports = await InMemoryTransport.createConnectedPair()
+
+        try await server.start(transport: transports.server)
+        defer {
+            Task {
+                await client.disconnect()
+                await server.stop()
+            }
+        }
+
+        _ = try await client.connect(transport: transports.client)
+        let tools = try await client.listTools().tools
+        let pricingTool = try #require(
+            tools.first { $0.name == "compare_app_pricing" }
+        )
+        #expect(pricingTool.annotations.readOnlyHint == true)
+        #expect(pricingTool.annotations.openWorldHint == true)
+        #expect(pricingTool.description?.contains("1...10 apps") == true)
+        #expect(pricingTool.description?.contains("five storefronts") == true)
+
+        let result = try await client.callTool(
+            name: "compare_app_pricing",
+            arguments: [
+                "appStoreIDs": [10, 20],
+                "storefronts": ["us"],
+                "platform": "iphone",
+            ]
+        )
+
+        #expect(result.isError == nil)
+        let json = try #require(result.content.first?.textValue)
+        let comparison = try JSONDecoder.openASOMCP.decode(
+            OpenASOMCPAppPricingComparison.self,
+            from: Data(json.utf8)
+        )
+        #expect(comparison.appStoreIDs == ["10", "20"])
+        #expect(comparison.storefronts == ["us"])
+        #expect(comparison.basePrices.map(\.kind) == ["free", "paid"])
+        #expect(comparison.basePrices.map(\.displayPrice) == ["Free", "$2.99"])
+        #expect(comparison.visibleProducts.isEmpty)
+        #expect(comparison.failures.isEmpty)
+    }
+
+    @Test
     func historyToolsAreReadOnlyAndReturnFilteredAndSeededPages() async throws {
         let context = try ServerTestContext()
         try context.insertTrackedApp(appStoreID: 123, name: "Focus Timer")
@@ -571,18 +649,25 @@ private struct ServerTestContext {
     let service: OpenASOMCPService
 
     @MainActor
-    init() throws {
+    init(
+        httpHandler: @escaping (URLRequest) throws -> (Data, URLResponse) = {
+            request in
+            (
+                Data(),
+                makeHTTPURLResponse(url: request.url!, statusCode: 200)
+            )
+        }
+    ) throws {
         container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         modelContext = ModelContext(container)
         let backgroundModelStore = BackgroundModelStore(modelContainer: container)
         let resolver = ServerStubAppResolver()
+        let httpClient = MockHTTPClient(handler: httpHandler)
         service = OpenASOMCPService(
             backgroundModelStore: backgroundModelStore,
             appResolver: resolver,
             appCatalogService: AppCatalogService(appResolver: resolver),
-            httpClient: MockHTTPClient { request in
-                (Data(), makeHTTPURLResponse(url: request.url!, statusCode: 200))
-            },
+            httpClient: httpClient,
             now: { ISO8601DateFormatter().date(from: "2026-05-07T12:00:00Z")! }
         )
     }

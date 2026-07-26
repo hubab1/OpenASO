@@ -369,6 +369,50 @@ struct OpenASOMCPScreenshotExportFailure: Codable, Sendable {
     let metadata: [String: String]
 }
 
+struct OpenASOMCPAppPricingComparison: Codable, Sendable, Equatable {
+    let generatedAt: Date
+    let appStoreIDs: [String]
+    let storefronts: [String]
+    let platform: String
+    let basePrices: [OpenASOMCPAppStorefrontPrice]
+    let visibleProducts: [OpenASOMCPVisibleProductPricing]
+    let failures: [OpenASOMCPPricingFailure]
+    let notes: [String]
+}
+
+struct OpenASOMCPAppStorefrontPrice: Codable, Sendable, Equatable {
+    let appStoreID: String
+    let storefront: String
+    let kind: String
+    let amount: Decimal?
+    let displayPrice: String?
+    let currencyCode: String?
+    let observedAt: Date
+    let source: String
+}
+
+struct OpenASOMCPVisibleProductPricing: Codable, Sendable, Equatable {
+    let appStoreID: String
+    let storefront: String
+    let products: [OpenASOMCPVisibleProductPrice]
+    let observedAt: Date
+    let isPotentiallyIncomplete: Bool
+    let isTruncated: Bool
+    let source: String
+}
+
+struct OpenASOMCPVisibleProductPrice: Codable, Sendable, Equatable {
+    let name: String
+    let displayPrice: String
+}
+
+struct OpenASOMCPPricingFailure: Codable, Sendable, Equatable {
+    let scope: String
+    let appStoreID: String?
+    let storefront: String
+    let error: OpenASOMCPErrorDTO
+}
+
 struct OpenASOMCPWebsiteMarkdownResult: Codable, Sendable {
     let sourceURLString: String
     let markdownURLString: String
