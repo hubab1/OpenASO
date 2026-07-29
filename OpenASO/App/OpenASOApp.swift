@@ -74,7 +74,7 @@ struct OpenASOApp: App {
                 RootView()
                     .environment(services)
                     .modelContainer(modelContainer)
-                    .frame(minWidth: 1000, minHeight: 760)
+                    .frame(idealWidth: 1000, idealHeight: 760)
                     .task {
                         services.analyticsService.capture(.appLaunched())
                         await services.prepareBackgroundModelStore()
@@ -89,9 +89,18 @@ struct OpenASOApp: App {
                     }
             case .storeUnavailable(let error):
                 PersistentStoreRecoveryView(error: error)
-                    .frame(minWidth: 680, minHeight: 480)
+                    .frame(idealWidth: 680, idealHeight: 480)
             }
         }
+        .defaultWindowPlacement { content, context in
+    		let idealSize = content.sizeThatFits(.unspecified)
+    		let visibleRect = context.defaultDisplay.visibleRect
+    		let fittedSize = CGSize(
+        		width: min(idealSize.width, visibleRect.width),
+        		height: min(idealSize.height, visibleRect.height)
+    		)
+    		return WindowPlacement(size: fittedSize)
+		}
 
         Settings {
             switch startupState {
@@ -101,10 +110,18 @@ struct OpenASOApp: App {
                     .modelContainer(modelContainer)
             case .storeUnavailable(let error):
                 PersistentStoreRecoveryView(error: error)
-                    .frame(minWidth: 680, minHeight: 480)
+                    .frame(idealWidth: 680, idealHeight: 480)
             }
         }
-
+        .defaultWindowPlacement { content, context in
+    		let idealSize = content.sizeThatFits(.unspecified)
+    		let visibleRect = context.defaultDisplay.visibleRect
+    		let fittedSize = CGSize(
+        		width: min(idealSize.width, visibleRect.width),
+        		height: min(idealSize.height, visibleRect.height)
+    		)
+    		return WindowPlacement(size: fittedSize)
+		}
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...", action: updaterController.checkForUpdates)
