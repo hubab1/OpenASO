@@ -101,7 +101,6 @@ struct SettingsView: View {
                 minWidth: 460,
                 idealWidth: 500,
                 maxWidth: 540,
-                minHeight: 700,
                 idealHeight: 760,
                 alignment: .topTrailing
             )
