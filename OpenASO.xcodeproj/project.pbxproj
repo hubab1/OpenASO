@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B9A0000000000000000005 /* AppleAdsPastedSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */; };
+		B9A0000000000000000003 /* AppleAds/AppleAdsPastedSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000004 /* AppleAds/AppleAdsPastedSession.swift */; };
+		B9A0000000000000000001 /* AppleAds/AppleAdsWebLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000002 /* AppleAds/AppleAdsWebLoginController.swift */; };
 		04E8C4E18F1A4D519C0A1101 /* Storefront/AppCatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1105 /* Storefront/AppCatalogService.swift */; };
 		04E8C4E18F1A4D519C0A1102 /* Storefront/AppIconStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1106 /* Storefront/AppIconStore.swift */; };
 		04E8C4E18F1A4D519C0A1104 /* AppIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1108 /* AppIconView.swift */; };
@@ -17,7 +20,6 @@
 		04E8C4E18F1A4D519C0A1111 /* AppleAds/KeywordMetricsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */; };
 		04E8C4E18F1A4D519C0A1112 /* SearchRanking/KeywordSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */; };
 		04E8C4E18F1A4D519C0A1123 /* AppleAds/AppleAdsWebSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1124 /* AppleAds/AppleAdsWebSession.swift */; };
-		04E8C4E18F1A4D519C0A1125 /* script/apple_ads_web_session.js in Resources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1126 /* script/apple_ads_web_session.js */; };
 		04E8C4E18F1A4D519C0A1127 /* KeywordMetricsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1128 /* KeywordMetricsServiceTests.swift */; };
 		04E8C4E18F1A4D519C0A1133 /* AI/AIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1130 /* AI/AIService.swift */; };
 		04E8C4E18F1A4D519C0A1134 /* AI/AITranslationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1131 /* AI/AITranslationService.swift */; };
@@ -318,6 +320,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPastedSessionTests.swift; sourceTree = "<group>"; };
+		B9A0000000000000000004 /* AppleAds/AppleAdsPastedSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsPastedSession.swift; sourceTree = "<group>"; };
+		B9A0000000000000000002 /* AppleAds/AppleAdsWebLoginController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsWebLoginController.swift; sourceTree = "<group>"; };
 		035877A6E7443B32A3980E39 /* SearchRanking/RankingMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/RankingMatcher.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1105 /* Storefront/AppCatalogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/AppCatalogService.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1106 /* Storefront/AppIconStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Storefront/AppIconStore.swift; sourceTree = "<group>"; };
@@ -330,7 +335,6 @@
 		04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/KeywordMetricsService.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordSuggestionService.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1124 /* AppleAds/AppleAdsWebSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsWebSession.swift; sourceTree = "<group>"; };
-		04E8C4E18F1A4D519C0A1126 /* script/apple_ads_web_session.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = script/apple_ads_web_session.js; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1128 /* KeywordMetricsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMetricsServiceTests.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1130 /* AI/AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AI/AIService.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1131 /* AI/AITranslationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AI/AITranslationService.swift; sourceTree = "<group>"; };
@@ -600,6 +604,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000001 /* AppleAdsConnectionStateTests.swift */,
+				B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */,
 				A60000000000000000000002 /* AIServiceTests.swift */,
 				A80000000000000000000004 /* AnalyticsServiceTests.swift */,
 				0CC1A541B8A64AB1A36B50E5 /* AppServicesDependencyTests.swift */,
@@ -725,6 +730,8 @@
 				04E8C4E18F1A4D519C0A110C /* AppleAds/AppleAdsCredentials.swift */,
 				04E8C4E18F1A4D519C0A110F /* AppleAds/AppleSearchAdsJWT.swift */,
 				04E8C4E18F1A4D519C0A1124 /* AppleAds/AppleAdsWebSession.swift */,
+				B9A0000000000000000004 /* AppleAds/AppleAdsPastedSession.swift */,
+				B9A0000000000000000002 /* AppleAds/AppleAdsWebLoginController.swift */,
 				04E8C4E18F1A4D519C0A1106 /* Storefront/AppIconStore.swift */,
 				0A5C00000000000000000002 /* AppStoreConnect/AppStoreConnectCredentials.swift */,
 				0A5C00000000000000000004 /* AppStoreConnect/AppStoreConnectReviewService.swift */,
@@ -783,7 +790,6 @@
 			children = (
 				DFE67173E202723EBDF2BB72 /* OpenASO */,
 				1027BC248FF4568E8523C3A8 /* OpenASOTests */,
-				04E8C4E18F1A4D519C0A1126 /* script/apple_ads_web_session.js */,
 				A165F2EA1017914A012D5804 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -1002,7 +1008,6 @@
 				07BB1B4252AB06DD85E1BE74 /* Sources */,
 				0A0B0C0D0E0F000000000005 /* Frameworks */,
 				CE70920EB06BF28618AE63B7 /* Resources */,
-				D4E5F6000000000000000001 /* Bundle Node Runtime */,
 			);
 			buildRules = (
 			);
@@ -1107,7 +1112,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				8ED05A47F845B42089077D3F /* Assets.xcassets in Resources */,
-				04E8C4E18F1A4D519C0A1125 /* script/apple_ads_web_session.js in Resources */,
 				91029AB42FAE58B1001431EE /* AppIconDev.icon in Resources */,
 				911101D62F9C3562004DFA8A /* AppIcon.icon in Resources */,
 				93C1A9E62DF448B89A6B5510 /* Resources/storefronts.json in Resources */,
@@ -1117,28 +1121,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		D4E5F6000000000000000001 /* Bundle Node Runtime */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(PROJECT_DIR)/script/bundle_node_runtime.sh",
-				"$(PROJECT_DIR)/script/node_runtime.entitlements",
-			);
-			name = "Bundle Node Runtime";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/NodeRuntime/darwin-arm64/bin/node",
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/NodeRuntime/darwin-x64/bin/node",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PROJECT_DIR}/script/bundle_node_runtime.sh\"\n";
-		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -1172,6 +1154,8 @@
 				D35D00000000000000000002 /* DailyRefreshRunStatusView.swift in Sources */,
 				04E8C4E18F1A4D519C0A110B /* SettingsView.swift in Sources */,
 				04E8C4E18F1A4D519C0A1123 /* AppleAds/AppleAdsWebSession.swift in Sources */,
+				B9A0000000000000000003 /* AppleAds/AppleAdsPastedSession.swift in Sources */,
+				B9A0000000000000000001 /* AppleAds/AppleAdsWebLoginController.swift in Sources */,
 				04E8C4E18F1A4D519C0A110E /* AppleAds/AppleSearchAdsJWT.swift in Sources */,
 				A0D71B4C0000000000000009 /* AppDetailSupportTypes.swift in Sources */,
 				A0D71B4C0000000000000019 /* AppDetailPreviewFixtures.swift in Sources */,
@@ -1331,6 +1315,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000002 /* AppleAdsConnectionStateTests.swift in Sources */,
+				B9A0000000000000000005 /* AppleAdsPastedSessionTests.swift in Sources */,
 				A60000000000000000000001 /* AIServiceTests.swift in Sources */,
 				A80000000000000000000003 /* AnalyticsServiceTests.swift in Sources */,
 				05728FD20BC84DE79D98F6F6 /* AppServicesDependencyTests.swift in Sources */,
