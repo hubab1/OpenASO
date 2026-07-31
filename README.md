@@ -32,7 +32,6 @@ The hosted docs are the canonical guide for using OpenASO:
 
 - macOS 15.0 or later
 - Xcode 17 or later with Swift 6.2 support
-- Node.js for the optional Apple Ads web session helper
 - Apple Ads and App Store Connect credentials for private account-backed features
 
 ## Setup
@@ -40,7 +39,8 @@ The hosted docs are the canonical guide for using OpenASO:
 1. Clone the repository.
 2. Open `OpenASO.xcodeproj` in Xcode, or build from the command line.
 3. Use `.env.example` as a reference if you want to export Apple Ads API credentials as process environment variables.
-4. Enter Apple Ads web login credentials and App Store Connect credentials in the app Settings window when needed.
+4. Connect Apple Ads from the app Settings window. Sign-in opens in a WebKit window inside OpenASO, so 2FA and passkeys behave like they do in Safari. If you would rather sign in with the browser you already use, expand "Sign In With My Own Browser" and paste the cookie header from an Apple Ads page.
+5. Enter App Store Connect credentials in the app Settings window when needed.
 
 Analytics is off by default for checked-in OSS builds. Non-OSS builds that omit `OPENASO_OSS_BUILD` keep analytics enabled by default.
 

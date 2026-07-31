@@ -288,7 +288,7 @@ final class AppleAdsWebSessionManager {
     private let settingsStore: AppSettingsStore
     private let credentialStore: AppleAdsCredentialStore
     private let httpClient: HTTPClient
-    private let dependencyManager: AppleAdsWebSessionDependencyManager
+    private let loginController: AppleAdsWebLoginController
     private let namespace: AppNamespace
     private var capturedLinkedApps: [AppleAdsPromotedApp] = []
     private var capturedAccountName: String?
@@ -298,45 +298,53 @@ final class AppleAdsWebSessionManager {
         settingsStore: AppSettingsStore,
         credentialStore: AppleAdsCredentialStore,
         httpClient: HTTPClient,
-        namespace: AppNamespace = .current
+        namespace: AppNamespace = .current,
+        loginController: AppleAdsWebLoginController = AppleAdsWebLoginController()
     ) {
         self.sessionStore = sessionStore
         self.settingsStore = settingsStore
         self.credentialStore = credentialStore
         self.httpClient = httpClient
-        self.dependencyManager = AppleAdsWebSessionDependencyManager(namespace: namespace)
+        self.loginController = loginController
         self.namespace = namespace
     }
 
+    /// Signs in through the in-app WebKit window and stores the captured session.
     func refreshSession() async throws -> AppleAdsWebSession {
-        let dependencyStatus = try dependencyManager.checkStatus()
-        guard dependencyStatus.isReady else {
-            throw OpenASOError.providerUnavailable(dependencyStatus.message)
-        }
-
-        let helperURL = try helperScriptURL()
-        let profileURL = try profileDirectoryURL()
-        let loginCredentials = credentialStore.webLoginCredentials.trimmed
-        let output = try await runNodeHelper(
-            scriptURL: helperURL,
-            profileURL: profileURL,
-            dependencyStatus: dependencyStatus,
-            loginCredentials: loginCredentials.isComplete ? loginCredentials : nil
-        )
-        guard output.status == "success" else {
-            throw OpenASOError.providerUnavailable(output.message ?? "Apple Ads browser session was not captured.")
-        }
-
+        let capture = try await loginController.captureSession()
         let session = AppleAdsWebSession(
-            cookieHeader: output.cookieHeader,
-            xsrfToken: output.xsrfToken,
+            cookieHeader: capture.cookieHeader,
+            xsrfToken: capture.xsrfToken,
             updatedAt: .now,
-            accountName: output.accountName,
-            linkedApps: output.linkedApps
+            accountName: capture.accountName,
+            linkedApps: nil
         )
         try sessionStore.save(session)
-        capturedLinkedApps = output.linkedApps ?? []
-        capturedAccountName = output.accountName
+        capturedLinkedApps = []
+        capturedAccountName = capture.accountName
+        return session
+    }
+
+    /// Removes what the retired Playwright helper left behind: the bundled Chromium, its browser
+    /// profile, and the Apple ID password that only ever existed to drive that automated browser.
+    func purgeLegacyBrowserHelperArtifacts() {
+        credentialStore.clearWebLoginCredentials()
+
+        guard let baseURL = try? namespace.applicationSupportDirectoryURL() else { return }
+
+        for directoryName in ["AppleAdsBrowserProfile", "WebSessionHelper"] {
+            let directoryURL = baseURL.appendingPathComponent(directoryName, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: directoryURL.path) else { continue }
+            try? FileManager.default.removeItem(at: directoryURL)
+        }
+    }
+
+    /// Stores a session the user signed in for in their own browser and pasted here.
+    func connectUsingPastedCookies(_ pastedText: String) throws -> AppleAdsWebSession {
+        let session = try AppleAdsPastedSession.session(from: pastedText)
+        try sessionStore.save(session)
+        capturedLinkedApps = []
+        capturedAccountName = nil
         return session
     }
 
@@ -397,37 +405,6 @@ final class AppleAdsWebSessionManager {
             sessionStore.markReconnectRequired(for: session)
             throw error
         }
-    }
-
-    func checkDependencyStatus() throws -> AppleAdsWebSessionDependencyStatus {
-        try dependencyManager.checkStatus()
-    }
-
-    func installDependencies() async throws -> AppleAdsWebSessionDependencyStatus {
-        try await dependencyManager.install()
-        return try dependencyManager.checkStatus()
-    }
-
-    private func helperScriptURL() throws -> URL {
-        let candidates = [
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("script/apple_ads_web_session.js"),
-            Bundle.main.resourceURL?.appendingPathComponent("apple_ads_web_session.js")
-        ].compactMap(\.self)
-
-        guard let url = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
-            throw OpenASOError.providerUnavailable("Missing script/apple_ads_web_session.js.")
-        }
-
-        return url
-    }
-
-    private func profileDirectoryURL() throws -> URL {
-        let baseURL = try namespace.applicationSupportDirectoryURL()
-        let profileURL = baseURL
-            .appendingPathComponent("AppleAdsBrowserProfile", isDirectory: true)
-        try FileManager.default.createDirectory(at: profileURL, withIntermediateDirectories: true)
-        return profileURL
     }
 
     private func fetchCampaignApps(using session: AppleAdsWebSession) async throws -> [AppleAdsPromotedApp] {
@@ -719,407 +696,6 @@ final class AppleAdsWebSessionManager {
         return apps
     }
 
-    private func runNodeHelper(
-        scriptURL: URL,
-        profileURL: URL,
-        dependencyStatus: AppleAdsWebSessionDependencyStatus,
-        loginCredentials: AppleAdsWebLoginCredentials?
-    ) async throws -> HelperOutput {
-        let inputData = try JSONEncoder().encode(
-            HelperInput(loginCredentials: loginCredentials)
-        )
-
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HelperOutput, any Error>) in
-            let process = Process()
-            process.executableURL = dependencyStatus.nodeURL
-            process.arguments = [
-                scriptURL.path,
-                "--profile-dir",
-                profileURL.path,
-                "--timeout-ms",
-                "300000"
-            ]
-
-            let stdout = Pipe()
-            let stderr = Pipe()
-            let stdin = Pipe()
-            process.standardOutput = stdout
-            process.standardError = stderr
-            process.standardInput = stdin
-            process.environment = dependencyStatus.processEnvironment
-
-            process.terminationHandler = { process in
-                let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-
-                if process.terminationStatus != 0 {
-                    let message = String(data: errorData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    continuation.resume(
-                        throwing: OpenASOError.providerUnavailable(
-                            message?.isEmpty == false ? message! : "Apple Ads browser helper failed."
-                        )
-                    )
-                    return
-                }
-
-                do {
-                    let output = try JSONDecoder().decode(HelperOutput.self, from: outputData)
-                    continuation.resume(returning: output)
-                } catch {
-                    continuation.resume(throwing: OpenASOError.decodingFailed)
-                }
-            }
-
-            do {
-                try process.run()
-                stdin.fileHandleForWriting.write(inputData)
-                stdin.fileHandleForWriting.closeFile()
-            } catch {
-                continuation.resume(
-                    throwing: OpenASOError.providerUnavailable(
-                        "Could not launch Apple Ads browser helper."
-                    )
-                )
-            }
-        }
-    }
-}
-
-struct AppleAdsWebSessionDependencyStatus: Equatable, Sendable {
-    enum State: Equatable, Sendable {
-        case ready
-        case missingNode
-        case missingPlaywright
-        case missingBrowser
-    }
-
-    let state: State
-    let nodeURL: URL?
-    let helperDirectoryURL: URL
-    let browserDirectoryURL: URL
-
-    var isReady: Bool {
-        state == .ready && nodeURL != nil
-    }
-
-    var message: String {
-        switch state {
-        case .ready:
-            return "Apple Ads browser helper is installed."
-        case .missingNode:
-            return "Node.js is required to install and run the Apple Ads browser helper."
-        case .missingPlaywright:
-            return "Playwright is not installed for OpenASO. Click Connect Apple Ads."
-        case .missingBrowser:
-            return "Playwright Chromium is not installed for OpenASO. Click Connect Apple Ads."
-        }
-    }
-
-    var processEnvironment: [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        environment["NODE_PATH"] = helperDirectoryURL
-            .appendingPathComponent("node_modules", isDirectory: true)
-            .path
-        environment["PLAYWRIGHT_BROWSERS_PATH"] = browserDirectoryURL.path
-        return environment
-    }
-}
-
-final class AppleAdsWebSessionDependencyManager: Sendable {
-    private let namespace: AppNamespace
-
-    init(namespace: AppNamespace = .current) {
-        self.namespace = namespace
-    }
-
-    func checkStatus() throws -> AppleAdsWebSessionDependencyStatus {
-        let helperDirectoryURL = try helperDirectoryURL()
-        let browserDirectoryURL = Self.browserDirectoryURL(helperDirectoryURL: helperDirectoryURL)
-        let nodeURL = Self.nodeRuntime()?.nodeURL
-        guard nodeURL != nil else {
-            return AppleAdsWebSessionDependencyStatus(
-                state: .missingNode,
-                nodeURL: nil,
-                helperDirectoryURL: helperDirectoryURL,
-                browserDirectoryURL: browserDirectoryURL
-            )
-        }
-
-        let playwrightURL = helperDirectoryURL
-            .appendingPathComponent("node_modules", isDirectory: true)
-            .appendingPathComponent("playwright", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: playwrightURL.path) else {
-            return AppleAdsWebSessionDependencyStatus(
-                state: .missingPlaywright,
-                nodeURL: nodeURL,
-                helperDirectoryURL: helperDirectoryURL,
-                browserDirectoryURL: browserDirectoryURL
-            )
-        }
-
-        guard hasChromiumBrowser(in: browserDirectoryURL) else {
-            return AppleAdsWebSessionDependencyStatus(
-                state: .missingBrowser,
-                nodeURL: nodeURL,
-                helperDirectoryURL: helperDirectoryURL,
-                browserDirectoryURL: browserDirectoryURL
-            )
-        }
-
-        return AppleAdsWebSessionDependencyStatus(
-            state: .ready,
-            nodeURL: nodeURL,
-            helperDirectoryURL: helperDirectoryURL,
-            browserDirectoryURL: browserDirectoryURL
-        )
-    }
-
-    func install() async throws {
-        let helperDirectoryURL = try helperDirectoryURL()
-        let browserDirectoryURL = Self.browserDirectoryURL(helperDirectoryURL: helperDirectoryURL)
-        guard let nodeRuntime = Self.nodeRuntime() else {
-            throw OpenASOError.providerUnavailable("Node.js is required to install and run the Apple Ads browser helper.")
-        }
-        guard let npmCommand = Self.npmCommand(for: nodeRuntime) else {
-            throw OpenASOError.providerUnavailable("npm is required to install the Apple Ads browser helper. Install Node.js with npm, then try again.")
-        }
-
-        try FileManager.default.createDirectory(at: helperDirectoryURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: browserDirectoryURL, withIntermediateDirectories: true)
-        try writePackageJSON(in: helperDirectoryURL)
-        try await run(
-            executableURL: npmCommand.executableURL,
-            arguments: npmCommand.arguments + ["install", "--omit=dev"],
-            workingDirectoryURL: helperDirectoryURL,
-            environment: [:],
-            additionalPathDirectories: nodeRuntime.pathDirectories
-        )
-        try await run(
-            executableURL: nodeRuntime.nodeURL,
-            arguments: [
-                helperDirectoryURL
-                    .appendingPathComponent("node_modules/playwright/cli.js")
-                    .path,
-                "install",
-                "chromium"
-            ],
-            workingDirectoryURL: helperDirectoryURL,
-            environment: [
-                "PLAYWRIGHT_BROWSERS_PATH": browserDirectoryURL.path
-            ],
-            additionalPathDirectories: nodeRuntime.pathDirectories
-        )
-    }
-
-    private func writePackageJSON(in helperDirectoryURL: URL) throws {
-        let packageURL = helperDirectoryURL.appendingPathComponent("package.json")
-        let package = """
-        {
-          "private": true,
-          "dependencies": {
-            "playwright": "^1.56.0"
-          }
-        }
-        """
-        try package.write(to: packageURL, atomically: true, encoding: .utf8)
-    }
-
-    private func hasChromiumBrowser(in browserDirectoryURL: URL) -> Bool {
-        guard let children = try? FileManager.default.contentsOfDirectory(
-            at: browserDirectoryURL,
-            includingPropertiesForKeys: nil
-        ) else {
-            return false
-        }
-
-        return children.contains { $0.lastPathComponent.hasPrefix("chromium") }
-    }
-
-    private func run(
-        executableURL: URL,
-        arguments: [String],
-        workingDirectoryURL: URL,
-        environment: [String: String],
-        additionalPathDirectories: [URL] = []
-    ) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = executableURL
-            process.arguments = arguments
-            process.currentDirectoryURL = workingDirectoryURL
-            process.environment = Self.processEnvironment(
-                merging: environment,
-                additionalPathDirectories: additionalPathDirectories
-            )
-
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.standardOutput = stdout
-            process.standardError = stderr
-
-            process.terminationHandler = { process in
-                if process.terminationStatus == 0 {
-                    continuation.resume()
-                    return
-                }
-
-                let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-                let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let message = [
-                    String(data: errorData, encoding: .utf8),
-                    String(data: outputData, encoding: .utf8)
-                ]
-                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                    .joined(separator: "\n")
-
-                continuation.resume(
-                    throwing: OpenASOError.providerUnavailable(
-                        message.isEmpty ? "Apple Ads browser helper install failed." : message
-                    )
-                )
-            }
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(
-                    throwing: OpenASOError.providerUnavailable(
-                        "Apple Ads browser helper install failed: \(error.localizedDescription)"
-                    )
-                )
-            }
-        }
-    }
-
-    private func helperDirectoryURL() throws -> URL {
-        let baseURL = try namespace.applicationSupportDirectoryURL()
-        return baseURL
-            .appendingPathComponent("WebSessionHelper", isDirectory: true)
-    }
-
-    private static func browserDirectoryURL(helperDirectoryURL: URL) -> URL {
-        helperDirectoryURL.appendingPathComponent("playwright-browsers", isDirectory: true)
-    }
-
-    private static func nodeRuntime() -> NodeRuntime? {
-        bundledNodeRuntime() ?? systemNodeRuntime()
-    }
-
-    private static func bundledNodeRuntime() -> NodeRuntime? {
-        guard let resourceURL = Bundle.main.resourceURL else {
-            return nil
-        }
-
-        let runtimeURL = resourceURL
-            .appendingPathComponent("NodeRuntime", isDirectory: true)
-            .appendingPathComponent(nodeRuntimePlatformDirectoryName, isDirectory: true)
-        let nodeURL = runtimeURL.appendingPathComponent("bin/node")
-        guard FileManager.default.isExecutableFile(atPath: nodeURL.path) else {
-            return nil
-        }
-
-        return NodeRuntime(
-            nodeURL: nodeURL,
-            npmCLIURL: runtimeURL.appendingPathComponent("lib/node_modules/npm/bin/npm-cli.js"),
-            pathDirectories: [runtimeURL.appendingPathComponent("bin", isDirectory: true)]
-        )
-    }
-
-    private static func systemNodeRuntime() -> NodeRuntime? {
-        guard let nodeURL = systemNodeURL() else {
-            return nil
-        }
-
-        return NodeRuntime(
-            nodeURL: nodeURL,
-            npmCLIURL: nil,
-            pathDirectories: [nodeURL.deletingLastPathComponent()]
-        )
-    }
-
-    private static func systemNodeURL() -> URL? {
-        [
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node"
-        ]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
-            .map(URL.init(fileURLWithPath:))
-    }
-
-    private static func npmCommand(for nodeRuntime: NodeRuntime) -> ProcessCommand? {
-        if let npmCLIURL = nodeRuntime.npmCLIURL,
-           FileManager.default.fileExists(atPath: npmCLIURL.path) {
-            return ProcessCommand(executableURL: nodeRuntime.nodeURL, arguments: [npmCLIURL.path])
-        }
-
-        guard let npmURL = systemNPMURL() else {
-            return nil
-        }
-
-        return ProcessCommand(executableURL: npmURL, arguments: [])
-    }
-
-    private static func systemNPMURL() -> URL? {
-        [
-            "/opt/homebrew/bin/npm",
-            "/usr/local/bin/npm"
-        ]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
-            .map(URL.init(fileURLWithPath:))
-    }
-
-    private static var nodeRuntimePlatformDirectoryName: String {
-        #if arch(arm64)
-        return "darwin-arm64"
-        #elseif arch(x86_64)
-        return "darwin-x64"
-        #else
-        return ""
-        #endif
-    }
-
-    private static func processEnvironment(
-        merging environment: [String: String],
-        additionalPathDirectories: [URL]
-    ) -> [String: String] {
-        var processEnvironment = ProcessInfo.processInfo.environment
-        let path = processEnvironment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        processEnvironment["PATH"] = (
-            additionalPathDirectories.map(\.path) + [
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                path
-            ]
-        ).joined(separator: ":")
-        return processEnvironment.merging(environment) { _, new in new }
-    }
-}
-
-private struct NodeRuntime {
-    let nodeURL: URL
-    let npmCLIURL: URL?
-    let pathDirectories: [URL]
-}
-
-private struct ProcessCommand {
-    let executableURL: URL
-    let arguments: [String]
-}
-
-private struct HelperInput: Encodable {
-    let loginCredentials: AppleAdsWebLoginCredentials?
-}
-
-private struct HelperOutput: Decodable {
-    let status: String
-    let cookieHeader: String
-    let xsrfToken: String
-    let message: String?
-    let linkedApps: [AppleAdsPromotedApp]?
-    let accountName: String?
 }
 
 private struct ITunesSoftwareSearchResponse: Decodable {

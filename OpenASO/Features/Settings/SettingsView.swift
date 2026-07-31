@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
@@ -16,14 +17,11 @@ struct SettingsView: View {
     @State private var privateKey = ""
     @State private var orgID = ""
     @State private var dailyRefreshTime = Date()
-    @State private var webLoginUsername = ""
-    @State private var webLoginPassword = ""
     @State private var connectionState: AppleAdsConnectionState
-    @State private var isSavedLoginExpanded = false
-    @State private var isSavedLoginHovered = false
-    @State private var showsSavedLoginControls = false
-    @State private var savedLoginStatus: VerificationStatus?
-    @State private var dependencyStatus: AppleAdsWebSessionDependencyStatus?
+    @State private var isPastedSessionExpanded = false
+    @State private var isPastedSessionHovered = false
+    @State private var pastedCookieHeader = ""
+    @State private var pastedSessionStatus: VerificationStatus?
     @State private var manualAppleAdsAppID = ""
     @State private var manualAppleAdsStatus: VerificationStatus?
     @State private var ascIssuerID = ""
@@ -100,14 +98,11 @@ struct SettingsView: View {
             )
             .navigationTitle("Settings")
             .onAppear {
-                let recoveredSession = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
+                _ = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
                 loadCredentials()
                 loadAppStoreConnectCredentials()
                 loadDailyRefreshTime()
-                loadWebLoginCredentials()
-                loadDependencyStatus()
-                showsSavedLoginControls = services.appleAdsCredentialStore.hasWebLoginCredentials
-                    || recoveredSession?.isComplete == true
+                services.appleAdsWebSessionManager.purgeLegacyBrowserHelperArtifacts()
                 if initialConnectionState == nil {
                     connectionState = inferredConnectionState()
                 }
@@ -290,50 +285,63 @@ struct SettingsView: View {
                 manualAppleAdsAppIDFallback
             }
 
-            if showsSavedLoginControls {
-                DisclosureGroup(isExpanded: $isSavedLoginExpanded) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if services.appleAdsCredentialStore.hasWebLoginCredentials {
-                            Text("Saved login available.")
-                                .foregroundStyle(.secondary)
-                        }
-
-                        TextField("Apple ID", text: $webLoginUsername)
-                            .textContentType(.username)
-                        SecureField("Password", text: $webLoginPassword)
-                            .textContentType(.password)
-
-                        HStack {
-                            Button("Save Login", action: saveWebLoginCredentials)
-                                .disabled(connectionState.isBusy || !enteredWebLoginCredentials.isComplete)
-
-                            Button("Forget Saved Login", role: .destructive, action: clearWebLoginCredentials)
-                                .disabled(connectionState.isBusy || !services.appleAdsCredentialStore.hasWebLoginCredentials)
-                        }
-
-                        if let savedLoginStatus {
-                            Label(savedLoginStatus.message, systemImage: savedLoginStatus.systemImage)
-                                .foregroundStyle(savedLoginStatus.tint)
-                                .font(.caption)
-                        }
-                    }
-                    .padding(.vertical, 6)
-                } label: {
-                    Text("Saved Login")
-                        .foregroundStyle(isSavedLoginHovered ? Color.accentColor : Color.primary)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation {
-                                isSavedLoginExpanded.toggle()
-                            }
-                        }
-                        .onHover { isSavedLoginHovered = $0 }
-                }
-            }
+            pastedSessionFallback
         } header: {
             Text("Apple Ads")
         } footer: {
-            Text("Connect Apple Ads to show keyword popularity in OpenASO. Your Apple Ads account needs access to at least one of your App Store apps. Saved login details are optional and kept in Keychain.")
+            Text("Connect Apple Ads to show keyword popularity in OpenASO. Sign-in opens in a window inside OpenASO and uses the same WebKit engine as Safari, so 2FA and passkeys work as usual. Your Apple Ads account needs access to at least one of your App Store apps.")
+        }
+    }
+
+    private var pastedSessionFallback: some View {
+        DisclosureGroup(isExpanded: $isPastedSessionExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(AppleAdsPastedSession.instructions)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    Button("Open Apple Ads in Browser", action: openAppleAdsInDefaultBrowser)
+
+                    Button("Copy Console Snippet", action: copyPastedSessionSnippet)
+                }
+
+                TextField("XSRF-TOKEN-CM=...; searchads.soid=...", text: $pastedCookieHeader, axis: .vertical)
+                    .lineLimit(2 ... 5)
+                    .font(.caption.monospaced())
+
+                HStack {
+                    Button("Use Pasted Session", action: connectUsingPastedSession)
+                        .disabled(
+                            connectionState.isBusy
+                                || pastedCookieHeader.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
+
+                    Button("Clear Field") {
+                        pastedCookieHeader = ""
+                        pastedSessionStatus = nil
+                    }
+                    .disabled(pastedCookieHeader.isEmpty)
+                }
+
+                if let pastedSessionStatus {
+                    Label(pastedSessionStatus.message, systemImage: pastedSessionStatus.systemImage)
+                        .foregroundStyle(pastedSessionStatus.tint)
+                        .font(.caption)
+                }
+            }
+            .padding(.vertical, 6)
+        } label: {
+            Text("Sign In With My Own Browser")
+                .foregroundStyle(isPastedSessionHovered ? Color.accentColor : Color.primary)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation {
+                        isPastedSessionExpanded.toggle()
+                    }
+                }
+                .onHover { isPastedSessionHovered = $0 }
         }
     }
 
@@ -552,10 +560,6 @@ struct SettingsView: View {
         )
     }
 
-    private var enteredWebLoginCredentials: AppleAdsWebLoginCredentials {
-        AppleAdsWebLoginCredentials(username: webLoginUsername, password: webLoginPassword)
-    }
-
     private var enteredAppStoreConnectCredentials: AppStoreConnectCredentials {
         AppStoreConnectCredentials(
             issuerID: ascIssuerID,
@@ -582,7 +586,7 @@ struct SettingsView: View {
         switch connectionState {
         case .expiredSession, .noLinkedApps, .apiIssue:
             return true
-        case .notConnected, .installingHelper, .openingBrowser, .detectingLinkedApp, .validatingSession, .connected, .dependencyIssue:
+        case .notConnected, .openingBrowser, .detectingLinkedApp, .validatingSession, .connected:
             return false
         }
     }
@@ -640,12 +644,6 @@ struct SettingsView: View {
         dailyRefreshTime = services.settingsStore.refreshTimeDate()
     }
 
-    private func loadWebLoginCredentials() {
-        let credentials = services.appleAdsCredentialStore.webLoginCredentials
-        webLoginUsername = credentials.username
-        webLoginPassword = credentials.password
-    }
-
     private func validateAppleAdsAccess() {
         guard services.appleAdsWebSessionStore.recoverSessionIfNeeded()?.isComplete == true else {
             connectionState = .notConnected
@@ -664,28 +662,32 @@ struct SettingsView: View {
         }
     }
 
-    private func saveWebLoginCredentials() {
-        do {
-            try services.appleAdsCredentialStore.saveWebLoginCredentials(enteredWebLoginCredentials)
-            loadWebLoginCredentials()
-            savedLoginStatus = .success("Login saved for next time.")
-            showsSavedLoginControls = true
-        } catch {
-            savedLoginStatus = .failure(OpenASOError.map(error).localizedDescription)
-        }
+    private func openAppleAdsInDefaultBrowser() {
+        NSWorkspace.shared.open(AppleAdsWebLoginController.signInURL)
     }
 
-    private func clearWebLoginCredentials() {
-        services.appleAdsCredentialStore.clearWebLoginCredentials()
-        loadWebLoginCredentials()
-        savedLoginStatus = .success("Saved login forgotten.")
+    private func copyPastedSessionSnippet() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(AppleAdsPastedSession.copySnippet, forType: .string)
+        pastedSessionStatus = .success("Snippet copied. Run it in the console on an Apple Ads page.")
     }
 
-    private func loadDependencyStatus() {
-        do {
-            dependencyStatus = try services.appleAdsWebSessionManager.checkDependencyStatus()
-        } catch {
-            connectionState = .dependencyIssue(OpenASOError.map(error).localizedDescription)
+    private func connectUsingPastedSession() {
+        Task { @MainActor in
+            do {
+                pastedSessionStatus = nil
+                manualAppleAdsStatus = nil
+                _ = try services.appleAdsWebSessionManager.connectUsingPastedCookies(pastedCookieHeader)
+                pastedCookieHeader = ""
+                pastedSessionStatus = .success("Session accepted.")
+                try await detectAndValidateAppleAds()
+            } catch {
+                pastedSessionStatus = .failure(OpenASOError.map(error).localizedDescription)
+                connectionState = AppleAdsConnectionState.classified(
+                    error: error,
+                    hasSession: services.appleAdsWebSessionStore.hasSession
+                )
+            }
         }
     }
 
@@ -693,10 +695,8 @@ struct SettingsView: View {
         Task { @MainActor in
             do {
                 manualAppleAdsStatus = nil
-                try await prepareAppleAdsHelperIfNeeded()
                 connectionState = .openingBrowser
                 _ = try await services.appleAdsWebSessionManager.refreshSession()
-                showsSavedLoginControls = true
                 try await detectAndValidateAppleAds()
             } catch {
                 connectionState = AppleAdsConnectionState.classified(
@@ -734,19 +734,6 @@ struct SettingsView: View {
                     hasSession: services.appleAdsWebSessionStore.hasSession
                 )
             }
-        }
-    }
-
-    private func prepareAppleAdsHelperIfNeeded() async throws {
-        let status = try services.appleAdsWebSessionManager.checkDependencyStatus()
-        dependencyStatus = status
-        guard status.state != .missingNode else {
-            throw OpenASOError.providerUnavailable(status.message)
-        }
-
-        if !status.isReady {
-            connectionState = .installingHelper
-            dependencyStatus = try await services.appleAdsWebSessionManager.installDependencies()
         }
     }
 
@@ -815,11 +802,7 @@ struct SettingsView: View {
     }
 
     private func inferredConnectionState() -> AppleAdsConnectionState {
-        if let dependencyStatus, dependencyStatus.state == .missingNode {
-            return .dependencyIssue(dependencyStatus.message)
-        }
-
-        return AppleAdsConnectionState.inferred(
+        AppleAdsConnectionState.inferred(
             hasSession: services.appleAdsWebSessionStore.hasSession,
             requiresReconnect: services.appleAdsWebSessionStore.requiresReconnect,
             updatedAt: services.appleAdsWebSessionStore.session?.updatedAt

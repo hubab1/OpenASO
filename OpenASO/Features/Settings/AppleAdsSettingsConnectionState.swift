@@ -22,7 +22,6 @@ enum AppleAdsSettingsFocusSection {
 
 enum AppleAdsConnectionState: Equatable {
     case notConnected
-    case installingHelper
     case openingBrowser
     case detectingLinkedApp
     case validatingSession
@@ -30,7 +29,6 @@ enum AppleAdsConnectionState: Equatable {
     case expiredSession(String)
     case noLinkedApps
     case apiIssue(String)
-    case dependencyIssue(String)
 
     static let noLinkedAppsMessage = "No linked Apple Ads apps were found for this account. Add a campaign-linked app in Apple Ads, then refresh."
     static let reconnectRequiredMessage = "Apple Ads asked for sign-in again. Refresh the session to continue."
@@ -39,10 +37,8 @@ enum AppleAdsConnectionState: Equatable {
         switch self {
         case .notConnected:
             return "Not connected"
-        case .installingHelper:
-            return "Installing browser helper"
         case .openingBrowser:
-            return "Connecting"
+            return "Signing in"
         case .detectingLinkedApp:
             return "Detecting linked app"
         case .validatingSession:
@@ -55,8 +51,6 @@ enum AppleAdsConnectionState: Equatable {
             return "No linked apps"
         case .apiIssue:
             return "Apple Ads API issue"
-        case .dependencyIssue:
-            return "Setup required"
         }
     }
 
@@ -64,10 +58,8 @@ enum AppleAdsConnectionState: Equatable {
         switch self {
         case .notConnected:
             return "Connect Apple Ads to fetch keyword popularity."
-        case .installingHelper:
-            return "Preparing the browser helper."
         case .openingBrowser:
-            return "Opening Apple Ads. Complete sign-in or 2FA if Apple asks."
+            return "Sign in to Apple Ads in the window OpenASO opened. Complete 2FA if Apple asks."
         case .detectingLinkedApp:
             return "Finding an app linked to this Apple Ads account."
         case .validatingSession:
@@ -81,7 +73,7 @@ enum AppleAdsConnectionState: Equatable {
             return message
         case .noLinkedApps:
             return Self.noLinkedAppsMessage
-        case .apiIssue(let message), .dependencyIssue(let message):
+        case .apiIssue(let message):
             return message
         }
     }
@@ -92,9 +84,9 @@ enum AppleAdsConnectionState: Equatable {
             return "checkmark.circle.fill"
         case .expiredSession, .apiIssue:
             return "xmark.circle.fill"
-        case .noLinkedApps, .dependencyIssue:
+        case .noLinkedApps:
             return "exclamationmark.triangle.fill"
-        case .installingHelper, .openingBrowser, .detectingLinkedApp, .validatingSession:
+        case .openingBrowser, .detectingLinkedApp, .validatingSession:
             return "arrow.triangle.2.circlepath"
         case .notConnected:
             return "circle.dashed"
@@ -107,9 +99,9 @@ enum AppleAdsConnectionState: Equatable {
             return .green
         case .expiredSession, .apiIssue:
             return .red
-        case .noLinkedApps, .dependencyIssue:
+        case .noLinkedApps:
             return .orange
-        case .installingHelper, .openingBrowser, .detectingLinkedApp, .validatingSession:
+        case .openingBrowser, .detectingLinkedApp, .validatingSession:
             return .accentColor
         case .notConnected:
             return .secondary
@@ -118,9 +110,9 @@ enum AppleAdsConnectionState: Equatable {
 
     var isBusy: Bool {
         switch self {
-        case .installingHelper, .openingBrowser, .detectingLinkedApp, .validatingSession:
+        case .openingBrowser, .detectingLinkedApp, .validatingSession:
             return true
-        case .notConnected, .connected, .expiredSession, .noLinkedApps, .apiIssue, .dependencyIssue:
+        case .notConnected, .connected, .expiredSession, .noLinkedApps, .apiIssue:
             return false
         }
     }
@@ -129,15 +121,13 @@ enum AppleAdsConnectionState: Equatable {
         switch self {
         case .connected, .expiredSession, .noLinkedApps, .apiIssue:
             return "Refresh Session"
-        case .installingHelper:
-            return "Installing..."
         case .openingBrowser:
-            return "Opening Browser..."
+            return "Waiting For Sign In..."
         case .detectingLinkedApp:
             return "Detecting App..."
         case .validatingSession:
             return "Validating..."
-        case .notConnected, .dependencyIssue:
+        case .notConnected:
             return "Connect Apple Ads"
         }
     }
@@ -149,6 +139,16 @@ enum AppleAdsConnectionState: Equatable {
     static func classified(error: Error, hasSession: Bool) -> AppleAdsConnectionState {
         if error is AppleAdsWebSessionExpiredError {
             return .expiredSession(reconnectRequiredMessage)
+        }
+
+        // Closing the sign-in window is a deliberate cancel, not a failure worth alarming about.
+        if let loginError = error as? AppleAdsWebLoginError {
+            switch loginError {
+            case .closedBeforeCapture:
+                return inferred(hasSession: hasSession, requiresReconnect: false, updatedAt: nil)
+            case .timedOut:
+                return .expiredSession(loginError.localizedDescription)
+            }
         }
 
         let message = OpenASOError.map(error).localizedDescription
@@ -164,15 +164,6 @@ enum AppleAdsConnectionState: Equatable {
             || lowercasedMessage.contains("campaign linked")
             || lowercasedMessage.contains("campaign-linked") {
             return .noLinkedApps
-        }
-
-        if lowercasedMessage.contains("node.js is required")
-            || lowercasedMessage.contains("npm is required")
-            || lowercasedMessage.contains("browser helper")
-            || lowercasedMessage.contains("playwright")
-            || lowercasedMessage.contains("env: npm")
-            || lowercasedMessage.contains("npm: no such file") {
-            return .dependencyIssue(message)
         }
 
         if hasSession {

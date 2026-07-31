@@ -49,11 +49,6 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
       - name: Read release version from project
         run: |
           set -euo pipefail
