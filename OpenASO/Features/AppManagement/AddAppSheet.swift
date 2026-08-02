@@ -85,7 +85,7 @@ struct AddAppSheet: View {
             }
 
             resultsView
-                .frame(minHeight: 280, maxHeight: .infinity, alignment: .top)
+                .frame(idealHeight: 280, maxHeight: .infinity, alignment: .top)
                 .padding(.horizontal, -AddAppSheetLayout.sheetPadding)
 
             HStack {
@@ -96,7 +96,8 @@ struct AddAppSheet: View {
             }
         }
         .padding(AddAppSheetLayout.sheetPadding)
-        .frame(minWidth: 720, minHeight: 540)
+        .frame(minWidth: 720, idealHeight: 540)
+        .presentationSizing(.fitted)
     }
 
     private var resultsView: some View {
