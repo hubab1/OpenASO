@@ -43,7 +43,7 @@ struct AppRatingsView: View {
                 historyPoints: dashboardModel.historyPoints,
                 metric: $metric
             )
-            .frame(minWidth: 360, idealWidth: 480, maxWidth: 620)
+            .frame(minWidth: 300, idealWidth: 480, maxWidth: 620)
 
             RatingsReviewsView(
                 appStoreID: appStoreID,
@@ -62,7 +62,7 @@ struct AppRatingsView: View {
                     openSettings()
                 }
             )
-            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
         }
         .task {
             loadStorefrontDefinitionsIfNeeded()
