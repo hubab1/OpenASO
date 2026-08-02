@@ -63,7 +63,8 @@ struct KeywordResearchWorkspaceView: View {
                 .disabled(deletingProjectGeneration != nil)
         }
         .navigationTitle("Keyword Research")
-        .frame(minWidth: 900, minHeight: 620)
+        .frame(minWidth: 900, idealHeight: 620)
+        .presentationSizing(.fitted)
         .interactiveDismissDisabled(
             deletingProjectGeneration != nil || detailBlocksDismissal
         )
