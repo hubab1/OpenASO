@@ -93,14 +93,14 @@ struct OpenASOApp: App {
             }
         }
         .defaultWindowPlacement { content, context in
-    		let idealSize = content.sizeThatFits(.unspecified)
-    		let visibleRect = context.defaultDisplay.visibleRect
-    		let fittedSize = CGSize(
-        		width: min(idealSize.width, visibleRect.width),
-        		height: min(idealSize.height, visibleRect.height)
-    		)
-    		return WindowPlacement(size: fittedSize)
-		}
+            let idealSize = content.sizeThatFits(.unspecified)
+            let visibleRect = context.defaultDisplay.visibleRect
+            let fittedSize = CGSize(
+                width: min(idealSize.width, visibleRect.width),
+                height: min(idealSize.height, visibleRect.height)
+            )
+            return WindowPlacement(size: fittedSize)
+        }
 
         Settings {
             switch startupState {
@@ -114,14 +114,14 @@ struct OpenASOApp: App {
             }
         }
         .defaultWindowPlacement { content, context in
-    		let idealSize = content.sizeThatFits(.unspecified)
-    		let visibleRect = context.defaultDisplay.visibleRect
-    		let fittedSize = CGSize(
-        		width: min(idealSize.width, visibleRect.width),
-        		height: min(idealSize.height, visibleRect.height)
-    		)
-    		return WindowPlacement(size: fittedSize)
-		}
+            let idealSize = content.sizeThatFits(.unspecified)
+            let visibleRect = context.defaultDisplay.visibleRect
+            let fittedSize = CGSize(
+                width: min(idealSize.width, visibleRect.width),
+                height: min(idealSize.height, visibleRect.height)
+            )
+            return WindowPlacement(size: fittedSize)
+        }
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...", action: updaterController.checkForUpdates)
