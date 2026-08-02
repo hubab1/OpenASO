@@ -68,7 +68,7 @@ struct AddKeywordsSheet: View {
 
             TextEditor(text: $keywordInput)
                 .font(.body.monospaced())
-                .frame(minHeight: 180)
+                .frame(idealHeight: 180)
                 .disabled(isInputLocked)
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
@@ -92,7 +92,7 @@ struct AddKeywordsSheet: View {
                     }
                 }
             }
-            .frame(minHeight: 220)
+            .frame(idealHeight: 220)
             .disabled(isInputLocked)
 
             if let errorMessage {
@@ -119,7 +119,8 @@ struct AddKeywordsSheet: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 720, minHeight: 720)
+        .frame(minWidth: 720, idealHeight: 720)
+        .presentationSizing(.fitted)
     }
 
     private var filteredStorefronts: [AddKeywordsStorefrontProjection.Candidate] {
