@@ -124,13 +124,27 @@ enum TrackedKeywordRefreshStatusStore {
         for track: TrackedAppKeyword,
         persisted: KeywordRefreshStatusSnapshot?
     ) -> KeywordRefreshStatusSnapshot {
-        if let persisted, persisted.trackCreatedAt == track.createdAt {
+        snapshot(
+            trackCreatedAt: track.createdAt,
+            legacyMessage: track.statusMessage,
+            legacyUpdatedAt: legacyTimestamp(for: track),
+            persisted: persisted
+        )
+    }
+
+    static func snapshot(
+        trackCreatedAt: Date,
+        legacyMessage: String?,
+        legacyUpdatedAt: Date,
+        persisted: KeywordRefreshStatusSnapshot?
+    ) -> KeywordRefreshStatusSnapshot {
+        if let persisted, persisted.trackCreatedAt == trackCreatedAt {
             return persisted
         }
         return snapshot(
-            fromLegacyMessage: track.statusMessage,
-            timestamp: legacyTimestamp(for: track),
-            trackCreatedAt: track.createdAt
+            fromLegacyMessage: legacyMessage,
+            timestamp: legacyUpdatedAt,
+            trackCreatedAt: trackCreatedAt
         ) ?? .empty
     }
 

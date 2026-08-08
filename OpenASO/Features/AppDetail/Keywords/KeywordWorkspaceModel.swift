@@ -165,6 +165,53 @@ final class KeywordWorkspaceModel {
         }
     }
 
+    func applyUpdatedRows(
+        _ updatedRowsByIdentityKey: [String: KeywordInsightsService.Workspace.Row]
+    ) {
+        guard !updatedRowsByIdentityKey.isEmpty,
+              !publication.materializedRows.isEmpty
+        else {
+            return
+        }
+
+        var didChange = false
+        let materializedRows = publication.materializedRows.map { row in
+            guard let update = updatedRowsByIdentityKey[row.track.identityKey] else {
+                return row
+            }
+
+            let updatedRow = row.updating(
+                metrics: update.metrics,
+                refreshStatus: update.refreshStatus,
+                latestSnapshot: update.latestSnapshot,
+                trendSnapshots: update.trendSnapshots,
+                rankingApps: update.rankingApps
+            )
+            if updatedRow != row {
+                didChange = true
+            }
+            return updatedRow
+        }
+        guard didChange else { return }
+
+        let filters = desiredFilters ?? publication.appliedFilterID?.filters
+        let rows = filters.map {
+            KeywordWorkspaceProjection.filteredRows(materializedRows, filters: $0)
+        } ?? materializedRows
+        publication = Publication(
+            materializedRows: materializedRows,
+            rows: rows,
+            // Summary charts are intentionally finalized by the full refresh
+            // publication. Rebuilding all history for every row delta was a
+            // measurable source of refresh-time main-thread work.
+            insightsSummary: publication.insightsSummary,
+            completedMaterializationID: publication.completedMaterializationID,
+            materializationGeneration: publication.materializationGeneration,
+            contentRevision: publication.contentRevision &+ 1,
+            appliedFilterID: publication.appliedFilterID
+        )
+    }
+
     private func canRetainVisibleWorkspace(
         for materializationID: KeywordWorkspaceProjection.MaterializationID
     ) -> Bool {

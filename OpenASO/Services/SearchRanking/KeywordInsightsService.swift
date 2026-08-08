@@ -6,6 +6,7 @@ final class KeywordInsightsService {
     struct Workspace: Sendable {
         struct Row: Sendable {
             let metrics: KeywordMetricsSnapshot?
+            let refreshStatus: KeywordRefreshStatusSnapshot
             let latestSnapshot: KeywordRankingCrawlSummary?
             let trendSnapshots: [KeywordRankingCrawlSummary]
             let rankingApps: [KeywordRankingAppSummary]
@@ -17,6 +18,17 @@ final class KeywordInsightsService {
     private struct TrackRequest: Sendable {
         let identityKey: String
         let queryKey: String
+        let createdAt: Date
+        let lastRefreshAt: Date?
+        let legacyStatusMessage: String?
+
+        init(_ track: TrackedAppKeyword) {
+            identityKey = track.identityKey
+            queryKey = track.queryKey
+            createdAt = track.createdAt
+            lastRefreshAt = track.lastRefreshAt
+            legacyStatusMessage = track.statusMessage
+        }
     }
 
     private struct CrawlRecord: Sendable {
@@ -69,9 +81,7 @@ final class KeywordInsightsService {
             return cachedWorkspace
         }
 
-        let requestTracks = tracks.map {
-            TrackRequest(identityKey: $0.identityKey, queryKey: $0.queryKey)
-        }
+        let requestTracks = tracks.map(TrackRequest.init)
         let cutoffDate = dateRange.cutoffDate
         let workspace: Workspace
 
@@ -97,6 +107,54 @@ final class KeywordInsightsService {
         return workspace
     }
 
+    func updatedRows(
+        for trackIdentityKeys: [String],
+        appStoreID: Int64,
+        dateRange: TrendDateRange,
+        using backgroundModelStore: BackgroundModelStore?,
+        fallbackModelContext: ModelContext
+    ) async throws -> [String: Workspace.Row] {
+        let identityKeys = Array(Set(trackIdentityKeys))
+        guard !identityKeys.isEmpty else { return [:] }
+
+        let cutoffDate = dateRange.cutoffDate
+        let workspace: Workspace
+        if let backgroundModelStore {
+            workspace = try await backgroundModelStore.read { modelContext in
+                let tracks = try Self.fetchTrackRequests(
+                    identityKeys: identityKeys,
+                    appStoreID: appStoreID,
+                    in: modelContext
+                )
+                return try Self.loadWorkspace(
+                    tracks: tracks,
+                    appStoreID: appStoreID,
+                    cutoffDate: cutoffDate,
+                    in: modelContext
+                )
+            }
+        } else {
+            let tracks = try Self.fetchTrackRequests(
+                identityKeys: identityKeys,
+                appStoreID: appStoreID,
+                in: fallbackModelContext
+            )
+            workspace = try Self.loadWorkspace(
+                tracks: tracks,
+                appStoreID: appStoreID,
+                cutoffDate: cutoffDate,
+                in: fallbackModelContext
+            )
+        }
+
+        mergeUpdatedRowsIntoCache(
+            workspace.rowsByIdentityKey,
+            appStoreID: appStoreID,
+            dateRangeID: dateRange.id
+        )
+        return workspace.rowsByIdentityKey
+    }
+
     private func cache(
         _ workspace: Workspace,
         for materializationID: KeywordWorkspaceProjection.MaterializationID
@@ -114,6 +172,24 @@ final class KeywordInsightsService {
         cacheOrder.append(materializationID)
     }
 
+    private func mergeUpdatedRowsIntoCache(
+        _ rowsByIdentityKey: [String: Workspace.Row],
+        appStoreID: Int64,
+        dateRangeID: String
+    ) {
+        guard !rowsByIdentityKey.isEmpty else { return }
+
+        for materializationID in cacheOrder where materializationID.appStoreID == appStoreID
+            && materializationID.dateRangeID == dateRangeID {
+            guard let cachedWorkspace = cachedWorkspaces[materializationID] else { continue }
+            var mergedRows = cachedWorkspace.rowsByIdentityKey
+            for (identityKey, row) in rowsByIdentityKey where mergedRows[identityKey] != nil {
+                mergedRows[identityKey] = row
+            }
+            cachedWorkspaces[materializationID] = Workspace(rowsByIdentityKey: mergedRows)
+        }
+    }
+
     private nonisolated static func loadWorkspace(
         tracks: [TrackRequest],
         appStoreID: Int64,
@@ -129,13 +205,22 @@ final class KeywordInsightsService {
             queryKeys: queryKeys,
             in: modelContext
         )
-        let crawlRecords = try fetchCrawls(
-            queryKeys: queryKeys,
+        let refreshStatusesByIdentityKey = try TrackedKeywordRefreshStatusStore.snapshots(
+            for: tracks.map(\.identityKey),
             in: modelContext
         )
-        let latestCrawlsByQueryKey = latestCrawlsByQueryKey(from: crawlRecords)
-        let trendCrawls = crawlRecords.filter { crawl in
-            cutoffDate.map { crawl.observedAt >= $0 } ?? true
+        let trendCrawls = try fetchCrawls(
+            queryKeys: queryKeys,
+            cutoffDate: cutoffDate,
+            in: modelContext
+        )
+        var latestCrawlsByQueryKey = latestCrawlsByQueryKey(from: trendCrawls)
+        let missingLatestQueryKeys = Set(queryKeys).subtracting(latestCrawlsByQueryKey.keys)
+        for crawl in try fetchLatestCrawls(
+            queryKeys: missingLatestQueryKeys,
+            in: modelContext
+        ) {
+            latestCrawlsByQueryKey[crawl.queryKey] = crawl
         }
         let latestCrawlKeys = Set(latestCrawlsByQueryKey.values.map(\.observationKey))
         let trackedRankingsByCrawlKey = try fetchTrackedRankingsByCrawlKey(
@@ -174,6 +259,12 @@ final class KeywordInsightsService {
                     track.identityKey,
                     Workspace.Row(
                         metrics: metricsByQueryKey[track.queryKey],
+                        refreshStatus: TrackedKeywordRefreshStatusStore.snapshot(
+                            trackCreatedAt: track.createdAt,
+                            legacyMessage: track.legacyStatusMessage,
+                            legacyUpdatedAt: track.lastRefreshAt ?? track.createdAt,
+                            persisted: refreshStatusesByIdentityKey[track.identityKey]
+                        ),
                         latestSnapshot: latestSnapshot,
                         trendSnapshots: trendByIdentityKey[track.identityKey] ?? [],
                         rankingApps: latestSnapshot.flatMap {
@@ -184,6 +275,19 @@ final class KeywordInsightsService {
             }
         )
         return Workspace(rowsByIdentityKey: rowsByIdentityKey)
+    }
+
+    private nonisolated static func fetchTrackRequests(
+        identityKeys: [String],
+        appStoreID: Int64,
+        in modelContext: ModelContext
+    ) throws -> [TrackRequest] {
+        let descriptor = FetchDescriptor<TrackedAppKeyword>(
+            predicate: #Predicate { track in
+                identityKeys.contains(track.identityKey) && track.appStoreID == appStoreID
+            }
+        )
+        return try modelContext.fetch(descriptor).map(TrackRequest.init)
     }
 
     private nonisolated static func fetchMetrics(
@@ -202,18 +306,34 @@ final class KeywordInsightsService {
 
     private nonisolated static func fetchCrawls(
         queryKeys: [String],
+        cutoffDate: Date?,
         in modelContext: ModelContext
     ) throws -> [CrawlRecord] {
-        let descriptor = FetchDescriptor<KeywordRankingCrawl>(
-            predicate: #Predicate { crawl in
-                queryKeys.contains(crawl.queryKey)
-            },
-            sortBy: [
-                SortDescriptor(\KeywordRankingCrawl.queryKey, order: .forward),
-                SortDescriptor(\KeywordRankingCrawl.observedAt, order: .forward)
-            ]
-        )
-        return try modelContext.fetch(descriptor).map {
+        let crawls: [KeywordRankingCrawl]
+        if let cutoffDate {
+            let descriptor = FetchDescriptor<KeywordRankingCrawl>(
+                predicate: #Predicate { crawl in
+                    queryKeys.contains(crawl.queryKey) && crawl.observedAt >= cutoffDate
+                },
+                sortBy: [
+                    SortDescriptor(\KeywordRankingCrawl.queryKey, order: .forward),
+                    SortDescriptor(\KeywordRankingCrawl.observedAt, order: .forward)
+                ]
+            )
+            crawls = try modelContext.fetch(descriptor)
+        } else {
+            let descriptor = FetchDescriptor<KeywordRankingCrawl>(
+                predicate: #Predicate { crawl in
+                    queryKeys.contains(crawl.queryKey)
+                },
+                sortBy: [
+                    SortDescriptor(\KeywordRankingCrawl.queryKey, order: .forward),
+                    SortDescriptor(\KeywordRankingCrawl.observedAt, order: .forward)
+                ]
+            )
+            crawls = try modelContext.fetch(descriptor)
+        }
+        return crawls.map {
             CrawlRecord(
                 queryKey: $0.queryKey,
                 observationKey: $0.observationKey,
@@ -222,6 +342,36 @@ final class KeywordInsightsService {
                 resultCount: $0.resultCount
             )
         }
+    }
+
+    private nonisolated static func fetchLatestCrawls(
+        queryKeys: Set<String>,
+        in modelContext: ModelContext
+    ) throws -> [CrawlRecord] {
+        var records: [CrawlRecord] = []
+        records.reserveCapacity(queryKeys.count)
+
+        for queryKey in queryKeys {
+            let targetQueryKey = queryKey
+            var descriptor = FetchDescriptor<KeywordRankingCrawl>(
+                predicate: #Predicate { crawl in
+                    crawl.queryKey == targetQueryKey
+                },
+                sortBy: [SortDescriptor(\KeywordRankingCrawl.observedAt, order: .reverse)]
+            )
+            descriptor.fetchLimit = 1
+            guard let crawl = try modelContext.fetch(descriptor).first else { continue }
+            records.append(
+                CrawlRecord(
+                    queryKey: crawl.queryKey,
+                    observationKey: crawl.observationKey,
+                    observedAt: crawl.observedAt,
+                    source: crawl.source,
+                    resultCount: crawl.resultCount
+                )
+            )
+        }
+        return records
     }
 
     private nonisolated static func latestCrawlsByQueryKey(

@@ -96,8 +96,10 @@ struct KeywordTableNotesPreview: View {
     private let preview = KeywordTablePreview()
 
     var body: some View {
-        if let row = preview.rows.first {
-            KeywordNotesSheet(track: row.track)
+        if let track = (try? preview.previewContainer.modelContainer.mainContext.fetch(
+            FetchDescriptor<TrackedAppKeyword>()
+        ))?.first {
+            KeywordNotesSheet(track: track)
                 .openASOPreviewEnvironment(preview.previewContainer)
         }
     }
@@ -410,6 +412,7 @@ struct KeywordTablePreview: View {
             rows: rows,
             isLoadingRows: false,
             contentRevision: 0,
+            sortRevision: 0,
             trackedAppStoreID: trackedAppStoreID,
             chartSelectionScope: StorefrontFilter.all.id,
             insightsSummary: .months,

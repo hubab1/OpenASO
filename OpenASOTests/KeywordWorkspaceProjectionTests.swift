@@ -386,6 +386,79 @@ struct KeywordWorkspaceProjectionTests {
     }
 
     @Test
+    func boundedWorkspaceKeepsLatestSnapshotOutsideTrendWindow() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(
+            isStoredInMemoryOnly: true
+        )
+        let modelContext = ModelContext(container)
+        let appStoreID: Int64 = 303
+        let trackedApp = TrackedApp(
+            appStoreID: appStoreID,
+            bundleID: "com.example.archive",
+            name: "Archive",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let query = KeywordQuery(term: "archived keyword", storefront: "us", platform: .iphone)
+        let track = TrackedAppKeyword(
+            term: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            trackedApp: trackedApp,
+            query: query
+        )
+        let oldDate = Date.now.addingTimeInterval(-30 * 86_400)
+        let oldCrawl = KeywordRankingCrawl(
+            keyword: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            observedAt: oldDate,
+            source: .appStoreWeb,
+            resultCount: 100,
+            query: query
+        )
+        let ranking = KeywordAppRanking(
+            position: 3,
+            appStoreID: appStoreID,
+            bundleID: trackedApp.bundleID,
+            name: trackedApp.name,
+            sellerName: trackedApp.sellerName,
+            observation: oldCrawl
+        )
+
+        modelContext.insert(trackedApp)
+        modelContext.insert(query)
+        modelContext.insert(track)
+        modelContext.insert(oldCrawl)
+        modelContext.insert(ranking)
+        try modelContext.save()
+
+        let materializationID = KeywordWorkspaceProjection.MaterializationID(
+            refreshToken: 0,
+            backgroundStoreRevision: 0,
+            appStoreID: appStoreID,
+            storefrontFilterID: "all",
+            platformFilterID: "all",
+            dateRangeID: TrendDateRange.last7Days.id,
+            tracks: [.init(identityKey: track.identityKey)]
+        )
+        let workspace = try await KeywordInsightsService().workspace(
+            for: materializationID,
+            tracks: [track],
+            appStoreID: appStoreID,
+            dateRange: .last7Days,
+            using: BackgroundModelStore(modelContainer: container),
+            fallbackModelContext: modelContext
+        )
+        let row = try #require(workspace.rowsByIdentityKey[track.identityKey])
+
+        #expect(row.latestSnapshot?.rank == 3)
+        #expect(row.latestSnapshot?.searchedAt == oldDate)
+        #expect(row.trendSnapshots.isEmpty)
+        #expect(row.rankingApps.map(\.position) == [3])
+    }
+
+    @Test
     func canceledSupersededErrorCannotClearFreshPublicationOrReportAnError() async {
         let model = KeywordWorkspaceModel()
         let materializer = ControlledWorkspaceMaterializer()
@@ -599,6 +672,112 @@ struct KeywordWorkspaceProjectionTests {
 
         #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
         #expect(model.contentRevision == revisionBeforeFilter + 1)
+    }
+
+    @Test
+    func coalescedRowDeltaPatchesOnlyChangedKeywordWithoutRematerializingWorkspace() async throws {
+        let model = KeywordWorkspaceModel()
+        let id = materializationID(refreshToken: 1)
+        let focusRow = makeRow(term: "Focus Timer", appStoreID: 1, currentRank: 9, popularity: 40)
+        let habitRow = makeRow(term: "Habit Tracker", appStoreID: 2, currentRank: 3, popularity: 70)
+        let loadError = await model.materialize(id: id, initialFilters: filters()) {
+            [focusRow, habitRow]
+        }
+        #expect(loadError == nil)
+        let generationBeforeUpdate = model.materializationGeneration
+        let revisionBeforeUpdate = model.contentRevision
+        let updatedAt = Date(timeIntervalSince1970: 2_100_000_000)
+
+        model.applyUpdatedRows([
+            focusRow.id: KeywordInsightsService.Workspace.Row(
+                metrics: KeywordMetricsSnapshot(
+                    popularityScore: 99,
+                    difficultyScore: 12,
+                    updatedAt: updatedAt,
+                    notes: nil
+                ),
+                refreshStatus: .empty,
+                latestSnapshot: summary(id: "focus-updated", rank: 1, date: updatedAt),
+                trendSnapshots: [summary(id: "focus-updated", rank: 1, date: updatedAt)],
+                rankingApps: []
+            )
+        ])
+
+        let updatedFocus = try #require(model.rows.first { $0.id == focusRow.id })
+        let unchangedHabit = try #require(model.rows.first { $0.id == habitRow.id })
+        #expect(updatedFocus.currentRank == 1)
+        #expect(updatedFocus.metrics?.popularityScore == 99)
+        #expect(unchangedHabit == habitRow)
+        #expect(model.materializationGeneration == generationBeforeUpdate)
+        #expect(model.contentRevision == revisionBeforeUpdate + 1)
+    }
+
+    @Test
+    func refreshDeltasPreserveVisualOrderUntilExplicitResort() throws {
+        let sourceRows = (0..<338).map { index in
+            makeRow(
+                term: "Keyword \(index.formatted(.number.precision(.integerLength(3))))",
+                appStoreID: Int64(index + 1),
+                popularity: index
+            )
+        }
+        let model = KeywordTablePresentationModel()
+        let sortOrder = [
+            KeyPathComparator(\KeywordTablePresentationRow.popularitySortValue, order: .reverse)
+        ]
+
+        model.update(
+            sourceRows: sourceRows,
+            selectedChartKeywordKeys: [],
+            sortOrder: sortOrder,
+            forceSort: true
+        )
+        let initialIDs = model.rowIDs
+        #expect(model.rows.count == 338)
+        #expect(model.sortCount == 1)
+        #expect(model.tableIdentity == 1)
+
+        let firstSourceRow = try #require(sourceRows.first)
+        let updatedFirstRow = firstSourceRow.updating(
+            metrics: KeywordMetricsSnapshot(
+                popularityScore: 1_000,
+                difficultyScore: nil,
+                updatedAt: Date(timeIntervalSince1970: 2_100_000_000),
+                notes: nil
+            ),
+            refreshStatus: .empty,
+            latestSnapshot: firstSourceRow.latestSnapshot,
+            trendSnapshots: firstSourceRow.trendSnapshots,
+            rankingApps: firstSourceRow.rankingApps
+        )
+        var updatedSourceRows = sourceRows
+        updatedSourceRows[0] = updatedFirstRow
+
+        for _ in 0..<25 {
+            model.update(
+                sourceRows: updatedSourceRows,
+                selectedChartKeywordKeys: [],
+                sortOrder: sortOrder,
+                forceSort: false
+            )
+        }
+
+        #expect(model.rowIDs == initialIDs)
+        #expect(model.sortCount == 1)
+        #expect(model.tableIdentity == 1)
+        #expect(model.rows.last?.id == updatedFirstRow.id)
+        #expect(model.rows.last?.popularitySortValue == 1_000)
+
+        model.update(
+            sourceRows: updatedSourceRows,
+            selectedChartKeywordKeys: [],
+            sortOrder: sortOrder,
+            forceSort: true
+        )
+
+        #expect(model.sortCount == 2)
+        #expect(model.tableIdentity == 2)
+        #expect(model.rows.first?.id == updatedFirstRow.id)
     }
 
     @Test

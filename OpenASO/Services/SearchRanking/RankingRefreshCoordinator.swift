@@ -213,6 +213,11 @@ private struct RankingModelContextHasPendingChangesError: LocalizedError, Sendab
 }
 
 final class RankingRefreshCoordinator: Sendable {
+    // KeywordRankingCrawl is the canonical full-page history. Retain only the
+    // useful legacy preview rows on TrackedKeywordDailyRanking so each refresh
+    // does not write the same 200-result page twice.
+    private static let legacySnapshotTopResultLimit = 5
+
     private let rankingProvider: any SearchRankingProvider
     private let appCatalogService: AppCatalogService
     private let analyticsService: AnalyticsService
@@ -524,17 +529,27 @@ final class RankingRefreshCoordinator: Sendable {
             snapshot.errorMessage = nil
             snapshot.keywordTrack = track
 
-            for item in page.items {
+            let legacySnapshotItems = page.items.filter {
+                $0.position <= Self.legacySnapshotTopResultLimit
+                    || $0.appStoreID == trackedApp.appStoreID
+            }
+            var rankedResultsByAppStoreID = snapshot.topResults.reduce(
+                into: [Int64: TrackedKeywordRankedResult]()
+            ) { result, rankedResult in
+                result[rankedResult.appStoreID] = rankedResult
+            }
+            for item in legacySnapshotItems {
                 upsertRankedResult(
                     from: item,
                     snapshot: snapshot,
                     snapshotKey: incomingSnapshotKey,
-                    in: modelContext
+                    in: modelContext,
+                    resultsByAppStoreID: &rankedResultsByAppStoreID
                 )
             }
             pruneRankedResults(
                 for: snapshot,
-                keeping: page.items.map(\.appStoreID),
+                keeping: legacySnapshotItems.map(\.appStoreID),
                 in: modelContext
             )
             track.rankingAppCount = page.resultCount
@@ -672,6 +687,11 @@ final class RankingRefreshCoordinator: Sendable {
             observedAt: pageResult.searchedAt,
             in: modelContext
         )
+        var observationItemsByAppStoreID = observation.items.reduce(
+            into: [Int64: KeywordAppRanking]()
+        ) { result, observationItem in
+            result[observationItem.appStoreID] = observationItem
+        }
         for item in pageResult.page.items {
             if catalogEvidenceAppStoreIDs?.contains(item.appStoreID) != false {
                 let storeApp = try appCatalogService.upsertStoreApp(
@@ -696,7 +716,8 @@ final class RankingRefreshCoordinator: Sendable {
             upsertObservationItem(
                 from: item,
                 observation: observation,
-                in: modelContext
+                in: modelContext,
+                itemsByAppStoreID: &observationItemsByAppStoreID
             )
         }
         pruneObservationItems(
@@ -764,9 +785,10 @@ final class RankingRefreshCoordinator: Sendable {
         from item: SearchRankingItem,
         snapshot: TrackedKeywordDailyRanking,
         snapshotKey: String,
-        in modelContext: ModelContext
+        in modelContext: ModelContext,
+        resultsByAppStoreID: inout [Int64: TrackedKeywordRankedResult]
     ) {
-        let storedResult = snapshot.topResults.first { $0.appStoreID == item.appStoreID } ?? TrackedKeywordRankedResult(
+        let storedResult = resultsByAppStoreID[item.appStoreID] ?? TrackedKeywordRankedResult(
             position: item.position,
             appStoreID: item.appStoreID,
             bundleID: item.bundleID,
@@ -778,14 +800,15 @@ final class RankingRefreshCoordinator: Sendable {
         if storedResult.modelContext == nil {
             snapshot.topResults.append(storedResult)
             modelContext.insert(storedResult)
+            resultsByAppStoreID[item.appStoreID] = storedResult
         }
-        assignIfChanged(storedResult, \.snapshotKey, snapshotKey)
-        assignIfChanged(storedResult, \.position, item.position)
-        assignIfChanged(storedResult, \.appStoreID, item.appStoreID)
-        assignIfChanged(storedResult, \.bundleID, item.bundleID)
-        assignIfChanged(storedResult, \.name, item.name)
-        assignIfChanged(storedResult, \.subtitle, item.subtitle)
-        assignIfChanged(storedResult, \.sellerName, item.sellerName)
+        if storedResult.snapshotKey != snapshotKey { storedResult.snapshotKey = snapshotKey }
+        if storedResult.position != item.position { storedResult.position = item.position }
+        if storedResult.appStoreID != item.appStoreID { storedResult.appStoreID = item.appStoreID }
+        if storedResult.bundleID != item.bundleID { storedResult.bundleID = item.bundleID }
+        if storedResult.name != item.name { storedResult.name = item.name }
+        if storedResult.subtitle != item.subtitle { storedResult.subtitle = item.subtitle }
+        if storedResult.sellerName != item.sellerName { storedResult.sellerName = item.sellerName }
         if storedResult.snapshot !== snapshot {
             storedResult.snapshot = snapshot
         }
@@ -794,9 +817,10 @@ final class RankingRefreshCoordinator: Sendable {
     private func upsertObservationItem(
         from item: SearchRankingItem,
         observation: KeywordRankingCrawl,
-        in modelContext: ModelContext
+        in modelContext: ModelContext,
+        itemsByAppStoreID: inout [Int64: KeywordAppRanking]
     ) {
-        let observationItem = observation.items.first { $0.appStoreID == item.appStoreID } ?? KeywordAppRanking(
+        let observationItem = itemsByAppStoreID[item.appStoreID] ?? KeywordAppRanking(
             position: item.position,
             appStoreID: item.appStoreID,
             bundleID: item.bundleID,
@@ -808,22 +832,30 @@ final class RankingRefreshCoordinator: Sendable {
         if observationItem.modelContext == nil {
             observation.items.append(observationItem)
             modelContext.insert(observationItem)
+            itemsByAppStoreID[item.appStoreID] = observationItem
         }
-        assignIfChanged(observationItem, \.position, item.position)
-        assignIfChanged(observationItem, \.appStoreID, item.appStoreID)
-        assignIfChanged(observationItem, \.bundleID, item.bundleID)
-        assignIfChanged(observationItem, \.name, item.name)
-        assignIfChanged(observationItem, \.subtitle, item.subtitle)
-        assignIfChanged(observationItem, \.sellerName, item.sellerName)
-        assignIfChanged(observationItem, \.crawlKey, observation.observationKey)
-        assignIfChanged(observationItem, \.queryKey, observation.queryKey)
-        assignIfChanged(observationItem, \.storefront, observation.storefront)
-        assignIfChanged(observationItem, \.platform, observation.platform)
-        assignIfChanged(observationItem, \.observedAt, observation.observedAt)
-        assignIfChanged(observationItem, \.itemKey, KeywordAppRanking.makeItemKey(
+        if observationItem.position != item.position { observationItem.position = item.position }
+        if observationItem.appStoreID != item.appStoreID { observationItem.appStoreID = item.appStoreID }
+        if observationItem.bundleID != item.bundleID { observationItem.bundleID = item.bundleID }
+        if observationItem.name != item.name { observationItem.name = item.name }
+        if observationItem.subtitle != item.subtitle { observationItem.subtitle = item.subtitle }
+        if observationItem.sellerName != item.sellerName { observationItem.sellerName = item.sellerName }
+        if observationItem.crawlKey != observation.observationKey {
+            observationItem.crawlKey = observation.observationKey
+        }
+        if observationItem.queryKey != observation.queryKey { observationItem.queryKey = observation.queryKey }
+        if observationItem.storefront != observation.storefront {
+            observationItem.storefront = observation.storefront
+        }
+        if observationItem.platform != observation.platform { observationItem.platform = observation.platform }
+        if observationItem.observedAt != observation.observedAt {
+            observationItem.observedAt = observation.observedAt
+        }
+        let itemKey = KeywordAppRanking.makeItemKey(
             observationKey: observation.observationKey,
             appStoreID: item.appStoreID
-        ))
+        )
+        if observationItem.itemKey != itemKey { observationItem.itemKey = itemKey }
         if observationItem.observation !== observation {
             observationItem.observation = observation
         }

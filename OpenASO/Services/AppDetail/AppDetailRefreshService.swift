@@ -180,7 +180,11 @@ private actor AppDetailRefreshQueue {
 
 final class AppDetailRefreshService: Sendable {
     private static let rankingFetchConcurrency = 4
-    private static let rankingPersistenceBatchSize = 10
+    // Keep persistence bursts aligned with the number of concurrent fetches.
+    // A ten-page transaction can contain 2,000 ranking rows (plus legacy
+    // snapshot rows), retaining a large SwiftData graph and delaying visible
+    // progress even though the HTTP work has already completed.
+    private static let rankingPersistenceBatchSize = 4
 
     private let refreshQueue = AppDetailRefreshQueue()
     private let backgroundModelStore: BackgroundModelStore
@@ -458,6 +462,11 @@ final class AppDetailRefreshService: Sendable {
                                 total: total,
                                 failureCount: failureCount
                             )
+                        },
+                        didPersist: { update in
+                            await self.progressStore?.recordKeywordDataUpdated(
+                                identityKeys: update.trackIdentityKeys
+                            )
                         }
                     )
                     await recordStage(
@@ -585,6 +594,9 @@ final class AppDetailRefreshService: Sendable {
                 batchOutcome.catalogEvidenceFingerprints
             )
             failureCount += batchOutcome.failureCount
+            await progressStore?.recordKeywordDataUpdated(
+                identityKeys: batchOutcome.outcomes.map(\.trackIdentityKey)
+            )
             for pageResult in batchOutcome.metadataEnrichmentPageResults {
                 try Task.checkCancellation()
                 refreshCoordinator.scheduleTopRankingMetadataEnrichment(for: pageResult)

@@ -461,6 +461,67 @@ struct RankingRefreshCoordinatorTests {
     }
 
     @Test
+    func largePageStoresOneCanonicalCopyAndOnlyLegacyPreviewRows() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        modelContext.autosaveEnabled = false
+        let trackedAppStoreID: Int64 = 900
+        let trackedApp = TrackedApp(
+            appStoreID: trackedAppStoreID,
+            bundleID: "example.tracked.900",
+            name: "Tracked",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let track = try makeTrackedAppKeyword(
+            term: "large ranking page",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(trackedApp)
+        modelContext.insert(track)
+        try modelContext.save()
+
+        let items = (1...250).map { position in
+            SearchRankingItem(
+                position: position,
+                appStoreID: position == 200 ? trackedAppStoreID : Int64(10_000 + position),
+                bundleID: "example.result.\(position)",
+                name: "Result \(position)",
+                sellerName: "Example"
+            )
+        }
+        let pageResult = RankingRefreshPageResult(
+            request: RankingRefreshRequest(track: track),
+            page: SearchRankingPage(items: items, source: .appStoreWeb),
+            searchedAt: Date(timeIntervalSince1970: 1_900_000_000),
+            observedHour: nil,
+            submissionCount: 1,
+            winningCount: 1,
+            confidence: "single_source"
+        )
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: StubRankingProvider(page: pageResult.page),
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        )
+
+        _ = try coordinator.persistRankingPageTransaction(
+            pageResult,
+            in: modelContext,
+            rebuildDerivedStats: false,
+            catalogEvidenceAppStoreIDs: []
+        )
+        try modelContext.save()
+
+        let canonicalRows = try modelContext.fetch(FetchDescriptor<KeywordAppRanking>())
+        let legacyRows = try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>())
+        #expect(canonicalRows.count == SearchRankingCrawl.fullKeywordRankingLimit)
+        #expect(legacyRows.count == 6)
+        #expect(Set(legacyRows.map(\.position)) == Set([1, 2, 3, 4, 5, 200]))
+    }
+
+    @Test
     func catalogEvidenceFingerprintIgnoresRankButDetectsMetadataChanges() {
         let request = RankingRefreshRequest(
             identityKey: "tracked::us::iphone",

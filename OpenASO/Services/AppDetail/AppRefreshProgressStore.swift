@@ -142,18 +142,82 @@ struct AppRefreshProgress: Identifiable, Sendable {
     }
 }
 
+struct AppKeywordDataUpdate: Equatable, Sendable {
+    let revision: Int
+    let identityKeys: [String]
+}
+
 @MainActor
 @Observable
 final class AppRefreshProgressStore: Sendable {
     private(set) var activeRefresh: AppRefreshProgress?
     private(set) var pendingKeywordTrackCountsByAppStoreID: [Int64: Int] = [:]
     private(set) var pendingAppRefreshCount = 0
+    private(set) var keywordDataUpdatesByAppStoreID: [Int64: AppKeywordDataUpdate] = [:]
 
     @ObservationIgnored
     private var clearTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var keywordDataPublishTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var pendingKeywordDataIdentityKeysByAppStoreID: [Int64: Set<String>] = [:]
+    @ObservationIgnored
+    private var keywordDataRevision = 0
+    @ObservationIgnored
+    private let keywordDataCoalescingDelay: Duration
+
+    init(keywordDataCoalescingDelay: Duration = .milliseconds(150)) {
+        self.keywordDataCoalescingDelay = keywordDataCoalescingDelay
+    }
 
     var pendingKeywordTrackCount: Int {
         pendingKeywordTrackCountsByAppStoreID.values.reduce(0, +)
+    }
+
+    func keywordDataUpdate(for appStoreID: Int64) -> AppKeywordDataUpdate? {
+        keywordDataUpdatesByAppStoreID[appStoreID]
+    }
+
+    func recordKeywordDataUpdated(identityKeys: [String]) {
+        guard !identityKeys.isEmpty else { return }
+
+        for identityKey in identityKeys {
+            guard let appStoreID = Self.appStoreID(from: identityKey) else { continue }
+            pendingKeywordDataIdentityKeysByAppStoreID[appStoreID, default: []].insert(identityKey)
+        }
+        guard !pendingKeywordDataIdentityKeysByAppStoreID.isEmpty,
+              keywordDataPublishTask == nil
+        else {
+            return
+        }
+
+        let delay = keywordDataCoalescingDelay
+        keywordDataPublishTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            self?.flushPendingKeywordDataUpdates()
+        }
+    }
+
+    func flushPendingKeywordDataUpdates() {
+        keywordDataPublishTask?.cancel()
+        keywordDataPublishTask = nil
+        let pendingUpdates = pendingKeywordDataIdentityKeysByAppStoreID
+        pendingKeywordDataIdentityKeysByAppStoreID.removeAll(keepingCapacity: true)
+
+        var updates = keywordDataUpdatesByAppStoreID
+        for appStoreID in pendingUpdates.keys.sorted() {
+            guard let identityKeys = pendingUpdates[appStoreID], !identityKeys.isEmpty else { continue }
+            keywordDataRevision &+= 1
+            updates[appStoreID] = AppKeywordDataUpdate(
+                revision: keywordDataRevision,
+                identityKeys: identityKeys.sorted()
+            )
+        }
+        keywordDataUpdatesByAppStoreID = updates
     }
 
     func queuePendingKeywordAddition(appStoreID: Int64, trackCount: Int) {
@@ -309,12 +373,17 @@ final class AppRefreshProgressStore: Sendable {
     private func scheduleClear(refreshID: UUID) {
         clearTask?.cancel()
         clearTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(for: .milliseconds(1_500))
             await MainActor.run {
                 guard self?.activeRefresh?.id == refreshID else { return }
                 self?.activeRefresh = nil
                 self?.clearTask = nil
             }
         }
+    }
+
+    private nonisolated static func appStoreID(from identityKey: String) -> Int64? {
+        guard let separator = identityKey.range(of: "::") else { return nil }
+        return Int64(identityKey[..<separator.lowerBound])
     }
 }

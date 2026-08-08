@@ -357,7 +357,8 @@ final class KeywordMetricsService: Sendable {
         popularityContextAppStoreID: Int64?,
         webSession: AppleAdsWebSession?,
         using modelStore: BackgroundModelStore,
-        progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil
+        progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil,
+        didPersist: (@Sendable (KeywordMetricsPersistenceUpdate) async -> Void)? = nil
     ) async throws -> KeywordMetricsRefreshBatchResult {
         try Task.checkCancellation()
         guard !trackIdentityKeys.isEmpty else { return .empty }
@@ -429,6 +430,7 @@ final class KeywordMetricsService: Sendable {
                     )
                 )
                 completedCount += 1
+                await didPersist?(candidate.persistenceUpdate)
                 await progress?(completedCount, totalCount, failureCount)
                 try Task.checkCancellation()
                 continue
@@ -443,6 +445,7 @@ final class KeywordMetricsService: Sendable {
                 outcomes.append(outcome)
                 if outcome.errorMessage != nil { failureCount += 1 }
                 completedCount += 1
+                await didPersist?(candidate.persistenceUpdate)
                 await progress?(completedCount, totalCount, failureCount)
                 try Task.checkCancellation()
                 continue
@@ -466,6 +469,7 @@ final class KeywordMetricsService: Sendable {
                 outcomes.append(outcome)
                 if outcome.errorMessage != nil { failureCount += 1 }
                 completedCount += 1
+                await didPersist?(candidate.persistenceUpdate)
                 await progress?(completedCount, totalCount, failureCount)
                 try Task.checkCancellation()
             }
@@ -550,6 +554,7 @@ final class KeywordMetricsService: Sendable {
                     outcomes.append(outcome)
                     if outcome.errorMessage != nil { failureCount += 1 }
                     completedCount += 1
+                    await didPersist?(candidate.persistenceUpdate)
                     await progress?(completedCount, totalCount, failureCount)
                     try Task.checkCancellation()
                 }
@@ -572,6 +577,7 @@ final class KeywordMetricsService: Sendable {
                 outcomes.append(outcome)
                 if outcome.errorMessage != nil { failureCount += 1 }
                 completedCount += 1
+                await didPersist?(candidate.persistenceUpdate)
                 await progress?(completedCount, totalCount, failureCount)
                 try Task.checkCancellation()
             }
@@ -1105,6 +1111,10 @@ struct KeywordMetricsRefreshOutcome: Sendable {
     }
 }
 
+struct KeywordMetricsPersistenceUpdate: Equatable, Sendable {
+    let trackIdentityKeys: [String]
+}
+
 enum KeywordMetricsBatchErrorCode: String, Equatable, Sendable {
     case appleAdsSessionExpired = "apple_ads_session_expired"
 }
@@ -1151,6 +1161,10 @@ private struct KeywordMetricsRefreshCandidate: Sendable {
     let term: String
     let storefront: String
     let shouldRefresh: Bool
+
+    var persistenceUpdate: KeywordMetricsPersistenceUpdate {
+        KeywordMetricsPersistenceUpdate(trackIdentityKeys: trackIdentityKeys)
+    }
 }
 
 private struct KeywordMetricsTrackGroup {

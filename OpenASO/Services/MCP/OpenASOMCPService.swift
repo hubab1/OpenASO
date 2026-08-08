@@ -581,14 +581,63 @@ final class OpenASOMCPService: Sendable {
   }
 
   private static func trackedRankedApps(
-    snapshotKeys: [String],
+    snapshots: [TrackedKeywordDailyRanking],
+    tracksByIdentityKey: [String: TrackedAppKeyword],
     limit: Int,
     in modelContext: ModelContext
   ) throws -> [String: BoundedHistoryRankedApps] {
-    guard !snapshotKeys.isEmpty else { return [:] }
+    guard !snapshots.isEmpty else { return [:] }
+
+    let crawlKeyBySnapshotKey = Dictionary(uniqueKeysWithValues: snapshots.map { snapshot in
+      let track = tracksByIdentityKey[snapshot.trackIdentityKey] ?? snapshot.keywordTrack
+      return (
+        snapshot.snapshotKey,
+        KeywordRankingCrawl.makeObservationKey(
+          queryKey: track.queryKey,
+          observedAt: snapshot.searchedAt,
+          source: snapshot.source
+        )
+      )
+    })
+    let candidateCrawlKeys = Array(Set(crawlKeyBySnapshotKey.values))
+    let crawlDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+      predicate: #Predicate { crawl in
+        candidateCrawlKeys.contains(crawl.observationKey)
+      }
+    )
+    let crawlsByKey = Dictionary(uniqueKeysWithValues: try modelContext.fetch(crawlDescriptor).map {
+      ($0.observationKey, $0)
+    })
+    let matchingCrawlKeyBySnapshotKey = Dictionary(uniqueKeysWithValues: snapshots.compactMap {
+      snapshot -> (String, String)? in
+      guard let crawlKey = crawlKeyBySnapshotKey[snapshot.snapshotKey],
+            crawlsByKey[crawlKey]?.observedAt == snapshot.searchedAt else {
+        return nil
+      }
+      return (snapshot.snapshotKey, crawlKey)
+    })
+    let crawlAppsByKey = try crawlRankedApps(
+      crawlKeys: Array(Set(matchingCrawlKeyBySnapshotKey.values)),
+      limit: limit,
+      in: modelContext
+    )
+    var rankedAppsBySnapshotKey = matchingCrawlKeyBySnapshotKey.reduce(
+      into: [String: BoundedHistoryRankedApps]()
+    ) { result, entry in
+      result[entry.key] = crawlAppsByKey[entry.value]
+    }
+
+    // Stores created before shared crawl history was introduced only have the
+    // tracked snapshot relationship. Fall back for those rows while preferring
+    // the canonical crawl so the MCP response still exposes the full page.
+    let missingSnapshotKeys = snapshots.map(\.snapshotKey).filter {
+      rankedAppsBySnapshotKey[$0] == nil
+    }
+    guard !missingSnapshotKeys.isEmpty else { return rankedAppsBySnapshotKey }
+
     var descriptor = FetchDescriptor<TrackedKeywordRankedResult>(
       predicate: #Predicate { result in
-        snapshotKeys.contains(result.snapshotKey)
+        missingSnapshotKeys.contains(result.snapshotKey)
       },
       sortBy: [
         SortDescriptor(\.snapshotKey, comparator: .lexical, order: .forward),
@@ -604,7 +653,9 @@ final class OpenASOMCPService: Sendable {
         "Stored ranking history is too large for one response. Narrow the filters or page size."
       )
     }
-    return results.reduce(into: [:]) { grouped, result in
+    let legacyAppsBySnapshotKey: [String: BoundedHistoryRankedApps] = results.reduce(
+      into: [:]
+    ) { grouped, result in
       var rankedApps = grouped[result.snapshotKey] ?? BoundedHistoryRankedApps()
       rankedApps.total += 1
       if rankedApps.items.count < limit {
@@ -612,6 +663,8 @@ final class OpenASOMCPService: Sendable {
       }
       grouped[result.snapshotKey] = rankedApps
     }
+    rankedAppsBySnapshotKey.merge(legacyAppsBySnapshotKey) { current, _ in current }
+    return rankedAppsBySnapshotKey
   }
 
   private static func crawlRankedApps(
@@ -1071,7 +1124,8 @@ final class OpenASOMCPService: Sendable {
         tieKey: \.snapshotKey
       )
       let rankedAppsBySnapshotKey = try Self.trackedRankedApps(
-        snapshotKeys: pageSlice.rows.map(\.snapshotKey),
+        snapshots: pageSlice.rows,
+        tracksByIdentityKey: tracksByIdentityKey,
         limit: resultLimit,
         in: modelContext
       )

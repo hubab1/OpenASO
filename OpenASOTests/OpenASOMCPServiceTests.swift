@@ -2459,6 +2459,20 @@ struct OpenASOMCPServiceTests {
                 RankingRow(position: 2, appStoreID: 200, name: "Second")
             ]
         )
+        try context.insertRankingCrawl(
+            keyword: targetUS.term,
+            query: targetUS.query,
+            storefront: targetUS.storefront,
+            observedAt: successful.searchedAt,
+            source: successful.source,
+            resultCount: successful.resultCount,
+            rows: [
+                RankingRow(position: 4, appStoreID: 400, name: "Fourth"),
+                RankingRow(position: 3, appStoreID: 300, name: "Third"),
+                RankingRow(position: 1, appStoreID: 100, name: "First"),
+                RankingRow(position: 2, appStoreID: 200, name: "Second")
+            ]
+        )
         let failed = try context.insertDailyRanking(
             track: targetUS,
             rank: nil,
@@ -2518,7 +2532,7 @@ struct OpenASOMCPServiceTests {
         #expect(successfulDTO.source == RankingSource.iTunesFallback.rawValue)
         #expect(successfulDTO.rankedApps.map(\.position) == [1, 2])
         #expect(successfulDTO.rankedApps.map(\.appStoreID) == ["100", "200"])
-        #expect(successfulDTO.rankedAppsAvailableCount == 3)
+        #expect(successfulDTO.rankedAppsAvailableCount == 4)
         #expect(successfulDTO.rankedAppsTruncated)
     }
 

@@ -559,6 +559,11 @@ final class AppServices {
                             failureCount: failureCount,
                             refreshID: refreshID
                         )
+                    },
+                    didPersist: { update in
+                        await refreshProgressStore.recordKeywordDataUpdated(
+                            identityKeys: update.trackIdentityKeys
+                        )
                     }
                 )
 

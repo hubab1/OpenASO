@@ -209,7 +209,7 @@ struct StorefrontPickerOption: Identifiable {
     var id: String { filter.id }
 }
 
-struct StorefrontDefinition: Identifiable, Hashable {
+struct StorefrontDefinition: Identifiable, Hashable, Sendable {
     let code: String
     let name: String
     let flagEmoji: String

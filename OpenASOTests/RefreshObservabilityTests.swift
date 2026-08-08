@@ -7,6 +7,29 @@ import Testing
 @MainActor
 struct RefreshObservabilityTests {
     @Test
+    func keywordPersistenceNotificationsCoalesceAndRemainScopedToEachTrackedApp() throws {
+        let store = AppRefreshProgressStore(keywordDataCoalescingDelay: .seconds(60))
+        let firstAppKeys = (0..<338).map { "101::keyword-\($0)::us::iphone" }
+        let secondAppKeys = (0..<12).map { "202::keyword-\($0)::gb::iphone" }
+
+        for identityKey in firstAppKeys {
+            store.recordKeywordDataUpdated(identityKeys: [identityKey, identityKey])
+        }
+        store.recordKeywordDataUpdated(identityKeys: secondAppKeys)
+
+        #expect(store.keywordDataUpdate(for: 101) == nil)
+        #expect(store.keywordDataUpdate(for: 202) == nil)
+
+        store.flushPendingKeywordDataUpdates()
+
+        let firstUpdate = try #require(store.keywordDataUpdate(for: 101))
+        let secondUpdate = try #require(store.keywordDataUpdate(for: 202))
+        #expect(firstUpdate.identityKeys == firstAppKeys.sorted())
+        #expect(secondUpdate.identityKeys == secondAppKeys.sorted())
+        #expect(secondUpdate.revision == firstUpdate.revision + 1)
+    }
+
+    @Test
     func appStoreWebSearchPathsAreRankingEndpointsWhileAppPagesRemainRatingsPages() throws {
         for urlString in [
             "https://apps.apple.com/us/iphone/search?term=notes",

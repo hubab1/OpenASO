@@ -160,10 +160,6 @@ struct AppDetailView: View {
             guard !inProgress else { return }
             flushQueuedKeywordAdds()
         }
-        .onChange(of: activeKeywordMetricsRefreshSignature) { _, signature in
-            guard signature != nil else { return }
-            keywordRefreshToken += 1
-        }
         .fileExporter(
             isPresented: $isExportingCSV,
             document: exportDocument,
@@ -218,23 +214,6 @@ struct AppDetailView: View {
         case .preparing, .refreshingKeywords, .refreshingMetrics, .refreshingRatings, .refreshingReviews, .finishing:
             return true
         }
-    }
-
-    private var activeKeywordMetricsRefreshSignature: String? {
-        guard let refresh = services.refreshProgressStore.activeRefresh,
-              refresh.appStoreID == appStoreID,
-              refresh.metricsProgress.total > 0,
-              refresh.metricsProgress.completed > 0
-        else {
-            return nil
-        }
-
-        return [
-            refresh.id.uuidString,
-            String(refresh.metricsProgress.completed),
-            String(refresh.metricsProgress.failureCount),
-            String(describing: refresh.metricsProgress.status)
-        ].joined(separator: "::")
     }
 
     private func refreshApp() {

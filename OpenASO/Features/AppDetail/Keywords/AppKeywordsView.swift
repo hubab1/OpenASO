@@ -6,7 +6,6 @@ struct AppKeywordsView: View {
     @Environment(AppServices.self) private var services
 
     @Query private var tracks: [TrackedAppKeyword]
-    @Query private var refreshStatuses: [TrackedKeywordRefreshStatus]
 
     let trackedApp: TrackedApp
     let searchText: String
@@ -56,13 +55,6 @@ struct AppKeywordsView: View {
             SortDescriptor(\TrackedAppKeyword.storefront, order: .forward),
             SortDescriptor(\TrackedAppKeyword.platformRaw, order: .forward)
         ]
-        _refreshStatuses = Query(
-            filter: #Predicate<TrackedKeywordRefreshStatus> { status in
-                status.appStoreID == appStoreID
-            },
-            sort: [SortDescriptor(\TrackedKeywordRefreshStatus.statusKey, order: .forward)]
-        )
-
         switch selectedStorefrontFilter {
         case .all:
             _tracks = Query(
@@ -111,13 +103,6 @@ struct AppKeywordsView: View {
         )
     }
 
-    private var filterID: KeywordWorkspaceProjection.FilterID {
-        KeywordWorkspaceProjection.FilterID(
-            materializationGeneration: workspaceModel.materializationGeneration,
-            filters: filters
-        )
-    }
-
     private var storefrontDefinitions: [StorefrontDefinition] {
         ((try? services.storefrontCatalog.bundledStorefronts()) ?? []).map {
             StorefrontDefinition(
@@ -132,8 +117,7 @@ struct AppKeywordsView: View {
     private func makeRows(
         from tracks: [TrackedAppKeyword],
         workspace: KeywordInsightsService.Workspace?,
-        storefrontLookup: [String: StorefrontDefinition],
-        refreshStatusesByIdentityKey: [String: KeywordRefreshStatusSnapshot]
+        storefrontLookup: [String: StorefrontDefinition]
     ) -> [KeywordWorkspaceRow] {
         var rows: [KeywordWorkspaceRow] = []
         rows.reserveCapacity(tracks.count)
@@ -145,10 +129,7 @@ struct AppKeywordsView: View {
                     track: track,
                     storefront: storefrontLookup[track.storefront],
                     metrics: loadedRow?.metrics,
-                    refreshStatus: TrackedKeywordRefreshStatusStore.snapshot(
-                        for: track,
-                        persisted: refreshStatusesByIdentityKey[track.identityKey]
-                    ),
+                    refreshStatus: loadedRow?.refreshStatus ?? .empty,
                     latestSnapshot: loadedRow?.latestSnapshot,
                     trendSnapshots: loadedRow?.trendSnapshots ?? [],
                     rankingApps: loadedRow?.rankingApps ?? []
@@ -161,60 +142,33 @@ struct AppKeywordsView: View {
 
     var body: some View {
         let queriedTracks = tracks
-        let queriedRefreshStatuses = refreshStatuses
         let targetMaterializationID = materializationID(tracks: queriedTracks)
-        let targetFilterID = filterID
-        let rows = workspaceModel.rows
         let storefronts = storefrontDefinitions
-        VStack(alignment: .leading, spacing: 0) {
-            if queriedTracks.isEmpty {
-                ContentUnavailableView(
-                    "No Keywords Yet",
-                    systemImage: "list.bullet.rectangle",
-                    description: Text("Add one or more keywords and choose countries to start tracking this app.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(24)
-            } else {
-                KeywordTableView(
-                    rows: rows,
-                    isLoadingRows: workspaceModel.isLoading(for: targetMaterializationID),
-                    contentRevision: workspaceModel.contentRevision,
-                    trackedAppStoreID: trackedApp.appStoreID,
-                    chartSelectionScope: selectedStorefrontFilter.id,
-                    insightsSummary: workspaceModel.insightsSummary,
-                    storefronts: storefronts,
-                    modelContext: modelContext,
-                    appCatalogService: services.appCatalogService,
-                    appIconStore: services.appIconStore
-                )
-                    .equatable()
-                    .frame(maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
-                    .layoutPriority(1)
-            }
-        }
+        KeywordWorkspaceContent(
+            workspaceModel: workspaceModel,
+            targetMaterializationID: targetMaterializationID,
+            filters: filters,
+            hasTrackedKeywords: !queriedTracks.isEmpty,
+            trackedAppStoreID: trackedApp.appStoreID,
+            chartSelectionScope: selectedStorefrontFilter.id,
+            selectedDateRange: selectedDateRange,
+            storefronts: storefronts,
+            reportError: reportError
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: targetMaterializationID) {
             await materializeKeywordRows(
                 for: targetMaterializationID,
-                tracks: queriedTracks,
-                refreshStatuses: queriedRefreshStatuses
+                tracks: queriedTracks
             )
-        }
-        .task(id: targetFilterID) {
-            await applyRowFilters(for: targetFilterID)
         }
     }
 
     private func materializeKeywordRows(
         for targetMaterializationID: KeywordWorkspaceProjection.MaterializationID,
-        tracks: [TrackedAppKeyword],
-        refreshStatuses: [TrackedKeywordRefreshStatus]
+        tracks: [TrackedAppKeyword]
     ) async {
         let platformTracks = tracks.filter { selectedPlatformFilter.matches($0.platform) }
-        let refreshStatusesByIdentityKey = TrackedKeywordRefreshStatusStore.snapshots(
-            from: refreshStatuses
-        )
         let storefrontLookup = Dictionary(
             uniqueKeysWithValues: storefrontDefinitions.map { ($0.code, $0) }
         )
@@ -226,8 +180,7 @@ struct AppKeywordsView: View {
             rows: makeRows(
                 from: platformTracks,
                 workspace: primedWorkspace,
-                storefrontLookup: storefrontLookup,
-                refreshStatusesByIdentityKey: refreshStatusesByIdentityKey
+                storefrontLookup: storefrontLookup
             ),
             filters: filters
         )
@@ -248,8 +201,7 @@ struct AppKeywordsView: View {
             return makeRows(
                 from: platformTracks,
                 workspace: workspace,
-                storefrontLookup: storefrontLookup,
-                refreshStatusesByIdentityKey: refreshStatusesByIdentityKey
+                storefrontLookup: storefrontLookup
             )
         }
 
@@ -258,15 +210,108 @@ struct AppKeywordsView: View {
         }
     }
 
-    private func applyRowFilters(for targetFilterID: KeywordWorkspaceProjection.FilterID) async {
-        await workspaceModel.updateFilter(id: targetFilterID) { rows, filters in
-            try await KeywordWorkspaceProjection.debouncedRows(
-                rows,
-                filters: filters
-            )
-        }
+}
+
+private struct KeywordWorkspaceContent: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AppServices.self) private var services
+
+    let workspaceModel: KeywordWorkspaceModel
+    let targetMaterializationID: KeywordWorkspaceProjection.MaterializationID
+    let filters: KeywordWorkspaceProjection.Filters
+    let hasTrackedKeywords: Bool
+    let trackedAppStoreID: Int64
+    let chartSelectionScope: String
+    let selectedDateRange: TrendDateRange
+    let storefronts: [StorefrontDefinition]
+    let reportError: (String) -> Void
+
+    private var filterID: KeywordWorkspaceProjection.FilterID {
+        KeywordWorkspaceProjection.FilterID(
+            materializationGeneration: workspaceModel.materializationGeneration,
+            filters: filters
+        )
     }
 
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !hasTrackedKeywords {
+                ContentUnavailableView(
+                    "No Keywords Yet",
+                    systemImage: "list.bullet.rectangle",
+                    description: Text("Add one or more keywords and choose countries to start tracking this app.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(24)
+            } else {
+                KeywordTableView(
+                    rows: workspaceModel.rows,
+                    isLoadingRows: workspaceModel.isLoading(for: targetMaterializationID),
+                    contentRevision: workspaceModel.contentRevision,
+                    sortRevision: workspaceModel.materializationGeneration,
+                    trackedAppStoreID: trackedAppStoreID,
+                    chartSelectionScope: chartSelectionScope,
+                    insightsSummary: workspaceModel.insightsSummary,
+                    storefronts: storefronts,
+                    modelContext: modelContext,
+                    appCatalogService: services.appCatalogService,
+                    appIconStore: services.appIconStore
+                )
+                .equatable()
+                .frame(maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
+                .layoutPriority(1)
+            }
+        }
+        .background {
+            KeywordDataUpdateListener(
+                workspaceModel: workspaceModel,
+                appStoreID: trackedAppStoreID,
+                dateRange: selectedDateRange,
+                reportError: reportError
+            )
+        }
+        .task(id: filterID) {
+            await workspaceModel.updateFilter(id: filterID) { rows, filters in
+                try await KeywordWorkspaceProjection.debouncedRows(
+                    rows,
+                    filters: filters
+                )
+            }
+        }
+    }
+}
+
+private struct KeywordDataUpdateListener: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AppServices.self) private var services
+
+    let workspaceModel: KeywordWorkspaceModel
+    let appStoreID: Int64
+    let dateRange: TrendDateRange
+    let reportError: (String) -> Void
+
+    var body: some View {
+        let update = services.refreshProgressStore.keywordDataUpdate(for: appStoreID)
+        Color.clear
+            .frame(width: 0, height: 0)
+            .task(id: update?.revision) {
+                guard let update else { return }
+                do {
+                    let updatedRows = try await services.keywordInsightsService.updatedRows(
+                        for: update.identityKeys,
+                        appStoreID: appStoreID,
+                        dateRange: dateRange,
+                        using: services.backgroundModelStore,
+                        fallbackModelContext: modelContext
+                    )
+                    workspaceModel.applyUpdatedRows(updatedRows)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    reportError(OpenASOError.map(error).localizedDescription)
+                }
+            }
+    }
 }
 
 #Preview("Keyword Workspace") {

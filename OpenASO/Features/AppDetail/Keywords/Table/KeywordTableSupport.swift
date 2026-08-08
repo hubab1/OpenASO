@@ -225,7 +225,7 @@ private extension Character {
     }
 }
 
-struct KeywordMetricsSnapshot: Sendable {
+struct KeywordMetricsSnapshot: Equatable, Sendable {
     let popularityScore: Int?
     let difficultyScore: Int?
     let updatedAt: Date
@@ -281,10 +281,68 @@ struct KeywordMetricsSnapshot: Sendable {
     }
 }
 
-struct KeywordWorkspaceRow: Identifiable {
+struct KeywordTrackSnapshot: Identifiable, Equatable, Hashable, Sendable {
+    let identityKey: String
+    let appStoreID: Int64
+    let queryKey: String
+    let term: String
+    let storefront: String
+    let platform: AppPlatform
+    let rankingAppCount: Int?
+    let lastRefreshAt: Date?
+    let notes: String
+    let statusMessage: String?
+    let createdAt: Date
+
+    init(
+        identityKey: String,
+        appStoreID: Int64,
+        queryKey: String,
+        term: String,
+        storefront: String,
+        platform: AppPlatform,
+        rankingAppCount: Int?,
+        lastRefreshAt: Date?,
+        notes: String,
+        statusMessage: String?,
+        createdAt: Date
+    ) {
+        self.identityKey = identityKey
+        self.appStoreID = appStoreID
+        self.queryKey = queryKey
+        self.term = term
+        self.storefront = storefront
+        self.platform = platform
+        self.rankingAppCount = rankingAppCount
+        self.lastRefreshAt = lastRefreshAt
+        self.notes = notes
+        self.statusMessage = statusMessage
+        self.createdAt = createdAt
+    }
+
+    init(_ track: TrackedAppKeyword) {
+        self.init(
+            identityKey: track.identityKey,
+            appStoreID: track.appStoreID,
+            queryKey: track.queryKey,
+            term: track.term,
+            storefront: track.storefront,
+            platform: track.platform,
+            rankingAppCount: track.rankingAppCount,
+            lastRefreshAt: track.lastRefreshAt,
+            notes: track.notes,
+            statusMessage: track.statusMessage,
+            createdAt: track.createdAt
+        )
+    }
+
+    var id: String { identityKey }
+}
+
+struct KeywordWorkspaceRow: Identifiable, Equatable, Sendable {
     static let popularityStaleInterval: TimeInterval = 60 * 60 * 24 * 7
 
-    let track: TrackedAppKeyword
+    let track: KeywordTrackSnapshot
     let storefront: StorefrontDefinition?
     let metrics: KeywordMetricsSnapshot?
     let refreshStatus: KeywordRefreshStatusSnapshot
@@ -297,7 +355,7 @@ struct KeywordWorkspaceRow: Identifiable {
     let allRankingApps: [KeywordRankingAppSummary]
 
     init(
-        track: TrackedAppKeyword,
+        track: KeywordTrackSnapshot,
         storefront: StorefrontDefinition?,
         metrics: KeywordMetricsSnapshot?,
         refreshStatus: KeywordRefreshStatusSnapshot = .empty,
@@ -328,6 +386,28 @@ struct KeywordWorkspaceRow: Identifiable {
         }
         self.rankingApps = rankingApps
         self.allRankingApps = allRankingApps ?? rankingApps
+    }
+
+    init(
+        track: TrackedAppKeyword,
+        storefront: StorefrontDefinition?,
+        metrics: KeywordMetricsSnapshot?,
+        refreshStatus: KeywordRefreshStatusSnapshot = .empty,
+        latestSnapshot: KeywordRankingCrawlSummary?,
+        trendSnapshots: [KeywordRankingCrawlSummary],
+        rankingApps: [KeywordRankingAppSummary],
+        allRankingApps: [KeywordRankingAppSummary]? = nil
+    ) {
+        self.init(
+            track: KeywordTrackSnapshot(track),
+            storefront: storefront,
+            metrics: metrics,
+            refreshStatus: refreshStatus,
+            latestSnapshot: latestSnapshot,
+            trendSnapshots: trendSnapshots,
+            rankingApps: rankingApps,
+            allRankingApps: allRankingApps
+        )
     }
 
     init(
@@ -373,7 +453,25 @@ struct KeywordWorkspaceRow: Identifiable {
         )
     }
 
-    var id: PersistentIdentifier { track.persistentModelID }
+    var id: String { track.identityKey }
+
+    func updating(
+        metrics: KeywordMetricsSnapshot?,
+        refreshStatus: KeywordRefreshStatusSnapshot,
+        latestSnapshot: KeywordRankingCrawlSummary?,
+        trendSnapshots: [KeywordRankingCrawlSummary],
+        rankingApps: [KeywordRankingAppSummary]
+    ) -> Self {
+        Self(
+            track: track,
+            storefront: storefront,
+            metrics: metrics,
+            refreshStatus: refreshStatus,
+            latestSnapshot: latestSnapshot,
+            trendSnapshots: trendSnapshots,
+            rankingApps: rankingApps
+        )
+    }
 
     var keywordSortValue: String { track.term }
 
@@ -451,6 +549,11 @@ struct KeywordWorkspaceRow: Identifiable {
         }
 
         return "Ranking unchanged."
+    }
+
+    var trendCellAccessibilityValue: String {
+        let storefrontName = storefront?.name ?? track.storefront.uppercased()
+        return "\(trendAccessibilityText) \(storefrontName), \(track.platform.displayName)."
     }
 
     var trendColor: Color {
@@ -584,7 +687,7 @@ struct KeywordRankingCrawlSummary: Identifiable, Equatable, Sendable {
     }
 }
 
-struct KeywordRankingAppSummary: Identifiable, Sendable {
+struct KeywordRankingAppSummary: Identifiable, Equatable, Sendable {
     let id: Int64
     let position: Int
     let appStoreID: Int64
