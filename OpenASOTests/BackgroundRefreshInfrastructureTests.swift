@@ -7,6 +7,26 @@ import Testing
 @Suite(.timeLimit(.minutes(1)))
 struct BackgroundRefreshInfrastructureTests {
     @Test
+    func commandLineExecutionModesSuppressApplicationUI() {
+        let graphical = OpenASOExecutionMode(arguments: ["OpenASO"])
+        let mcp = OpenASOExecutionMode(arguments: [
+            "OpenASO",
+            OpenASOExecutionMode.mcpStdioArgument,
+        ])
+        let backgroundRefresh = OpenASOExecutionMode(arguments: [
+            "OpenASO",
+            BackgroundRefreshRuntime.argument,
+        ])
+
+        #expect(graphical == .graphical)
+        #expect(!graphical.suppressesApplicationUI)
+        #expect(mcp == .mcpStdio)
+        #expect(mcp.suppressesApplicationUI)
+        #expect(backgroundRefresh == .backgroundRefresh)
+        #expect(backgroundRefresh.suppressesApplicationUI)
+    }
+
+    @Test
     func enablingRegistersTheAgentAndPersistsItsVersion() async {
         let defaults = makeBackgroundRefreshDefaults()
         var serviceStatus = BackgroundRefreshAgentStatus.notRegistered

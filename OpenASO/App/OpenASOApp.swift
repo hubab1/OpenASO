@@ -10,12 +10,19 @@ struct OpenASOApp: App {
     private let startupState: OpenASOStartupState
 
     init() {
-        if Self.shouldRunBackgroundRefresh {
+        let executionMode = OpenASOExecutionMode(
+            arguments: ProcessInfo.processInfo.arguments
+        )
+        if executionMode.suppressesApplicationUI {
+            _ = NSApplication.shared.setActivationPolicy(.prohibited)
+        }
+
+        if executionMode == .backgroundRefresh {
             Self.runBackgroundRefreshAndExit()
         }
 
         let startupState = Self.makeStartupState()
-        if Self.shouldRunMCPStdio {
+        if executionMode == .mcpStdio {
             switch startupState {
             case .ready(_, let services):
                 Self.runMCPStdioAndExit(serverProvider: services.mcpServerProvider)
@@ -40,14 +47,6 @@ struct OpenASOApp: App {
                 diagnosticDescription: String(reflecting: error)
             ))
         }
-    }
-
-    private static var shouldRunMCPStdio: Bool {
-        ProcessInfo.processInfo.arguments.contains("--mcp-stdio")
-    }
-
-    private static var shouldRunBackgroundRefresh: Bool {
-        ProcessInfo.processInfo.arguments.contains(BackgroundRefreshRuntime.argument)
     }
 
     private static func runBackgroundRefreshAndExit() -> Never {
