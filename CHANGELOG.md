@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2 - 2026-08-08
+
+OpenASO 0.4.2 adds reliable scheduled daily refreshes that can run while the app is closed and hardens headless MCP operation.
+
+- Register a native macOS background agent for the existing daily refresh schedule.
+- Catch up after login or wake while avoiding duplicate in-app and background refreshes.
+- Show background service readiness and the latest persisted refresh result in Settings.
+- Preserve credential access for background runs through data-protection keychain migration.
+- Keep concurrent --mcp-stdio and scheduled-agent processes fully headless with prohibited macOS UI activation.
+- Default new installations to a 5:00 AM daily refresh while preserving existing saved times.
+
 ## 0.4.1 - 2026-08-08
 
 OpenASO 0.4.1 makes daily refreshes significantly more responsive and reliable for large keyword workspaces.
