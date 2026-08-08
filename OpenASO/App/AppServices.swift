@@ -2,6 +2,41 @@ import Foundation
 import Observation
 import SwiftData
 
+actor RankingMetadataEnrichmentWorkQueue {
+    typealias Handler = @Sendable (RankingMetadataEnrichmentRequest) async -> Void
+
+    private let handler: Handler
+    private var pendingRequests: [RankingMetadataEnrichmentRequest] = []
+    private var nextPendingIndex = 0
+    private var seenRequests = Set<RankingMetadataEnrichmentRequest>()
+    private var isDraining = false
+
+    init(handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    func enqueue(_ requests: [RankingMetadataEnrichmentRequest]) async {
+        for request in requests where seenRequests.insert(request).inserted {
+            pendingRequests.append(request)
+        }
+
+        guard !isDraining else { return }
+        isDraining = true
+        defer {
+            pendingRequests.removeAll(keepingCapacity: true)
+            nextPendingIndex = 0
+            isDraining = false
+        }
+
+        while nextPendingIndex < pendingRequests.count {
+            let request = pendingRequests[nextPendingIndex]
+            nextPendingIndex += 1
+            await handler(request)
+            seenRequests.remove(request)
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class AppServices {
@@ -174,74 +209,78 @@ final class AppServices {
             ?? backgroundModelStore.map {
                 KeywordResearchProjectCopyService(backgroundModelStore: $0)
             }
-        let metadataEnrichmentHandler: (@Sendable ([RankingMetadataEnrichmentRequest]) async -> Void)?
+        let metadataEnrichmentScheduler: (@Sendable ([RankingMetadataEnrichmentRequest]) -> Void)?
         if let backgroundModelStore {
-            metadataEnrichmentHandler = { requests in
-                for request in requests {
-                    let shouldEnrich = (try? await backgroundModelStore.read { modelContext in
-                        try catalogService.shouldEnrichStorefrontMetadata(
-                            appStoreID: request.appStoreID,
+            let metadataEnrichmentQueue = RankingMetadataEnrichmentWorkQueue { request in
+                let shouldEnrich = (try? await backgroundModelStore.read { modelContext in
+                    try catalogService.shouldEnrichStorefrontMetadata(
+                        appStoreID: request.appStoreID,
+                        storefrontCode: request.storefront,
+                        platform: request.platform,
+                        freshnessInterval: RankingRefreshCoordinator.metadataEnrichmentFreshnessInterval,
+                        in: modelContext
+                    )
+                }) ?? false
+                guard shouldEnrich else { return }
+
+                async let resolvedAppTask = try? resolver.resolve(
+                    appStoreID: request.appStoreID,
+                    storefrontCode: request.storefront
+                )
+                async let webMetadataTask = try? appStoreWebMetadataProvider.fetch(
+                    appStoreID: request.appStoreID,
+                    storefrontCode: request.storefront
+                )
+                let (resolvedApp, webMetadata) = await (resolvedAppTask, webMetadataTask)
+                guard resolvedApp != nil || webMetadata != nil else {
+                    return
+                }
+
+                try? await backgroundModelStore.write { modelContext in
+                    if let resolvedApp {
+                        _ = try catalogService.upsertStoreApp(
+                            from: resolvedApp,
                             storefrontCode: request.storefront,
-                            platform: request.platform,
-                            freshnessInterval: RankingRefreshCoordinator.metadataEnrichmentFreshnessInterval,
                             in: modelContext
                         )
-                    }) ?? false
-                    guard shouldEnrich else { continue }
-
-                    let resolvedApp = try? await resolver.resolve(
-                        appStoreID: request.appStoreID,
-                        storefrontCode: request.storefront
-                    )
-                    let webMetadata = try? await appStoreWebMetadataProvider.fetch(
-                        appStoreID: request.appStoreID,
-                        storefrontCode: request.storefront
-                    )
-                    guard resolvedApp != nil || webMetadata != nil else {
-                        continue
                     }
-
-                    try? await backgroundModelStore.write { modelContext in
-                        if let resolvedApp {
-                            _ = try catalogService.upsertStoreApp(
-                                from: resolvedApp,
-                                storefrontCode: request.storefront,
-                                in: modelContext
+                    if let webMetadata {
+                        let storeApp = try catalogService.upsertStoreApp(
+                            from: webMetadata,
+                            storefrontCode: request.storefront,
+                            in: modelContext
+                        )
+                        if webMetadata.ratingCount != nil || webMetadata.averageRating != nil || webMetadata.ratingCounts != nil {
+                            let result = AppStorefrontRatingResult(
+                                appStoreID: webMetadata.appStoreID,
+                                storefront: request.storefront,
+                                ratingCount: webMetadata.ratingCount,
+                                averageRating: webMetadata.averageRating,
+                                ratingCounts: webMetadata.ratingCounts,
+                                observedAt: .now,
+                                source: .appStorePage
                             )
-                        }
-                        if let webMetadata {
-                            let storeApp = try catalogService.upsertStoreApp(
-                                from: webMetadata,
-                                storefrontCode: request.storefront,
-                                in: modelContext
-                            )
-                            if webMetadata.ratingCount != nil || webMetadata.averageRating != nil || webMetadata.ratingCounts != nil {
-                                let result = AppStorefrontRatingResult(
-                                    appStoreID: webMetadata.appStoreID,
+                            appStorefrontRatingService.persist(
+                                AppStorefrontRatingRefreshOutcome(
                                     storefront: request.storefront,
-                                    ratingCount: webMetadata.ratingCount,
-                                    averageRating: webMetadata.averageRating,
-                                    ratingCounts: webMetadata.ratingCounts,
-                                    observedAt: .now,
-                                    source: .appStorePage
-                                )
-                                appStorefrontRatingService.persist(
-                                    AppStorefrontRatingRefreshOutcome(
-                                        storefront: request.storefront,
-                                        result: result,
-                                        error: nil
-                                    ),
-                                    for: storeApp,
-                                    in: modelContext
-                                )
-                            }
+                                    result: result,
+                                    error: nil
+                                ),
+                                for: storeApp,
+                                in: modelContext
+                            )
                         }
-                        try modelContext.save()
                     }
+                    try modelContext.save()
+                }
+            }
+            metadataEnrichmentScheduler = { requests in
+                Task {
+                    await metadataEnrichmentQueue.enqueue(requests)
                 }
             }
         } else {
-            metadataEnrichmentHandler = nil
+            metadataEnrichmentScheduler = nil
         }
         let refreshCoordinator = RankingRefreshCoordinator(
             rankingProvider: rankingProvider,
@@ -250,7 +289,7 @@ final class AppServices {
             refreshTriggerRecorder: { date in
                 await settingsStore.markRefreshTriggered(on: date)
             },
-            metadataEnrichmentHandler: metadataEnrichmentHandler
+            metadataEnrichmentScheduler: metadataEnrichmentScheduler
         )
         let keywordResearchRankingWorkflow = keywordResearchRankingWorkflow
             ?? backgroundModelStore.map {

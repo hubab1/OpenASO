@@ -409,6 +409,7 @@ struct KeywordTablePreview: View {
         KeywordTableView(
             rows: rows,
             isLoadingRows: false,
+            contentRevision: 0,
             trackedAppStoreID: trackedAppStoreID,
             chartSelectionScope: StorefrontFilter.all.id,
             insightsSummary: .months,

@@ -86,7 +86,7 @@ struct HeadlessRefreshServiceTests {
         trackedApp.name = "Mutated app name"
         trackedApp.storeApp.defaultStorefront = "fr"
 
-        #expect(plan.apps.map(\.appStoreID) == [100, 200, 300])
+        #expect(plan.apps.map(\.appStoreID) == [200, 100, 300])
 
         let fallbackPlan = try #require(plan.apps.first { $0.appStoreID == 100 })
         #expect(fallbackPlan.metadataRequest.requestedStorefronts == ["us"])

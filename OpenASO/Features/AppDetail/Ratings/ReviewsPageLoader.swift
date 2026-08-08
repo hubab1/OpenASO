@@ -23,17 +23,16 @@ struct ReviewsPageLoader: Sendable {
         let sourceRaw = source?.rawValue
 
         let reviews = try await backgroundModelStore.read { modelContext in
-            let descriptor = Self.makeDescriptor(
+            var descriptor = Self.makeDescriptor(
                 appStoreID: appStoreID,
                 storefrontCode: storefrontCode,
                 cutoffDate: cutoffDate,
-                rating: rating
+                rating: rating,
+                sourceRaw: sourceRaw
             )
-            let fetchedReviews = try modelContext.fetch(descriptor).map(AppStoreReviewValue.init)
-            let filteredReviews = sourceRaw.map { raw in
-                fetchedReviews.filter { $0.sourceRaw == raw }
-            } ?? fetchedReviews
-            return Array(filteredReviews.dropFirst(request.offset).prefix(fetchLimit))
+            descriptor.fetchOffset = request.offset
+            descriptor.fetchLimit = fetchLimit
+            return try modelContext.fetch(descriptor).map(AppStoreReviewValue.init)
         }
 
         return PaginatedListPage(
@@ -58,17 +57,10 @@ struct ReviewsPageLoader: Sendable {
                 appStoreID: appStoreID,
                 storefrontCode: storefrontCode,
                 cutoffDate: cutoffDate,
-                rating: rating
+                rating: rating,
+                sourceRaw: sourceRaw
             )
-
-            guard let sourceRaw else {
-                return try modelContext.fetchCount(descriptor)
-            }
-
-            return try modelContext.fetch(descriptor)
-                .lazy
-                .filter { $0.sourceRaw == sourceRaw }
-                .count
+            return try modelContext.fetchCount(descriptor)
         }
     }
 
@@ -76,80 +68,24 @@ struct ReviewsPageLoader: Sendable {
         appStoreID: Int64,
         storefrontCode: String?,
         cutoffDate: Date?,
-        rating: Int?
+        rating: Int?,
+        sourceRaw: String?
     ) -> FetchDescriptor<AppStorefrontReview> {
         let sortBy = [SortDescriptor(\AppStorefrontReview.reviewedAt, order: .reverse)]
-        let storefrontCodes = storefrontCode.map(StorefrontCatalog.storefrontCodeAliases)
+        let targetStorefronts = storefrontCode.map(StorefrontCatalog.storefrontCodeAliases) ?? []
+        let targetCutoffDate = cutoffDate ?? .distantPast
+        let targetRating = rating ?? 0
+        let targetSourceRaw = sourceRaw ?? ""
 
-        switch (storefrontCodes, cutoffDate, rating) {
-        case (.some(let targetStorefronts), .some(let targetCutoffDate), .some(let targetRating)):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                        && targetStorefronts.contains(review.storefront)
-                        && review.reviewedAt >= targetCutoffDate
-                        && review.rating == targetRating
-                },
-                sortBy: sortBy
-            )
-        case (.some(let targetStorefronts), .some(let targetCutoffDate), .none):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                        && targetStorefronts.contains(review.storefront)
-                        && review.reviewedAt >= targetCutoffDate
-                },
-                sortBy: sortBy
-            )
-        case (.some(let targetStorefronts), .none, .some(let targetRating)):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                        && targetStorefronts.contains(review.storefront)
-                        && review.rating == targetRating
-                },
-                sortBy: sortBy
-            )
-        case (.some(let targetStorefronts), .none, .none):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                        && targetStorefronts.contains(review.storefront)
-                },
-                sortBy: sortBy
-            )
-        case (.none, .some(let targetCutoffDate), .some(let targetRating)):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                        && review.reviewedAt >= targetCutoffDate
-                        && review.rating == targetRating
-                },
-                sortBy: sortBy
-            )
-        case (.none, .some(let targetCutoffDate), .none):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                        && review.reviewedAt >= targetCutoffDate
-                },
-                sortBy: sortBy
-            )
-        case (.none, .none, .some(let targetRating)):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                        && review.rating == targetRating
-                },
-                sortBy: sortBy
-            )
-        case (.none, .none, .none):
-            return FetchDescriptor(
-                predicate: #Predicate { review in
-                    review.appStoreID == appStoreID
-                },
-                sortBy: sortBy
-            )
-        }
+        return FetchDescriptor(
+            predicate: #Predicate { review in
+                review.appStoreID == appStoreID
+                    && (targetStorefronts.isEmpty || targetStorefronts.contains(review.storefront))
+                    && review.reviewedAt >= targetCutoffDate
+                    && (targetRating == 0 || review.rating == targetRating)
+                    && (targetSourceRaw.isEmpty || review.sourceRaw == targetSourceRaw)
+            },
+            sortBy: sortBy
+        )
     }
 }

@@ -249,10 +249,7 @@ struct KeywordWorkspaceProjectionTests {
             dateRangeID: TrendDateRange.allTime.id,
             tracks: [
                 .init(
-                    identityKey: track.identityKey,
-                    lastRefreshAt: track.lastRefreshAt,
-                    rankingAppCount: track.rankingAppCount,
-                    statusMessage: track.statusMessage
+                    identityKey: track.identityKey
                 )
             ]
         )
@@ -461,6 +458,34 @@ struct KeywordWorkspaceProjectionTests {
         filterer.succeedRequest(at: 0)
         await staleTask.value
         #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+    }
+
+    @Test
+    func completedFilterPublishesANewTableContentRevision() async {
+        let model = KeywordWorkspaceModel()
+        let id = materializationID(refreshToken: 1)
+        let focusRow = makeRow(term: "Focus Timer", appStoreID: 1)
+        let habitRow = makeRow(term: "Habit Tracker", appStoreID: 2)
+        let loadError = await model.materialize(
+            id: id,
+            initialFilters: filters()
+        ) {
+            [focusRow, habitRow]
+        }
+        #expect(loadError == nil)
+        let revisionBeforeFilter = model.contentRevision
+
+        await model.updateFilter(
+            id: KeywordWorkspaceProjection.FilterID(
+                materializationGeneration: model.materializationGeneration,
+                filters: filters(searchText: "habit")
+            )
+        ) { rows, filters in
+            KeywordWorkspaceProjection.filteredRows(rows, filters: filters)
+        }
+
+        #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+        #expect(model.contentRevision == revisionBeforeFilter + 1)
     }
 
     @Test

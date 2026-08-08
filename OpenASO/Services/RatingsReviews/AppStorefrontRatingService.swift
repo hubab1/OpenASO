@@ -3,6 +3,7 @@ import OSLog
 import SwiftData
 
 final class AppStorefrontRatingService: Sendable {
+    private static let fetchConcurrency = 4
     private let fetcher: AppStorefrontRatingFetcher
 
     init(httpClient: HTTPClient) {
@@ -45,7 +46,6 @@ final class AppStorefrontRatingService: Sendable {
         progress: (@Sendable (_ completed: Int, _ total: Int, _ failureCount: Int) async -> Void)? = nil
     ) async throws -> [AppStorefrontRatingRefreshOutcome] {
         try Task.checkCancellation()
-        var outcomes: [AppStorefrontRatingRefreshOutcome] = []
         let targetStorefronts = Self.normalizedStorefronts(from: storefronts)
 
         guard !targetStorefronts.isEmpty else {
@@ -66,67 +66,101 @@ final class AppStorefrontRatingService: Sendable {
         var failureCount = 0
         await progress?(0, targetStorefronts.count, 0)
         try Task.checkCancellation()
-        for storefront in targetStorefronts {
-            try Task.checkCancellation()
-            do {
-                OpenASOLog.ratings.debug(
-                    "Refreshing ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public)"
-                )
-                let result = try await fetcher.fetchRatings(
-                    appStoreID: appStoreID,
-                    storefront: storefront
-                )
-                try Task.checkCancellation()
-                OpenASOLog.ratings.info(
-                    "Fetched ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) ratingCount=\(result.ratingCount.map(String.init) ?? "nil", privacy: .public) averageRating=\(result.averageRating.map { String(format: "%.2f", $0) } ?? "nil", privacy: .public)"
-                )
-                outcomes.append(AppStorefrontRatingRefreshOutcome(storefront: storefront, result: result, error: nil))
-            } catch let unavailable as AppStorefrontRatingStorefrontUnavailable {
-                try Task.checkCancellation()
-                OpenASOLog.ratings.info(
-                    "Ratings unavailable in storefront storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) reason=\(unavailable.localizedDescription, privacy: .public)"
-                )
-                outcomes.append(AppStorefrontRatingRefreshOutcome(
-                    storefront: storefront,
-                    result: nil,
-                    error: nil,
-                    unavailabilityReason: unavailable.localizedDescription,
-                    clearsStoredRatings: true
-                ))
-            } catch let mismatch as AppStorefrontRatingStorefrontMismatch {
-                try Task.checkCancellation()
-                let mappedError = OpenASOError.providerUnavailable(mismatch.localizedDescription)
-                OpenASOLog.ratings.error(
-                    "Ratings storefront mismatch storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) actualStorefront=\(mismatch.actual, privacy: .public) finalURL=\(mismatch.finalURL ?? "nil", privacy: .public)"
-                )
-                outcomes.append(AppStorefrontRatingRefreshOutcome(
-                    storefront: storefront,
-                    result: nil,
-                    error: mappedError,
-                    clearsStoredRatings: true
-                ))
-                failureCount += 1
-            } catch {
-                if Task.isCancelled {
-                    throw CancellationError()
+        var outcomesByIndex: [Int: AppStorefrontRatingRefreshOutcome] = [:]
+        outcomesByIndex.reserveCapacity(targetStorefronts.count)
+
+        try await withThrowingTaskGroup(of: (Int, AppStorefrontRatingRefreshOutcome).self) { group in
+            var nextIndex = 0
+
+            func enqueueNext() {
+                guard nextIndex < targetStorefronts.count else { return }
+                let index = nextIndex
+                let storefront = targetStorefronts[index]
+                nextIndex += 1
+                group.addTask {
+                    let outcome = try await self.fetchOutcome(
+                        appStoreID: appStoreID,
+                        storefront: storefront
+                    )
+                    return (index, outcome)
                 }
-                let mappedError = OpenASOError.map(error)
-                OpenASOLog.ratings.error(
-                    "Ratings refresh failed storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) error=\(mappedError.localizedDescription, privacy: .public)"
-                )
-                outcomes.append(AppStorefrontRatingRefreshOutcome(
-                    storefront: storefront,
-                    result: nil,
-                    error: mappedError
-                ))
-                failureCount += 1
             }
-            completedCount += 1
-            await progress?(completedCount, targetStorefronts.count, failureCount)
-            try Task.checkCancellation()
+
+            for _ in 0..<min(Self.fetchConcurrency, targetStorefronts.count) {
+                enqueueNext()
+            }
+
+            while let (index, outcome) = try await group.next() {
+                try Task.checkCancellation()
+                outcomesByIndex[index] = outcome
+                completedCount += 1
+                if outcome.error != nil {
+                    failureCount += 1
+                }
+                await progress?(completedCount, targetStorefronts.count, failureCount)
+                enqueueNext()
+            }
         }
 
-        return outcomes
+        return targetStorefronts.indices.compactMap { outcomesByIndex[$0] }
+    }
+
+    private func fetchOutcome(
+        appStoreID: Int64,
+        storefront: String
+    ) async throws -> AppStorefrontRatingRefreshOutcome {
+        try Task.checkCancellation()
+        do {
+            OpenASOLog.ratings.debug(
+                "Refreshing ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public)"
+            )
+            let result = try await fetcher.fetchRatings(
+                appStoreID: appStoreID,
+                storefront: storefront
+            )
+            try Task.checkCancellation()
+            OpenASOLog.ratings.info(
+                "Fetched ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) ratingCount=\(result.ratingCount.map(String.init) ?? "nil", privacy: .public) averageRating=\(result.averageRating.map { String(format: "%.2f", $0) } ?? "nil", privacy: .public)"
+            )
+            return AppStorefrontRatingRefreshOutcome(storefront: storefront, result: result, error: nil)
+        } catch let unavailable as AppStorefrontRatingStorefrontUnavailable {
+            try Task.checkCancellation()
+            OpenASOLog.ratings.info(
+                "Ratings unavailable in storefront storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) reason=\(unavailable.localizedDescription, privacy: .public)"
+            )
+            return AppStorefrontRatingRefreshOutcome(
+                storefront: storefront,
+                result: nil,
+                error: nil,
+                unavailabilityReason: unavailable.localizedDescription,
+                clearsStoredRatings: true
+            )
+        } catch let mismatch as AppStorefrontRatingStorefrontMismatch {
+            try Task.checkCancellation()
+            let mappedError = OpenASOError.providerUnavailable(mismatch.localizedDescription)
+            OpenASOLog.ratings.error(
+                "Ratings storefront mismatch storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) actualStorefront=\(mismatch.actual, privacy: .public) finalURL=\(mismatch.finalURL ?? "nil", privacy: .public)"
+            )
+            return AppStorefrontRatingRefreshOutcome(
+                storefront: storefront,
+                result: nil,
+                error: mappedError,
+                clearsStoredRatings: true
+            )
+        } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            let mappedError = OpenASOError.map(error)
+            OpenASOLog.ratings.error(
+                "Ratings refresh failed storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) error=\(mappedError.localizedDescription, privacy: .public)"
+            )
+            return AppStorefrontRatingRefreshOutcome(
+                storefront: storefront,
+                result: nil,
+                error: mappedError
+            )
+        }
     }
 
     func persist(

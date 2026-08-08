@@ -234,6 +234,22 @@ struct AppStorefrontRatingServiceTests {
     }
 
     @Test
+    func ratingFetchesUseBoundedConcurrencyAndPreserveStorefrontOrder() async throws {
+        let client = ConcurrentRatingHTTPClient()
+        let service = AppStorefrontRatingService(httpClient: client)
+        let storefronts = ["us", "gb", "ca", "de", "fr", "jp"]
+
+        let outcomes = try await service.fetchRatingOutcomes(
+            appStoreID: 6_448_311_069,
+            appName: "ChatGPT",
+            storefronts: storefronts
+        )
+
+        #expect(outcomes.map(\.storefront) == storefronts.sorted())
+        #expect(await client.maximumConcurrentRequests == 4)
+    }
+
+    @Test
     func refreshRatingsTreatsLookupMissAsUnavailableStorefrontNotFailure() async throws {
         let container = try makeRatingContainer()
         let modelContext = ModelContext(container)
@@ -501,7 +517,7 @@ struct AppStorefrontRatingServiceTests {
 
         #expect(outcomes.map(\.storefront) == ["gb", "us"])
         #expect(outcomes.allSatisfy { $0.result == nil && $0.error != nil })
-        #expect(requestedURLs == [
+        #expect(requestedURLs.sorted() == [
             "https://itunes.apple.com/lookup?id=6448311069&country=gb",
             "https://itunes.apple.com/lookup?id=6448311069&country=us"
         ])
@@ -677,6 +693,84 @@ private actor RatingProgressRecorder {
 
     var failureCounts: [Int] {
         recordedValues.map(\.failureCount)
+    }
+}
+
+private actor ConcurrentRatingHTTPClient: HTTPClient {
+    private var activeRequests = 0
+    private(set) var maximumConcurrentRequests = 0
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        activeRequests += 1
+        maximumConcurrentRequests = max(maximumConcurrentRequests, activeRequests)
+        defer { activeRequests -= 1 }
+
+        try await Task.sleep(for: .milliseconds(25))
+        let url = try #require(request.url)
+        let payload = """
+        {
+          "resultCount": 1,
+          "results": [
+            {
+              "trackId": 6448311069,
+              "averageUserRating": 4.9,
+              "userRatingCount": 123400
+            }
+          ]
+        }
+        """
+        return (
+            Data(payload.utf8),
+            makeHTTPURLResponse(url: url, statusCode: 200)
+        )
+    }
+}
+
+@MainActor
+struct ReviewsPageLoaderTests {
+    @Test
+    func pageAndCountApplyFiltersInsideSwiftData() async throws {
+        let container = try makeRatingContainer()
+        let modelContext = ModelContext(container)
+        let storeApp = StoreApp(
+            appStoreID: 123,
+            bundleID: "com.example.app",
+            name: "Example",
+            sellerName: "Example Inc.",
+            iconURLString: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(storeApp)
+
+        for index in 0..<6 {
+            modelContext.insert(AppStorefrontReview(
+                appStoreID: storeApp.appStoreID,
+                storefront: index == 5 ? "gb" : "us",
+                reviewID: "review-\(index)",
+                reviewerName: "Reviewer \(index)",
+                title: "Review \(index)",
+                content: "Body \(index)",
+                rating: index == 4 ? 4 : 5,
+                reviewedAt: Date(timeIntervalSince1970: Double(1_000 + index)),
+                source: index == 3 ? .iTunesCustomerReviewsRSS : .appStoreConnect,
+                storeApp: storeApp
+            ))
+        }
+        try modelContext.save()
+
+        let loader = ReviewsPageLoader(
+            appStoreID: storeApp.appStoreID,
+            storefrontCode: "us",
+            cutoffDate: nil,
+            rating: 5,
+            source: .appStoreConnect,
+            backgroundModelStore: BackgroundModelStore(modelContainer: container)
+        )
+        let page = try await loader.load(request: PaginatedListPageRequest(offset: 1, limit: 2))
+
+        #expect(page.items.map(\.reviewID) == ["review-1", "review-0"])
+        #expect(!page.hasMore)
+        #expect(try await loader.count() == 3)
     }
 }
 

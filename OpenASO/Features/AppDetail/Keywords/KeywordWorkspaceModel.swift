@@ -15,6 +15,7 @@ final class KeywordWorkspaceModel {
         let insightsSummary: KeywordInsightsSummary
         let completedMaterializationID: KeywordWorkspaceProjection.MaterializationID?
         let materializationGeneration: Int
+        let contentRevision: Int
         let appliedFilterID: KeywordWorkspaceProjection.FilterID?
     }
 
@@ -24,6 +25,7 @@ final class KeywordWorkspaceModel {
         insightsSummary: .empty,
         completedMaterializationID: nil,
         materializationGeneration: 0,
+        contentRevision: 0,
         appliedFilterID: nil
     )
     @ObservationIgnored private var desiredFilters: KeywordWorkspaceProjection.Filters?
@@ -34,6 +36,7 @@ final class KeywordWorkspaceModel {
     var rows: [KeywordWorkspaceRow] { publication.rows }
     var insightsSummary: KeywordInsightsSummary { publication.insightsSummary }
     var materializationGeneration: Int { publication.materializationGeneration }
+    var contentRevision: Int { publication.contentRevision }
 
     func isLoading(for materializationID: KeywordWorkspaceProjection.MaterializationID) -> Bool {
         publication.completedMaterializationID != materializationID
@@ -137,6 +140,7 @@ final class KeywordWorkspaceModel {
                 insightsSummary: KeywordInsightsSummary(dataset: KeywordInsightsDataset(rows: rows)),
                 completedMaterializationID: publication.completedMaterializationID,
                 materializationGeneration: publication.materializationGeneration,
+                contentRevision: publication.contentRevision &+ 1,
                 appliedFilterID: id
             )
         } catch {
@@ -157,6 +161,7 @@ final class KeywordWorkspaceModel {
             insightsSummary: KeywordInsightsSummary(dataset: KeywordInsightsDataset(rows: rows)),
             completedMaterializationID: completedMaterializationID,
             materializationGeneration: nextGeneration,
+            contentRevision: publication.contentRevision &+ 1,
             appliedFilterID: KeywordWorkspaceProjection.FilterID(
                 materializationGeneration: nextGeneration,
                 filters: filters

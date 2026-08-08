@@ -322,7 +322,10 @@ struct KeywordRankingListSheet: View {
                 AppMetadataRefreshRequest(
                     appStoreID: row.appStoreID,
                     requestedStorefronts: [storefrontCode]
-                )
+                ),
+                presentationScope: row.appStoreID == trackedAppStoreID
+                    ? .trackedApp
+                    : .competitors(ownerAppStoreID: trackedAppStoreID)
             )
         }
         .disabled(services.appMetadataRefreshProgressStore.isRunning)
@@ -1337,7 +1340,10 @@ private struct KeywordRankingScreenshotRow: View {
                     AppMetadataRefreshRequest(
                         appStoreID: row.appStoreID,
                         requestedStorefronts: [storefrontCode]
-                    )
+                    ),
+                    presentationScope: row.appStoreID == trackedAppStoreID
+                        ? .trackedApp
+                        : .competitors(ownerAppStoreID: trackedAppStoreID)
                 )
             }
             .disabled(metadataProgressStore.isRunning)

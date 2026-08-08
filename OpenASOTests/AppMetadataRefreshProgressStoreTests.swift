@@ -51,6 +51,7 @@ struct AppMetadataRefreshProgressStoreTests {
         await store.waitForCurrentBatch()
 
         #expect(store.status == .succeeded)
+        #expect(store.batch?.presentationScope == .trackedApp)
         #expect(store.batch?.storefronts.map(\.storefront) == ["us", "jp"])
         #expect(store.batch?.storefronts.map(\.providers).map { rows in
             rows.map(\.provider)
@@ -172,6 +173,29 @@ struct AppMetadataRefreshProgressStoreTests {
         #expect(store.dismiss())
         #expect(store.status == .idle)
         #expect(store.batch == nil)
+    }
+
+    @Test
+    func competitorPresentationScopeIsRetainedWhenRetrying() async {
+        let controller = ControlledMetadataRefreshOperation()
+        let store = makeStore(controller: controller)
+        let request = AppMetadataRefreshRequest(appStoreID: appStoreID)
+        let presentationScope = AppMetadataRefreshProgressStore.PresentationScope.competitors(
+            ownerAppStoreID: 42
+        )
+
+        #expect(store.start(request, presentationScope: presentationScope))
+        await controller.waitForInvocation(at: 0)
+        #expect(store.batch?.presentationScope == presentationScope)
+        await controller.fail(MetadataProgressStoreTestError.setup, invocation: 0)
+        await store.waitForCurrentBatch()
+
+        #expect(store.retry())
+        await controller.waitForInvocation(at: 1)
+        #expect(store.batch?.presentationScope == presentationScope)
+
+        await controller.fail(MetadataProgressStoreTestError.setup, invocation: 1)
+        await store.waitForCurrentBatch()
     }
 
     @Test

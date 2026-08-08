@@ -83,12 +83,8 @@ struct AppKeywordsView: View {
     }
 
     private func materializationID(
-        tracks: [TrackedAppKeyword],
-        refreshStatuses: [TrackedKeywordRefreshStatus]
+        tracks: [TrackedAppKeyword]
     ) -> KeywordWorkspaceProjection.MaterializationID {
-        let statusesByIdentityKey = TrackedKeywordRefreshStatusStore.snapshots(
-            from: refreshStatuses
-        )
         return KeywordWorkspaceProjection.MaterializationID(
             refreshToken: refreshToken,
             backgroundStoreRevision: services.backgroundModelStoreRevision,
@@ -97,14 +93,8 @@ struct AppKeywordsView: View {
             platformFilterID: selectedPlatformFilter.id,
             dateRangeID: selectedDateRange.id,
             tracks: tracks.map { track in
-                KeywordWorkspaceProjection.MaterializationID.TrackRevision(
-                    identityKey: track.identityKey,
-                    lastRefreshAt: track.lastRefreshAt,
-                    rankingAppCount: track.rankingAppCount,
-                    statusMessage: TrackedKeywordRefreshStatusStore.snapshot(
-                        for: track,
-                        persisted: statusesByIdentityKey[track.identityKey]
-                    ).displayMessage
+                KeywordWorkspaceProjection.MaterializationID.TrackIdentity(
+                    identityKey: track.identityKey
                 )
             }
         )
@@ -172,10 +162,7 @@ struct AppKeywordsView: View {
     var body: some View {
         let queriedTracks = tracks
         let queriedRefreshStatuses = refreshStatuses
-        let targetMaterializationID = materializationID(
-            tracks: queriedTracks,
-            refreshStatuses: queriedRefreshStatuses
-        )
+        let targetMaterializationID = materializationID(tracks: queriedTracks)
         let targetFilterID = filterID
         let rows = workspaceModel.rows
         let storefronts = storefrontDefinitions
@@ -192,6 +179,7 @@ struct AppKeywordsView: View {
                 KeywordTableView(
                     rows: rows,
                     isLoadingRows: workspaceModel.isLoading(for: targetMaterializationID),
+                    contentRevision: workspaceModel.contentRevision,
                     trackedAppStoreID: trackedApp.appStoreID,
                     chartSelectionScope: selectedStorefrontFilter.id,
                     insightsSummary: workspaceModel.insightsSummary,
@@ -200,6 +188,7 @@ struct AppKeywordsView: View {
                     appCatalogService: services.appCatalogService,
                     appIconStore: services.appIconStore
                 )
+                    .equatable()
                     .frame(maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
                     .layoutPriority(1)
             }

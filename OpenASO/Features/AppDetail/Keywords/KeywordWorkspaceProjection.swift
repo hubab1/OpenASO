@@ -2,11 +2,8 @@ import Foundation
 
 enum KeywordWorkspaceProjection {
     struct MaterializationID: Hashable, Sendable {
-        struct TrackRevision: Hashable, Sendable {
+        struct TrackIdentity: Hashable, Sendable {
             let identityKey: String
-            let lastRefreshAt: Date?
-            let rankingAppCount: Int?
-            let statusMessage: String?
         }
 
         let refreshToken: Int
@@ -15,7 +12,7 @@ enum KeywordWorkspaceProjection {
         let storefrontFilterID: String
         let platformFilterID: String
         let dateRangeID: String
-        let tracks: [TrackRevision]
+        let tracks: [TrackIdentity]
     }
 
     struct Filters: Hashable, Sendable {

@@ -10,7 +10,7 @@ struct AppDetailRefreshAppSnapshot: Sendable {
     let defaultPlatform: AppPlatform
 }
 
-enum AppDetailRefreshWorkspace: Sendable {
+enum AppDetailRefreshWorkspace: Sendable, Equatable {
     case keywords
     case ratings
 }
@@ -89,6 +89,7 @@ private struct RankingPersistenceBatchOutcome: Sendable {
     let outcomes: [KeywordBackgroundRefreshOutcome]
     let statsRebuildRequests: Set<RankingStatsRebuildRequest>
     let metadataEnrichmentPageResults: [RankingRefreshPageResult]
+    let catalogEvidenceFingerprints: Set<RankingCatalogEvidenceFingerprint>
 
     var failureCount: Int {
         outcomes.filter { $0.error != nil }.count
@@ -179,7 +180,7 @@ private actor AppDetailRefreshQueue {
 
 final class AppDetailRefreshService: Sendable {
     private static let rankingFetchConcurrency = 4
-    private static let rankingPersistenceBatchSize = 5
+    private static let rankingPersistenceBatchSize = 10
 
     private let refreshQueue = AppDetailRefreshQueue()
     private let backgroundModelStore: BackgroundModelStore
@@ -307,29 +308,25 @@ final class AppDetailRefreshService: Sendable {
                 let keywordRefreshResult: KeywordRefreshResult
                 let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
                 let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
-
-                switch request.workspace {
-                case .keywords:
-                    keywordRefreshResult = try await refreshKeywords(request)
-                    if request.refreshRatings || request.refreshReviews {
-                        (ratingOutcomes, reviewOutcomes) = try await refreshRatingsAndReviews(request)
-                    } else {
-                        await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                        await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                        ratingOutcomes = []
-                        reviewOutcomes = []
-                    }
-                case .ratings:
-                    if request.refreshRatings || request.refreshReviews {
-                        (ratingOutcomes, reviewOutcomes) = try await refreshRatingsAndReviews(request)
-                    } else {
-                        await recordStage(.ratings, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                        await recordStage(.reviews, attemptedCount: 0, failureCount: 0, isSkipped: true)
-                        ratingOutcomes = []
-                        reviewOutcomes = []
-                    }
-                    keywordRefreshResult = try await refreshKeywords(request)
-                }
+                let hasKeywordWork = request.refreshKeywords && !request.trackIdentityKeys.isEmpty
+                let hasRatingsReviewsWork = request.refreshRatings || request.refreshReviews
+                async let keywordTask = refreshKeywords(
+                    request,
+                    updatesPhase: hasKeywordWork
+                        && (request.workspace == .keywords || !hasRatingsReviewsWork)
+                )
+                async let ratingsReviewsTask = refreshRatingsAndReviews(
+                    request,
+                    updatesPhase: hasRatingsReviewsWork
+                        && (request.workspace == .ratings || !hasKeywordWork)
+                )
+                let (resolvedKeywordResult, ratingsReviewsResult) = try await (
+                    keywordTask,
+                    ratingsReviewsTask
+                )
+                keywordRefreshResult = resolvedKeywordResult
+                ratingOutcomes = ratingsReviewsResult.0
+                reviewOutcomes = ratingsReviewsResult.1
 
                 try Task.checkCancellation()
                 let firstError = firstRefreshError(
@@ -373,7 +370,8 @@ final class AppDetailRefreshService: Sendable {
     }
 
     private func refreshKeywords(
-        _ request: AppDetailRefreshRequest
+        _ request: AppDetailRefreshRequest,
+        updatesPhase: Bool
     ) async throws -> KeywordRefreshResult {
         try Task.checkCancellation()
         guard request.refreshKeywords, !request.trackIdentityKeys.isEmpty else {
@@ -388,7 +386,9 @@ final class AppDetailRefreshService: Sendable {
         var didRecordRankingStage = false
         var didRecordMetricsStage = false
         do {
-            await progressStore?.updatePhase(.refreshingKeywords)
+            if updatesPhase {
+                await progressStore?.updatePhase(.refreshingKeywords)
+            }
             let (rankingRequests, missingOutcomes) = try await backgroundModelStore.read { modelContext in
                 try Task.checkCancellation()
                 let targetIdentityKeys = request.trackIdentityKeys
@@ -440,7 +440,9 @@ final class AppDetailRefreshService: Sendable {
 
             let metricsError: OpenASOError?
             if request.refreshMetrics {
-                await progressStore?.updatePhase(.refreshingMetrics)
+                if updatesPhase {
+                    await progressStore?.updatePhase(.refreshingMetrics)
+                }
                 do {
                     try Task.checkCancellation()
                     let metricResult = try await keywordMetricsService.refreshMetricsBatch(
@@ -563,6 +565,7 @@ final class AppDetailRefreshService: Sendable {
         var outcomes: [KeywordBackgroundRefreshOutcome] = []
         var statsRebuildRequests = Set<RankingStatsRebuildRequest>()
         var pendingPageResults: [RankingRefreshPageResult] = []
+        var persistedCatalogEvidenceFingerprints = Set<RankingCatalogEvidenceFingerprint>()
         var completedCount = 0
         var failureCount = 0
 
@@ -572,9 +575,15 @@ final class AppDetailRefreshService: Sendable {
             try Task.checkCancellation()
             let pageResults = pendingPageResults
             pendingPageResults.removeAll(keepingCapacity: true)
-            let batchOutcome = try await persistRankingPageBatch(pageResults)
+            let batchOutcome = try await persistRankingPageBatch(
+                pageResults,
+                excludingCatalogEvidence: persistedCatalogEvidenceFingerprints
+            )
             outcomes.append(contentsOf: batchOutcome.outcomes)
             statsRebuildRequests.formUnion(batchOutcome.statsRebuildRequests)
+            persistedCatalogEvidenceFingerprints.formUnion(
+                batchOutcome.catalogEvidenceFingerprints
+            )
             failureCount += batchOutcome.failureCount
             for pageResult in batchOutcome.metadataEnrichmentPageResults {
                 try Task.checkCancellation()
@@ -706,7 +715,8 @@ final class AppDetailRefreshService: Sendable {
     }
 
     private func persistRankingPageBatch(
-        _ pageResults: [RankingRefreshPageResult]
+        _ pageResults: [RankingRefreshPageResult],
+        excludingCatalogEvidence persistedCatalogEvidenceFingerprints: Set<RankingCatalogEvidenceFingerprint>
     ) async throws -> RankingPersistenceBatchOutcome {
         try Task.checkCancellation()
         do {
@@ -715,12 +725,26 @@ final class AppDetailRefreshService: Sendable {
                 var outcomes: [KeywordBackgroundRefreshOutcome] = []
                 var statsRebuildRequests = Set<RankingStatsRebuildRequest>()
                 var metadataEnrichmentPageResults: [RankingRefreshPageResult] = []
+                var catalogEvidenceFingerprints = persistedCatalogEvidenceFingerprints
+                var newCatalogEvidenceFingerprints = Set<RankingCatalogEvidenceFingerprint>()
 
                 for pageResult in pageResults {
+                    var catalogEvidenceAppStoreIDs = Set<Int64>()
+                    for item in pageResult.page.items {
+                        let fingerprint = RankingCatalogEvidenceFingerprint(
+                            item: item,
+                            pageResult: pageResult
+                        )
+                        if catalogEvidenceFingerprints.insert(fingerprint).inserted {
+                            newCatalogEvidenceFingerprints.insert(fingerprint)
+                            catalogEvidenceAppStoreIDs.insert(item.appStoreID)
+                        }
+                    }
                     let persistence = try refreshCoordinator.persistRankingPageTransaction(
                         pageResult,
                         in: modelContext,
-                        rebuildDerivedStats: false
+                        rebuildDerivedStats: false,
+                        catalogEvidenceAppStoreIDs: catalogEvidenceAppStoreIDs
                     )
                     if let statsRebuildRequest = RankingStatsRebuildRequest(pageRequest: pageResult.request) {
                         statsRebuildRequests.insert(statsRebuildRequest)
@@ -737,7 +761,8 @@ final class AppDetailRefreshService: Sendable {
                 return RankingPersistenceBatchOutcome(
                     outcomes: outcomes,
                     statsRebuildRequests: statsRebuildRequests,
-                    metadataEnrichmentPageResults: metadataEnrichmentPageResults
+                    metadataEnrichmentPageResults: metadataEnrichmentPageResults,
+                    catalogEvidenceFingerprints: newCatalogEvidenceFingerprints
                 )
             }
             try Task.checkCancellation()
@@ -770,13 +795,15 @@ final class AppDetailRefreshService: Sendable {
                     KeywordBackgroundRefreshOutcome(trackIdentityKey: $0.request.identityKey, error: mappedError)
                 },
                 statsRebuildRequests: [],
-                metadataEnrichmentPageResults: []
+                metadataEnrichmentPageResults: [],
+                catalogEvidenceFingerprints: []
             )
         }
     }
 
     private func refreshRatingsAndReviews(
-        _ request: AppDetailRefreshRequest
+        _ request: AppDetailRefreshRequest,
+        updatesPhase: Bool
     ) async throws -> ([AppStorefrontRatingRefreshOutcome], [AppStorefrontReviewRefreshOutcome]) {
         try Task.checkCancellation()
         guard request.refreshRatings || request.refreshReviews else {
@@ -793,7 +820,9 @@ final class AppDetailRefreshService: Sendable {
             let storefrontCodes = request.storefrontSelection.codes
             let ratingOutcomes: [AppStorefrontRatingRefreshOutcome]
             if request.refreshRatings {
-                await progressStore?.updatePhase(.refreshingRatings)
+                if updatesPhase {
+                    await progressStore?.updatePhase(.refreshingRatings)
+                }
                 ratingOutcomes = try await appStorefrontRatingService.fetchRatingOutcomes(
                     appStoreID: request.app.appStoreID,
                     appName: request.app.name,
@@ -827,7 +856,9 @@ final class AppDetailRefreshService: Sendable {
             let reviewOutcomes: [AppStorefrontReviewRefreshOutcome]
             if request.refreshReviews {
                 try Task.checkCancellation()
-                await progressStore?.updatePhase(.refreshingReviews)
+                if updatesPhase {
+                    await progressStore?.updatePhase(.refreshingReviews)
+                }
                 reviewOutcomes = try await refreshReviews(
                     request: request,
                     storefrontCodes: storefrontCodes

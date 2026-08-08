@@ -212,12 +212,28 @@ struct RootSidebarView: View {
     private var footer: some View {
         VStack(spacing: 8) {
             if let metadataBatch = services.appMetadataRefreshProgressStore.batch {
-                SidebarMetadataRefreshProgressView(
-                    store: services.appMetadataRefreshProgressStore,
-                    appName: trackedApps.first {
+                switch metadataBatch.presentationScope {
+                case .trackedApp:
+                    if let trackedApp = trackedApps.first(where: {
                         $0.appStoreID == metadataBatch.request.appStoreID
-                    }?.name ?? "App \(metadataBatch.request.appStoreID)"
-                )
+                    }) {
+                        SidebarMetadataRefreshProgressView(
+                            store: services.appMetadataRefreshProgressStore,
+                            appName: trackedApp.name,
+                            activity: .appStoreInformation
+                        )
+                    }
+                case .competitors(let ownerAppStoreID):
+                    if let trackedApp = trackedApps.first(where: {
+                        $0.appStoreID == ownerAppStoreID
+                    }) {
+                        SidebarMetadataRefreshProgressView(
+                            store: services.appMetadataRefreshProgressStore,
+                            appName: trackedApp.name,
+                            activity: .competitors
+                        )
+                    }
+                }
             }
 
             if let activeRefresh = services.refreshProgressStore.activeRefresh {
@@ -727,9 +743,15 @@ private struct SidebarAlertContext: Identifiable {
     let message: String
 }
 
+private enum SidebarMetadataRefreshActivity: Equatable {
+    case appStoreInformation
+    case competitors
+}
+
 private struct SidebarMetadataRefreshProgressView: View {
     let store: AppMetadataRefreshProgressStore
     let appName: String
+    let activity: SidebarMetadataRefreshActivity
 
     @State private var showsDetails = false
 
@@ -758,10 +780,30 @@ private struct SidebarMetadataRefreshProgressView: View {
                         total: Double(max(batch.storefronts.count, 1))
                     )
                     .controlSize(.small)
-                    .accessibilityLabel("Refreshing App Store information for \(appName)")
+                    .accessibilityLabel(progressAccessibilityLabel)
                     .accessibilityValue(
                         "\(batch.completedStorefrontCount) of \(batch.storefronts.count) storefronts complete"
                     )
+                }
+
+                if activity == .competitors {
+                    HStack(spacing: 8) {
+                        Image(systemName: statusSymbol)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(statusTint)
+                            .frame(width: 12)
+                            .accessibilityHidden(true)
+
+                        Text("Competitors")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Spacer(minLength: 6)
+
+                        Text(competitorSummary(for: batch))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 if let message = batch.message {
@@ -860,6 +902,10 @@ private struct SidebarMetadataRefreshProgressView: View {
     private func statusTitle(
         for batch: AppMetadataRefreshProgressStore.Batch
     ) -> String {
+        if activity == .competitors {
+            return competitorStatusTitle
+        }
+
         switch store.status {
         case .idle:
             return "Ready"
@@ -877,6 +923,59 @@ private struct SidebarMetadataRefreshProgressView: View {
             return "App Store information was not updated"
         case .cancelled:
             return "Refresh stopped"
+        }
+    }
+
+    private var competitorStatusTitle: String {
+        switch store.status {
+        case .idle:
+            return "Ready"
+        case .preparing:
+            return "Preparing competitor refresh"
+        case .refreshing:
+            return "Refreshing competitor data"
+        case .cancelling:
+            return "Stopping competitor refresh"
+        case .succeeded:
+            return "Competitor data updated"
+        case .partial:
+            return "Competitor data updated with warnings"
+        case .failed:
+            return "Competitor data was not updated"
+        case .cancelled:
+            return "Competitor refresh stopped"
+        }
+    }
+
+    private var progressAccessibilityLabel: String {
+        switch activity {
+        case .appStoreInformation:
+            return "Refreshing App Store information for \(appName)"
+        case .competitors:
+            return "Refreshing competitor information for \(appName)"
+        }
+    }
+
+    private func competitorSummary(
+        for batch: AppMetadataRefreshProgressStore.Batch
+    ) -> String {
+        switch store.status {
+        case .idle:
+            return "Ready"
+        case .preparing:
+            return "Pending"
+        case .refreshing:
+            return "\(batch.completedStorefrontCount)/\(batch.storefronts.count)"
+        case .cancelling:
+            return "Stopping"
+        case .succeeded:
+            return "Updated"
+        case .partial:
+            return "Warnings"
+        case .failed:
+            return "Failed"
+        case .cancelled:
+            return "Stopped"
         }
     }
 

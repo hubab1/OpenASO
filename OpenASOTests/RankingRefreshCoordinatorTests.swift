@@ -381,6 +381,176 @@ struct RankingRefreshCoordinatorTests {
     }
 
     @Test
+    func repeatedCatalogEvidenceCanBeSkippedWithoutDroppingRankingRows() throws {
+        let container = try makeInMemoryContainer()
+        let modelContext = ModelContext(container)
+        modelContext.autosaveEnabled = false
+        let trackedApp = TrackedApp(
+            appStoreID: 710,
+            bundleID: "example.tracked.710",
+            name: "Tracked",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        let track = try makeTrackedAppKeyword(
+            term: "deduplicated catalog evidence",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        trackedApp.keywordTracks.append(track)
+        modelContext.insert(trackedApp)
+        modelContext.insert(track)
+        try modelContext.save()
+
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: StubRankingProvider(
+                page: SearchRankingPage(items: [], source: .appStoreWeb)
+            ),
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        )
+        let competitorID: Int64 = 711
+        let pageResult = RankingRefreshPageResult(
+            request: RankingRefreshRequest(track: track),
+            page: SearchRankingPage(
+                items: [SearchRankingItem(
+                    position: 1,
+                    appStoreID: competitorID,
+                    bundleID: "example.result.711",
+                    name: "Repeated result",
+                    sellerName: "Example",
+                    screenshotURLs: ["https://example.com/repeated.png"],
+                    ratingCount: 10,
+                    averageRating: 4.5
+                )],
+                source: .appStoreWeb
+            ),
+            searchedAt: Date(timeIntervalSince1970: 1_900_000_000),
+            observedHour: nil,
+            submissionCount: 1,
+            winningCount: 1,
+            confidence: "single_source"
+        )
+
+        _ = try coordinator.persistRankingPageTransaction(
+            pageResult,
+            in: modelContext,
+            rebuildDerivedStats: false,
+            catalogEvidenceAppStoreIDs: []
+        )
+        try modelContext.save()
+
+        #expect(try modelContext.fetch(FetchDescriptor<KeywordAppRanking>()).contains {
+            $0.appStoreID == competitorID
+        })
+        #expect(try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>()).contains {
+            $0.appStoreID == competitorID
+        })
+        let storedApps = try modelContext.fetch(FetchDescriptor<StoreApp>())
+        let storedScreenshots = try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>())
+        let storedRatings = try modelContext.fetch(FetchDescriptor<LatestAppRating>())
+
+        #expect(!storedApps.contains {
+            $0.appStoreID == competitorID
+        })
+        #expect(!storedScreenshots.contains {
+            $0.appStoreID == competitorID
+        })
+        #expect(!storedRatings.contains {
+            $0.appStoreID == competitorID
+        })
+    }
+
+    @Test
+    func catalogEvidenceFingerprintIgnoresRankButDetectsMetadataChanges() {
+        let request = RankingRefreshRequest(
+            identityKey: "tracked::us::iphone",
+            queryKey: "query::us::iphone",
+            term: "focus timer",
+            storefront: "us",
+            platform: .iphone
+        )
+        let baseItem = SearchRankingItem(
+            position: 1,
+            appStoreID: 711,
+            bundleID: "example.result.711",
+            name: "Repeated result",
+            sellerName: "Example",
+            screenshotURLs: ["https://example.com/repeated.png"],
+            ratingCount: 10,
+            averageRating: 4.5
+        )
+        let movedItem = SearchRankingItem(
+            position: 8,
+            appStoreID: 711,
+            bundleID: "example.result.711",
+            name: "Repeated result",
+            sellerName: "Example",
+            screenshotURLs: ["https://example.com/repeated.png"],
+            ratingCount: 10,
+            averageRating: 4.5
+        )
+        let changedItem = SearchRankingItem(
+            position: 8,
+            appStoreID: 711,
+            bundleID: "example.result.711",
+            name: "Updated result",
+            sellerName: "Example",
+            screenshotURLs: ["https://example.com/repeated.png"],
+            ratingCount: 10,
+            averageRating: 4.5
+        )
+        func pageResult(for item: SearchRankingItem) -> RankingRefreshPageResult {
+            RankingRefreshPageResult(
+                request: request,
+                page: SearchRankingPage(items: [item], source: .appStoreWeb),
+                searchedAt: Date(timeIntervalSince1970: 1_900_000_000),
+                observedHour: nil,
+                submissionCount: 1,
+                winningCount: 1,
+                confidence: "single_source"
+            )
+        }
+
+        let base = RankingCatalogEvidenceFingerprint(item: baseItem, pageResult: pageResult(for: baseItem))
+        let moved = RankingCatalogEvidenceFingerprint(item: movedItem, pageResult: pageResult(for: movedItem))
+        let changed = RankingCatalogEvidenceFingerprint(item: changedItem, pageResult: pageResult(for: changedItem))
+
+        #expect(base == moved)
+        #expect(base != changed)
+    }
+
+    @Test
+    func metadataEnrichmentQueueDeduplicatesOverlappingBatches() async {
+        let recorder = RankingMetadataEnrichmentRequestRecorder()
+        let queue = RankingMetadataEnrichmentWorkQueue { request in
+            await recorder.record(request)
+        }
+        let first = RankingMetadataEnrichmentRequest(
+            appStoreID: 1,
+            storefront: "us",
+            platform: .iphone
+        )
+        let second = RankingMetadataEnrichmentRequest(
+            appStoreID: 2,
+            storefront: "us",
+            platform: .iphone
+        )
+
+        let firstBatch = Task {
+            await queue.enqueue([first, first, second])
+        }
+        await recorder.waitForFirstRequest()
+        await queue.enqueue([second, first])
+        await recorder.releaseFirstRequest()
+        await firstBatch.value
+
+        #expect(await recorder.values() == [first, second])
+
+        await queue.enqueue([first])
+        #expect(await recorder.values() == [first, second, first])
+    }
+
+    @Test
     func persistenceFailureAfterMutationRollsBackTheEntireRefresh() throws {
         let container = try makeInMemoryContainer()
         let modelContext = ModelContext(container)
@@ -1408,6 +1578,39 @@ struct RankingRefreshCoordinatorTests {
         #expect(codes.contains("zm"))
         #expect(storefronts.first(where: { $0.code == "us" })?.name == "United States")
         #expect(storefronts.first(where: { $0.code == "us" })?.flagEmoji == "🇺🇸")
+    }
+}
+
+private actor RankingMetadataEnrichmentRequestRecorder {
+    private var requests: [RankingMetadataEnrichmentRequest] = []
+    private var firstRequestContinuation: CheckedContinuation<Void, Never>?
+    private var firstRequestWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func record(_ request: RankingMetadataEnrichmentRequest) async {
+        requests.append(request)
+        guard requests.count == 1 else { return }
+
+        await withCheckedContinuation { continuation in
+            firstRequestContinuation = continuation
+            firstRequestWaiters.forEach { $0.resume() }
+            firstRequestWaiters.removeAll()
+        }
+    }
+
+    func waitForFirstRequest() async {
+        guard requests.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            firstRequestWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirstRequest() {
+        firstRequestContinuation?.resume()
+        firstRequestContinuation = nil
+    }
+
+    func values() -> [RankingMetadataEnrichmentRequest] {
+        requests
     }
 }
 

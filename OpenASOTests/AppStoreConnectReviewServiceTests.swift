@@ -427,6 +427,25 @@ struct AppStoreConnectReviewServiceTests {
         #expect(try modelContext.fetch(FetchDescriptor<AppStorefrontReview>()).isEmpty)
     }
 
+    @Test
+    func resolveAppCachesOwnershipForRepeatedScreenVisits() async throws {
+        var requestCount = 0
+        let service = try makeService { request in
+            requestCount += 1
+            let url = try #require(request.url)
+            return (
+                Data(Self.appResponseJSON(id: "asc-app-1").utf8),
+                makeHTTPURLResponse(url: url, statusCode: 200)
+            )
+        }
+
+        let first = try await service.resolveApp(bundleID: "com.example.app")
+        let second = try await service.resolveApp(bundleID: "com.example.app")
+
+        #expect(first == second)
+        #expect(requestCount == 1)
+    }
+
     private func makeService() -> AppStoreConnectReviewService {
         let store = AppStoreConnectCredentialStore(defaults: .previewSuiteForTests(), keychain: InMemoryKeychainService())
         return AppStoreConnectReviewService(

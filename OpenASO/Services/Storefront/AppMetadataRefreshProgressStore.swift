@@ -40,6 +40,11 @@ final class AppMetadataRefreshProgressStore {
         }
     }
 
+    enum PresentationScope: Sendable, Equatable {
+        case trackedApp
+        case competitors(ownerAppStoreID: Int64)
+    }
+
     struct ProviderRow: Sendable, Equatable, Identifiable {
         enum State: Sendable, Equatable {
             case queued
@@ -113,6 +118,7 @@ final class AppMetadataRefreshProgressStore {
     struct Batch: Sendable, Equatable, Identifiable {
         let id: UUID
         let request: AppMetadataRefreshRequest
+        let presentationScope: PresentationScope
         var storefronts: [StorefrontRow]
         var result: AppMetadataRefreshResult?
         var message: String?
@@ -195,7 +201,10 @@ final class AppMetadataRefreshProgressStore {
     }
 
     @discardableResult
-    func start(_ request: AppMetadataRefreshRequest) -> Bool {
+    func start(
+        _ request: AppMetadataRefreshRequest,
+        presentationScope: PresentationScope = .trackedApp
+    ) -> Bool {
         guard !status.isRunning else { return false }
         if status.isTerminal {
             clearTerminalBatch()
@@ -209,6 +218,7 @@ final class AppMetadataRefreshProgressStore {
         batch = Batch(
             id: generation,
             request: request,
+            presentationScope: presentationScope,
             storefronts: [],
             result: nil,
             message: nil
@@ -257,9 +267,12 @@ final class AppMetadataRefreshProgressStore {
 
     @discardableResult
     func retry() -> Bool {
-        guard status.isTerminal, let request = batch?.request else { return false }
+        guard status.isTerminal, let batch else { return false }
         clearTerminalBatch()
-        return start(request)
+        return start(
+            batch.request,
+            presentationScope: batch.presentationScope
+        )
     }
 
     @discardableResult

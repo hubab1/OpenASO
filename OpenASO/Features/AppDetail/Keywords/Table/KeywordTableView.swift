@@ -2,7 +2,7 @@ import AppKit
 import SwiftData
 import SwiftUI
 
-struct KeywordTableView: View {
+struct KeywordTableView: View, Equatable {
     @CodableAppStorage(
         "keywordRankingChartSelectionByApp",
         defaultValue: [:],
@@ -13,6 +13,7 @@ struct KeywordTableView: View {
 
     let rows: [KeywordWorkspaceRow]
     let isLoadingRows: Bool
+    let contentRevision: Int
     let trackedAppStoreID: Int64
     let chartSelectionScope: String
     let insightsSummary: KeywordInsightsSummary
@@ -30,6 +31,13 @@ struct KeywordTableView: View {
     @State private var presentedNotesRow: KeywordWorkspaceRow?
     @State private var actionErrorMessage: String?
     @State private var rowsPendingDeletion: [KeywordWorkspaceRow] = []
+
+    nonisolated static func == (lhs: KeywordTableView, rhs: KeywordTableView) -> Bool {
+        lhs.contentRevision == rhs.contentRevision
+            && lhs.isLoadingRows == rhs.isLoadingRows
+            && lhs.trackedAppStoreID == rhs.trackedAppStoreID
+            && lhs.chartSelectionScope == rhs.chartSelectionScope
+    }
 
     private var tableRows: [KeywordTablePresentationRow] {
         let selectedKeys = selectedChartKeywordKeys

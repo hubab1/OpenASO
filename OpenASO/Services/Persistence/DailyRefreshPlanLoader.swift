@@ -11,17 +11,20 @@ struct DailyRefreshPlanConfiguration: Equatable, Sendable {
 
 struct HeadlessRefreshAppPlan: Sendable {
     let appStoreID: Int64
+    let sidebarSortOrder: Int
     let metadataRequest: AppMetadataRefreshRequest
     let appDetailRequest: AppDetailRefreshRequest
 
     init(
         appStoreID: Int64,
+        sidebarSortOrder: Int = 0,
         metadataRequest: AppMetadataRefreshRequest,
         appDetailRequest: AppDetailRefreshRequest
     ) {
         precondition(metadataRequest.appStoreID == appStoreID)
         precondition(appDetailRequest.app.appStoreID == appStoreID)
         self.appStoreID = appStoreID
+        self.sidebarSortOrder = sidebarSortOrder
         self.metadataRequest = metadataRequest
         self.appDetailRequest = appDetailRequest
     }
@@ -33,7 +36,17 @@ struct HeadlessRefreshPlan: Sendable {
     init(apps: [HeadlessRefreshAppPlan]) {
         var seenAppStoreIDs = Set<Int64>()
         self.apps = apps
-            .sorted { $0.appStoreID < $1.appStoreID }
+            .sorted { first, second in
+                let firstTracksKeywords = !first.appDetailRequest.trackIdentityKeys.isEmpty
+                let secondTracksKeywords = !second.appDetailRequest.trackIdentityKeys.isEmpty
+                if firstTracksKeywords != secondTracksKeywords {
+                    return firstTracksKeywords
+                }
+                if first.sidebarSortOrder != second.sidebarSortOrder {
+                    return first.sidebarSortOrder < second.sidebarSortOrder
+                }
+                return first.appStoreID < second.appStoreID
+            }
             .filter { seenAppStoreIDs.insert($0.appStoreID).inserted }
     }
 }
@@ -131,6 +144,7 @@ final class DailyRefreshPlanLoader: Sendable {
                 )
                 return HeadlessRefreshAppPlan(
                     appStoreID: app.appStoreID,
+                    sidebarSortOrder: app.sidebarSortOrder,
                     metadataRequest: metadataRequest,
                     appDetailRequest: detailRequest
                 )

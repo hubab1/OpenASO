@@ -265,24 +265,28 @@ struct RatingsDashboardModel {
         latestByStorefront: [String: RatingLatestValue],
         ratingSnapshots: [RatingSnapshotValue]
     ) -> [String: RatingSnapshotValue] {
-        Dictionary(uniqueKeysWithValues: latestByStorefront.compactMap { storefront, latest in
-            let previousSnapshot = ratingSnapshots
-                .filter { snapshot in
-                    snapshot.appStoreID == appStoreID
-                        && snapshot.storefront == storefront
-                        && (snapshot.ratingDate != latest.ratingDate || snapshot.observedAt < latest.observedAt)
-                }
-                .sorted {
-                    if $0.ratingDate == $1.ratingDate {
-                        return $0.observedAt > $1.observedAt
-                    }
-                    return $0.ratingDate > $1.ratingDate
-                }
-                .first
+        var previousSnapshots: [String: RatingSnapshotValue] = [:]
+        previousSnapshots.reserveCapacity(latestByStorefront.count)
 
-            guard let previousSnapshot else { return nil }
-            return (storefront, previousSnapshot)
-        })
+        for snapshot in ratingSnapshots where snapshot.appStoreID == appStoreID {
+            guard let latest = latestByStorefront[snapshot.storefront],
+                  snapshot.ratingDate != latest.ratingDate || snapshot.observedAt < latest.observedAt
+            else {
+                continue
+            }
+
+            guard let existing = previousSnapshots[snapshot.storefront] else {
+                previousSnapshots[snapshot.storefront] = snapshot
+                continue
+            }
+
+            if snapshot.ratingDate > existing.ratingDate
+                || (snapshot.ratingDate == existing.ratingDate && snapshot.observedAt > existing.observedAt) {
+                previousSnapshots[snapshot.storefront] = snapshot
+            }
+        }
+
+        return previousSnapshots
     }
 
     private static func ratingCountTrend(latest: RatingLatestValue?, previousSnapshot: RatingSnapshotValue?) -> Int? {

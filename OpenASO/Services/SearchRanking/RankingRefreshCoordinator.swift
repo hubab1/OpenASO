@@ -137,6 +137,46 @@ struct RankingMetadataEnrichmentRequest: Hashable, Sendable {
     let platform: AppPlatform
 }
 
+struct RankingCatalogEvidenceFingerprint: Hashable, Sendable {
+    // Retain a compact, process-local digest rather than the full metadata and
+    // screenshot arrays for every result seen during a long multi-keyword run.
+    let storefront: String
+    let sourceRaw: String
+    let requestedPlatformRaw: String
+    let appStoreID: Int64
+    let metadataDigest: Int
+
+    init(item: SearchRankingItem, pageResult: RankingRefreshPageResult) {
+        self.storefront = pageResult.request.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self.sourceRaw = pageResult.page.source.rawValue
+        self.requestedPlatformRaw = pageResult.request.platform.rawValue
+        self.appStoreID = item.appStoreID
+        var hasher = Hasher()
+        hasher.combine(item.bundleID)
+        hasher.combine(item.name)
+        hasher.combine(item.subtitle)
+        hasher.combine(item.sellerName)
+        hasher.combine(item.iconURLString)
+        hasher.combine(item.releaseDate)
+        hasher.combine(item.currentVersionReleaseDate)
+        hasher.combine(item.version)
+        hasher.combine(item.primaryGenreID)
+        hasher.combine(item.primaryGenreName)
+        hasher.combine(item.descriptionText)
+        hasher.combine(item.releaseNotes)
+        hasher.combine(item.supportedLanguageCodes)
+        hasher.combine(item.screenshotURLs)
+        hasher.combine(item.ipadScreenshotURLs)
+        hasher.combine(item.appletvScreenshotURLs)
+        hasher.combine(item.ratingCount)
+        hasher.combine(item.averageRating)
+        hasher.combine(item.platform)
+        self.metadataDigest = hasher.finalize()
+    }
+}
+
 struct RankingStatsRebuildRequest: Hashable, Sendable {
     let queryKey: String
     let trackedAppID: Int64
@@ -360,7 +400,8 @@ final class RankingRefreshCoordinator: Sendable {
     func persistRankingPageTransaction(
         _ pageResult: RankingRefreshPageResult,
         in modelContext: ModelContext,
-        rebuildDerivedStats: Bool = true
+        rebuildDerivedStats: Bool = true,
+        catalogEvidenceAppStoreIDs: Set<Int64>? = nil
     ) throws -> RankingPagePersistenceResult {
         guard let track = try fetchTrackedAppKeyword(identityKey: pageResult.request.identityKey, in: modelContext) else {
             throw OpenASOError.appNotFound
@@ -393,7 +434,8 @@ final class RankingRefreshCoordinator: Sendable {
             track: track,
             trackedApp: track.trackedApp,
             in: modelContext,
-            rebuildDerivedStats: rebuildDerivedStats
+            rebuildDerivedStats: rebuildDerivedStats,
+            catalogEvidenceAppStoreIDs: catalogEvidenceAppStoreIDs
         )
     }
 
@@ -435,7 +477,8 @@ final class RankingRefreshCoordinator: Sendable {
         track: TrackedAppKeyword,
         trackedApp: TrackedApp,
         in modelContext: ModelContext,
-        rebuildDerivedStats: Bool
+        rebuildDerivedStats: Bool,
+        catalogEvidenceAppStoreIDs: Set<Int64>?
     ) throws -> RankingPagePersistenceResult {
         let page = pageResult.page
         let searchedAt = pageResult.searchedAt
@@ -454,7 +497,8 @@ final class RankingRefreshCoordinator: Sendable {
         let sharedResult = try persistSharedRankingObservation(
             pageResult,
             query: track.query,
-            in: modelContext
+            in: modelContext,
+            catalogEvidenceAppStoreIDs: catalogEvidenceAppStoreIDs
         )
         let incomingWinsTrackedSnapshot = existingSnapshot.map { $0.searchedAt < searchedAt } ?? true
         let snapshot: TrackedKeywordDailyRanking
@@ -533,7 +577,8 @@ final class RankingRefreshCoordinator: Sendable {
     func persistSharedRankingObservation(
         _ pageResult: RankingRefreshPageResult,
         query: KeywordQuery,
-        in modelContext: ModelContext
+        in modelContext: ModelContext,
+        catalogEvidenceAppStoreIDs: Set<Int64>? = nil
     ) throws -> RankingObservationPersistenceResult {
         let pageResult = pageResult.canonicalized(
             limit: SearchRankingCrawl.fullKeywordRankingLimit
@@ -613,36 +658,41 @@ final class RankingRefreshCoordinator: Sendable {
         observation.winningCount = pageResult.winningCount
         observation.confidenceRaw = pageResult.confidence
 
+        let catalogItems = catalogEvidenceAppStoreIDs.map { includedAppStoreIDs in
+            pageResult.page.items.filter { includedAppStoreIDs.contains($0.appStoreID) }
+        } ?? pageResult.page.items
         var catalogCache = try appCatalogService.makeSearchRankingPageCache(
-            items: pageResult.page.items,
+            items: catalogItems,
             storefrontCode: pageResult.request.storefront,
             in: modelContext
         )
         var ratingCache = try makeRatingPageCache(
-            items: pageResult.page.items,
+            items: catalogItems,
             storefront: pageResult.request.storefront,
             observedAt: pageResult.searchedAt,
             in: modelContext
         )
         for item in pageResult.page.items {
-            let storeApp = try appCatalogService.upsertStoreApp(
-                from: item,
-                storefrontCode: pageResult.request.storefront,
-                rankingSource: pageResult.page.source,
-                fetchedAt: pageResult.searchedAt,
-                requestedPlatform: pageResult.request.platform,
-                in: modelContext,
-                cache: &catalogCache
-            )
-            upsertStorefrontRating(
-                from: item,
-                storefront: pageResult.request.storefront,
-                observedAt: pageResult.searchedAt,
-                source: storefrontRatingSource(for: pageResult.page.source),
-                storeApp: storeApp,
-                in: modelContext,
-                cache: &ratingCache
-            )
+            if catalogEvidenceAppStoreIDs?.contains(item.appStoreID) != false {
+                let storeApp = try appCatalogService.upsertStoreApp(
+                    from: item,
+                    storefrontCode: pageResult.request.storefront,
+                    rankingSource: pageResult.page.source,
+                    fetchedAt: pageResult.searchedAt,
+                    requestedPlatform: pageResult.request.platform,
+                    in: modelContext,
+                    cache: &catalogCache
+                )
+                upsertStorefrontRating(
+                    from: item,
+                    storefront: pageResult.request.storefront,
+                    observedAt: pageResult.searchedAt,
+                    source: storefrontRatingSource(for: pageResult.page.source),
+                    storeApp: storeApp,
+                    in: modelContext,
+                    cache: &ratingCache
+                )
+            }
             upsertObservationItem(
                 from: item,
                 observation: observation,

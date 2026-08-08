@@ -42,7 +42,10 @@ final class KeywordInsightsService {
         let position: Int
     }
 
-    private static let cacheLimit = 8
+    // A workspace can retain ranking history and top-app summaries for hundreds of
+    // keywords. Keeping the current view plus two recent variants is enough for
+    // fast navigation without allowing filter/date changes to retain eight copies.
+    private static let cacheLimit = 3
 
     private var cachedWorkspaces: [KeywordWorkspaceProjection.MaterializationID: Workspace] = [:]
     private var cacheOrder: [KeywordWorkspaceProjection.MaterializationID] = []

@@ -1,9 +1,82 @@
 import Foundation
 import SwiftData
 
+private actor AppStoreConnectAppResolutionCache {
+    private struct Key: Hashable, Sendable {
+        let bundleID: String
+        let issuerID: String
+        let keyID: String
+    }
+
+    private enum Value: Sendable {
+        case app(AppStoreConnectApp)
+        case notFound
+    }
+
+    private struct Entry: Sendable {
+        let value: Value
+        let expiresAt: Date
+    }
+
+    private let timeToLive: TimeInterval = 10 * 60
+    private var entries: [Key: Entry] = [:]
+    private var inFlightTasks: [Key: Task<Value, any Error>] = [:]
+
+    func resolve(
+        bundleID: String,
+        credentials: AppStoreConnectCredentials,
+        operation: @escaping @Sendable () async throws -> AppStoreConnectApp
+    ) async throws -> AppStoreConnectApp {
+        let key = Key(
+            bundleID: bundleID,
+            issuerID: credentials.issuerID,
+            keyID: credentials.keyID
+        )
+        let now = Date()
+        if let entry = entries[key], entry.expiresAt > now {
+            return try resolvedApp(from: entry.value)
+        }
+        entries[key] = nil
+
+        let task: Task<Value, any Error>
+        if let existingTask = inFlightTasks[key] {
+            task = existingTask
+        } else {
+            task = Task {
+                do {
+                    return .app(try await operation())
+                } catch OpenASOError.appNotFound {
+                    return .notFound
+                }
+            }
+            inFlightTasks[key] = task
+        }
+
+        do {
+            let value = try await task.value
+            inFlightTasks[key] = nil
+            entries[key] = Entry(value: value, expiresAt: now.addingTimeInterval(timeToLive))
+            return try resolvedApp(from: value)
+        } catch {
+            inFlightTasks[key] = nil
+            throw error
+        }
+    }
+
+    private func resolvedApp(from value: Value) throws -> AppStoreConnectApp {
+        switch value {
+        case .app(let app):
+            return app
+        case .notFound:
+            throw OpenASOError.appNotFound
+        }
+    }
+}
+
 @MainActor
 final class AppStoreConnectReviewService: Sendable {
     nonisolated private let httpClient: HTTPClient
+    nonisolated private let appResolutionCache = AppStoreConnectAppResolutionCache()
     private let credentialStore: AppStoreConnectCredentialStore
 
     init(httpClient: HTTPClient, credentialStore: AppStoreConnectCredentialStore) {
@@ -20,12 +93,29 @@ final class AppStoreConnectReviewService: Sendable {
     }
 
     func resolveApp(bundleID: String) async throws -> AppStoreConnectApp {
-        try await Self.resolveApp(bundleID: bundleID, credentials: credentialStore.credentials, httpClient: httpClient)
+        try await cachedApp(bundleID: bundleID, credentials: credentialStore.credentials)
     }
 
     nonisolated
     func resolveApp(bundleID: String, using credentials: AppStoreConnectCredentials) async throws -> AppStoreConnectApp {
-        try await Self.resolveApp(bundleID: bundleID, credentials: credentials, httpClient: httpClient)
+        try await cachedApp(bundleID: bundleID, credentials: credentials)
+    }
+
+    nonisolated private func cachedApp(
+        bundleID: String,
+        credentials: AppStoreConnectCredentials
+    ) async throws -> AppStoreConnectApp {
+        let normalizedBundleID = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await appResolutionCache.resolve(
+            bundleID: normalizedBundleID,
+            credentials: credentials
+        ) {
+            try await Self.resolveApp(
+                bundleID: normalizedBundleID,
+                credentials: credentials,
+                httpClient: self.httpClient
+            )
+        }
     }
 
     nonisolated
