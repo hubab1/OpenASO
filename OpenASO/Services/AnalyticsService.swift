@@ -11,6 +11,47 @@ enum MCPServerPort {
   static let maximum = 65_535
 }
 
+struct BackgroundRefreshRunRecord: Codable, Equatable, Sendable {
+  let scheduledFor: Date
+  let finishedAt: Date
+  let disposition: String
+  let plannedAppCount: Int
+  let completedAppCount: Int
+  let successfulAppCount: Int
+  let partialFailureAppCount: Int
+  let failedAppCount: Int
+  let issueMessage: String?
+
+  init(summary: HeadlessRefreshRunSummary) {
+    scheduledFor = summary.scheduledFor
+    finishedAt = summary.finishedAt
+    disposition = summary.disposition.rawValue
+    plannedAppCount = summary.plannedAppCount
+    completedAppCount = summary.completedAppCount
+    successfulAppCount = summary.successfulAppCount
+    partialFailureAppCount = summary.partialFailureAppCount
+    failedAppCount = summary.failedAppCount
+    issueMessage = summary.issue?.message
+  }
+
+  init(
+    scheduledFor: Date,
+    finishedAt: Date,
+    disposition: HeadlessRefreshRunDisposition,
+    issueMessage: String
+  ) {
+    self.scheduledFor = scheduledFor
+    self.finishedAt = finishedAt
+    self.disposition = disposition.rawValue
+    plannedAppCount = 0
+    completedAppCount = 0
+    successfulAppCount = 0
+    partialFailureAppCount = 0
+    failedAppCount = 0
+    self.issueMessage = issueMessage
+  }
+}
+
 @MainActor
 @Observable
 final class AppSettingsStore {
@@ -25,12 +66,13 @@ final class AppSettingsStore {
     static let automaticRefreshClaimMigrationCompleted =
       "dailyRefresh.automaticClaimMigrationCompleted"
     static let lastRatingsReviewsRefreshAt = "dailyRefresh.lastRatingsReviewsRefreshAt"
+    static let lastBackgroundRefreshRun = "dailyRefresh.lastBackgroundRefreshRun"
     static let mcpServerPort = "mcp.serverPort"
   }
 
   static let defaultIsAnalyticsEnabled = true
   static let defaultIsAutomaticRefreshEnabled = true
-  static let defaultRefreshTimeMinutes = 7 * 60
+  static let defaultRefreshTimeMinutes = 5 * 60
 
   private let defaults: UserDefaults
 
@@ -42,6 +84,7 @@ final class AppSettingsStore {
   private(set) var lastRefreshTriggeredAt: Date?
   private(set) var lastAutomaticRefreshClaimedAt: Date?
   private(set) var lastRatingsReviewsRefreshAt: Date?
+  private(set) var lastBackgroundRefreshRun: BackgroundRefreshRunRecord?
   private(set) var mcpServerPort: Int
   var requestedSettingsFocusSection: AppleAdsSettingsFocusSection?
 
@@ -88,6 +131,7 @@ final class AppSettingsStore {
     self.lastAutomaticRefreshClaimedAt = migratedLastAutomaticRefreshClaimedAt
     self.lastRatingsReviewsRefreshAt =
       defaults.object(forKey: DefaultsKey.lastRatingsReviewsRefreshAt) as? Date
+    self.lastBackgroundRefreshRun = Self.loadBackgroundRefreshRun(from: defaults)
     self.mcpServerPort = Self.normalizedMCPServerPort(storedMCPServerPort)
     self.requestedSettingsFocusSection = nil
   }
@@ -156,7 +200,10 @@ final class AppSettingsStore {
 
   func saveRefreshTime(from date: Date, calendar: Calendar = .current) {
     let components = calendar.dateComponents([.hour, .minute], from: date)
-    saveRefreshTime(hour: components.hour ?? 7, minute: components.minute ?? 0)
+    saveRefreshTime(
+      hour: components.hour ?? Self.defaultRefreshTimeMinutes / 60,
+      minute: components.minute ?? 0
+    )
   }
 
   func refreshTimeDate(relativeTo referenceDate: Date = .now, calendar: Calendar = .current) -> Date
@@ -260,6 +307,21 @@ final class AppSettingsStore {
     lastRatingsReviewsRefreshAt = date
   }
 
+  func recordBackgroundRefreshRun(_ record: BackgroundRefreshRunRecord) {
+    guard let data = try? JSONEncoder().encode(record) else { return }
+    defaults.set(data, forKey: DefaultsKey.lastBackgroundRefreshRun)
+    lastBackgroundRefreshRun = record
+  }
+
+  func reloadBackgroundRefreshState() {
+    lastBackgroundRefreshRun = Self.loadBackgroundRefreshRun(from: defaults)
+    lastRefreshTriggeredAt = defaults.object(forKey: DefaultsKey.lastRefreshTriggeredAt) as? Date
+    lastAutomaticRefreshClaimedAt =
+      defaults.object(forKey: DefaultsKey.lastAutomaticRefreshClaimedAt) as? Date
+    lastRatingsReviewsRefreshAt =
+      defaults.object(forKey: DefaultsKey.lastRatingsReviewsRefreshAt) as? Date
+  }
+
   func saveMCPServerPort(_ port: Int) {
     let normalizedPort = Self.normalizedMCPServerPort(port)
     defaults.set(normalizedPort, forKey: DefaultsKey.mcpServerPort)
@@ -268,6 +330,15 @@ final class AppSettingsStore {
 
   private static func normalized(minutes: Int) -> Int {
     min(max(minutes, 0), (24 * 60) - 1)
+  }
+
+  private static func loadBackgroundRefreshRun(
+    from defaults: UserDefaults
+  ) -> BackgroundRefreshRunRecord? {
+    guard let data = defaults.data(forKey: DefaultsKey.lastBackgroundRefreshRun) else {
+      return nil
+    }
+    return try? JSONDecoder().decode(BackgroundRefreshRunRecord.self, from: data)
   }
 
   private static func normalizedMCPServerPort(_ port: Int?) -> Int {

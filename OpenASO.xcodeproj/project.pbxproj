@@ -40,6 +40,11 @@
 		D35D00000000000000000001 /* AppDetail/HeadlessRefreshObservationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35D00000000000000000011 /* AppDetail/HeadlessRefreshObservationRecorder.swift */; };
 		D35D00000000000000000002 /* DailyRefreshRunStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35D00000000000000000012 /* DailyRefreshRunStatusView.swift */; };
 		D35D00000000000000000003 /* HeadlessRefreshObservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35D00000000000000000013 /* HeadlessRefreshObservationTests.swift */; };
+		E8BA00000000000000000001 /* BackgroundRefreshAgentController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8BA00000000000000000011 /* BackgroundRefreshAgentController.swift */; };
+		E8BA00000000000000000002 /* BackgroundRefreshRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8BA00000000000000000012 /* BackgroundRefreshRuntime.swift */; };
+		E8BA00000000000000000003 /* CrossProcessFileLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8BA00000000000000000013 /* CrossProcessFileLock.swift */; };
+		E8BA00000000000000000004 /* BackgroundRefreshAgentStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8BA00000000000000000014 /* BackgroundRefreshAgentStatusView.swift */; };
+		E8BA00000000000000000005 /* BackgroundRefreshInfrastructureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8BA00000000000000000015 /* BackgroundRefreshInfrastructureTests.swift */; };
 		D14000000000000000000001 /* Storefront/AppMetadataRefreshProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D14000000000000000000003 /* Storefront/AppMetadataRefreshProgressStore.swift */; };
 		D14000000000000000000002 /* AppMetadataRefreshProgressStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D14000000000000000000004 /* AppMetadataRefreshProgressStoreTests.swift */; };
 		D77BC4C40000000000000001 /* ExactV4StoreFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D77BC4C40000000000000011 /* ExactV4StoreFixtureTests.swift */; };
@@ -371,6 +376,7 @@
 		26D4B2C87FDED9CFCFA50D7D /* SearchRanking/RankingRefreshCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/RankingRefreshCoordinator.swift; sourceTree = "<group>"; };
 		2BC7973645CC5F20071230DE /* RankingRefreshCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingRefreshCoordinatorTests.swift; sourceTree = "<group>"; };
 		F7E6730BB6C6EDAC272B32DA /* DailyRefreshSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyRefreshSchedulerTests.swift; sourceTree = "<group>"; };
+		E8BA00000000000000000015 /* BackgroundRefreshInfrastructureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshInfrastructureTests.swift; sourceTree = "<group>"; };
 		2EB55596DB73489FB40D836C /* PreviewAppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewAppDependencies.swift; sourceTree = "<group>"; };
 		378F7AF5B5856F0183D027B4 /* AppDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailView.swift; sourceTree = "<group>"; };
 		465129A02F247ED683558D8B /* SearchRanking/DefaultAppResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/DefaultAppResolver.swift; sourceTree = "<group>"; };
@@ -551,6 +557,10 @@
 		D20A00000000000000000011 /* SearchRanking/KeywordDifficultyEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordDifficultyEstimator.swift; sourceTree = "<group>"; };
 		D20A00000000000000000012 /* KeywordDifficultyEstimatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordDifficultyEstimatorTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000001 /* AppNamespace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNamespace.swift; sourceTree = "<group>"; };
+		E8BA00000000000000000011 /* BackgroundRefreshAgentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshAgentController.swift; sourceTree = "<group>"; };
+		E8BA00000000000000000012 /* BackgroundRefreshRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshRuntime.swift; sourceTree = "<group>"; };
+		E8BA00000000000000000013 /* CrossProcessFileLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossProcessFileLock.swift; sourceTree = "<group>"; };
+		E8BA00000000000000000014 /* BackgroundRefreshAgentStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshAgentStatusView.swift; sourceTree = "<group>"; };
 		D30000000000000000000005 /* OpenASO.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenASO.entitlements; sourceTree = "<group>"; };
 		DA7A00000000000000000001 /* PersistentStoreRecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentStoreRecoveryView.swift; sourceTree = "<group>"; };
 		D8F922DEEB1FCD8E26B1A64A /* Networking/HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/HTTPClient.swift; sourceTree = "<group>"; };
@@ -656,6 +666,7 @@
 				F00300000000000000000004 /* RefreshObservabilityTests.swift */,
 				F008A0000000000000000012 /* ProviderRequestGateTests.swift */,
 				F7E6730BB6C6EDAC272B32DA /* DailyRefreshSchedulerTests.swift */,
+				E8BA00000000000000000015 /* BackgroundRefreshInfrastructureTests.swift */,
 				A60000000000000000000004 /* ReviewTranslationIntegrationTests.swift */,
 			);
 			path = OpenASOTests;
@@ -665,6 +676,8 @@
 			isa = PBXGroup;
 			children = (
 				5D89E788AED9CC1E4FD78B3D /* AppServices.swift */,
+				E8BA00000000000000000011 /* BackgroundRefreshAgentController.swift */,
+				E8BA00000000000000000012 /* BackgroundRefreshRuntime.swift */,
 				88F93BD35C340B950DE2A5A8 /* OpenASOApp.swift */,
 				DA7A00000000000000000001 /* PersistentStoreRecoveryView.swift */,
 				2EB55596DB73489FB40D836C /* PreviewAppDependencies.swift */,
@@ -912,6 +925,7 @@
 				04E8C4E18F1A4D519C0A113D /* SettingsViewPreviews.swift */,
 				04E8C4E18F1A4D519C0A113B /* AppleAdsSettingsStatusRows.swift */,
 				D35D00000000000000000012 /* DailyRefreshRunStatusView.swift */,
+				E8BA00000000000000000014 /* BackgroundRefreshAgentStatusView.swift */,
 				04E8C4E18F1A4D519C0A110D /* SettingsView.swift */,
 			);
 			path = Settings;
@@ -929,6 +943,7 @@
 			isa = PBXGroup;
 			children = (
 				D30000000000000000000001 /* AppNamespace.swift */,
+				E8BA00000000000000000013 /* CrossProcessFileLock.swift */,
 				C5A400000000000000000002 /* CSVFormats.swift */,
 				04E8C4E18F1A4D519C0A1137 /* CodableAppStorage.swift */,
 			);
@@ -1003,6 +1018,7 @@
 				0A0B0C0D0E0F000000000005 /* Frameworks */,
 				CE70920EB06BF28618AE63B7 /* Resources */,
 				D4E5F6000000000000000001 /* Bundle Node Runtime */,
+				E8BA00000000000000000020 /* Generate Background Refresh LaunchAgent */,
 			);
 			buildRules = (
 			);
@@ -1139,6 +1155,27 @@
 			shellPath = /bin/sh;
 			shellScript = "\"${PROJECT_DIR}/script/bundle_node_runtime.sh\"\n";
 		};
+		E8BA00000000000000000020 /* Generate Background Refresh LaunchAgent */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/script/generate_refresh_agent_plist.sh",
+				"$(PROJECT_DIR)/OpenASO/Resources/OpenASORefreshAgent.plist.template",
+			);
+			name = "Generate Background Refresh LaunchAgent";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/LaunchAgents/$(PRODUCT_BUNDLE_IDENTIFIER).refresh-agent.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${PROJECT_DIR}/script/generate_refresh_agent_plist.sh\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -1168,8 +1205,12 @@
 				04E8C4E18F1A4D519C0A1138 /* AppleAdsSettingsConnectionState.swift in Sources */,
 				04E8C4E18F1A4D519C0A113C /* SettingsViewPreviews.swift in Sources */,
 				D30000000000000000000002 /* AppNamespace.swift in Sources */,
+				E8BA00000000000000000001 /* BackgroundRefreshAgentController.swift in Sources */,
+				E8BA00000000000000000002 /* BackgroundRefreshRuntime.swift in Sources */,
+				E8BA00000000000000000003 /* CrossProcessFileLock.swift in Sources */,
 				04E8C4E18F1A4D519C0A113A /* AppleAdsSettingsStatusRows.swift in Sources */,
 				D35D00000000000000000002 /* DailyRefreshRunStatusView.swift in Sources */,
+				E8BA00000000000000000004 /* BackgroundRefreshAgentStatusView.swift in Sources */,
 				04E8C4E18F1A4D519C0A110B /* SettingsView.swift in Sources */,
 				04E8C4E18F1A4D519C0A1123 /* AppleAds/AppleAdsWebSession.swift in Sources */,
 				04E8C4E18F1A4D519C0A110E /* AppleAds/AppleSearchAdsJWT.swift in Sources */,
@@ -1385,6 +1426,7 @@
 				F008A0000000000000000002 /* ProviderRequestGateTests.swift in Sources */,
 				A10C00000000000000000004 /* AppDetailManualRefreshScopeTests.swift in Sources */,
 				3CA890AE264B6EE10E04FC20 /* DailyRefreshSchedulerTests.swift in Sources */,
+				E8BA00000000000000000005 /* BackgroundRefreshInfrastructureTests.swift in Sources */,
 				A60000000000000000000003 /* ReviewTranslationIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

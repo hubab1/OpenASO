@@ -23,6 +23,7 @@ struct DailyRefreshRunStatusPresentation: Equatable, Sendable {
     let detail: String
     let systemImage: String?
     let progress: Progress?
+    let resultHeading: String?
     let finishedAt: Date?
     let facts: String?
     let issueMessage: String?
@@ -40,12 +41,16 @@ struct DailyRefreshRunStatusPresentation: Equatable, Sendable {
 
     init?(
         activeRun: HeadlessRefreshActiveSnapshot?,
-        latestRun: HeadlessRefreshRunSummary?
+        latestRun: HeadlessRefreshRunSummary?,
+        persistedRun: BackgroundRefreshRunRecord? = nil
     ) {
         if let activeRun {
             self = Self(activeRun: activeRun)
         } else if let latestRun,
                   let presentation = Self(latestRun: latestRun) {
+            self = presentation
+        } else if let persistedRun,
+                  let presentation = Self(persistedRun: persistedRun) {
             self = presentation
         } else {
             return nil
@@ -101,6 +106,7 @@ struct DailyRefreshRunStatusPresentation: Equatable, Sendable {
         self.detail = detail
         self.systemImage = nil
         self.progress = progress
+        self.resultHeading = nil
         self.finishedAt = nil
         self.facts = nil
         self.issueMessage = nil
@@ -177,10 +183,91 @@ struct DailyRefreshRunStatusPresentation: Equatable, Sendable {
         self.detail = result.detail
         self.systemImage = result.systemImage
         self.progress = nil
+        self.resultHeading = "Latest result this session"
         self.finishedAt = latestRun.finishedAt
         self.facts = facts
         self.issueMessage = issueMessage
         self.accessibilityLabel = "Latest automatic refresh result this session"
+        self.accessibilityValue = accessibilityValue
+    }
+
+    private init?(persistedRun: BackgroundRefreshRunRecord) {
+        guard let disposition = HeadlessRefreshRunDisposition(
+            rawValue: persistedRun.disposition
+        ) else {
+            return nil
+        }
+        let result: (kind: Kind, title: String, detail: String, systemImage: String)
+        switch disposition {
+        case .noWork:
+            result = (
+                .noWork,
+                "No refresh work needed",
+                "No apps needed refreshing.",
+                "checkmark.circle"
+            )
+        case .success:
+            result = (
+                .success,
+                "Automatic refresh completed",
+                "All completed app refreshes succeeded.",
+                "checkmark.circle.fill"
+            )
+        case .partialFailure:
+            result = (
+                .partialFailure,
+                "Automatic refresh completed with issues",
+                "Some apps did not fully refresh.",
+                "exclamationmark.triangle.fill"
+            )
+        case .failure:
+            result = (
+                .failure,
+                "Automatic refresh failed",
+                "The automatic refresh could not complete.",
+                "xmark.octagon.fill"
+            )
+        case .cancelled:
+            result = (
+                .cancelled,
+                "Automatic refresh cancelled",
+                "The automatic refresh stopped before completing.",
+                "stop.circle.fill"
+            )
+        case .skippedAlreadyRunning, .rejectedRequestConflict:
+            return nil
+        }
+
+        let appNoun = persistedRun.plannedAppCount == 1 ? "app" : "apps"
+        let facts = "Completed \(persistedRun.completedAppCount) "
+            + "of \(persistedRun.plannedAppCount) \(appNoun): "
+            + "\(persistedRun.successfulAppCount) succeeded, "
+            + "\(persistedRun.partialFailureAppCount) partial, "
+            + "\(persistedRun.failedAppCount) failed."
+        let finishedText = persistedRun.finishedAt.formatted(
+            date: .abbreviated,
+            time: .shortened
+        )
+        let accessibilityValue = [
+            result.title + ".",
+            result.detail,
+            "Finished \(finishedText).",
+            facts,
+            persistedRun.issueMessage,
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+
+        self.kind = result.kind
+        self.title = result.title
+        self.detail = result.detail
+        self.systemImage = result.systemImage
+        self.progress = nil
+        self.resultHeading = "Latest background result"
+        self.finishedAt = persistedRun.finishedAt
+        self.facts = facts
+        self.issueMessage = persistedRun.issueMessage
+        self.accessibilityLabel = "Latest automatic refresh result"
         self.accessibilityValue = accessibilityValue
     }
 }
@@ -188,11 +275,13 @@ struct DailyRefreshRunStatusPresentation: Equatable, Sendable {
 struct DailyRefreshRunStatusView: View {
     let activeRun: HeadlessRefreshActiveSnapshot?
     let latestRun: HeadlessRefreshRunSummary?
+    let persistedRun: BackgroundRefreshRunRecord?
 
     var body: some View {
         if let presentation = DailyRefreshRunStatusPresentation(
             activeRun: activeRun,
-            latestRun: latestRun
+            latestRun: latestRun,
+            persistedRun: persistedRun
         ) {
             if presentation.isActive {
                 ActiveStatus(presentation: presentation)
@@ -250,7 +339,7 @@ private extension DailyRefreshRunStatusView {
 
         var body: some View {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Latest result this session")
+                Text(presentation.resultHeading ?? "Latest result")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 

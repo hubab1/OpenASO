@@ -44,6 +44,7 @@ final class AppServices {
     let appleAdsWebSessionStore: AppleAdsWebSessionStore
     let appleAdsWebSessionManager: AppleAdsWebSessionManager
     let settingsStore: AppSettingsStore
+    let backgroundRefreshAgentController: BackgroundRefreshAgentController
     let analyticsService: AnalyticsService
     let refreshMetricsRecorder: RefreshMetricsRecorder
     let appStoreConnectCredentialStore: AppStoreConnectCredentialStore
@@ -122,6 +123,9 @@ final class AppServices {
             loadsEnvironmentCredentials: loadsEnvironmentCredentials
         )
         let settingsStore = AppSettingsStore(defaults: defaults)
+        let backgroundRefreshAgentController = BackgroundRefreshAgentController(
+            defaults: defaults
+        )
         let analyticsService = AnalyticsService(settingsStore: settingsStore)
         let appleAdsWebSessionStore = AppleAdsWebSessionStore(
             defaults: defaults,
@@ -389,6 +393,7 @@ final class AppServices {
         self.appleAdsWebSessionStore = appleAdsWebSessionStore
         self.appleAdsWebSessionManager = appleAdsWebSessionManager
         self.settingsStore = settingsStore
+        self.backgroundRefreshAgentController = backgroundRefreshAgentController
         self.analyticsService = analyticsService
         self.refreshMetricsRecorder = refreshMetricsRecorder
         self.appStoreConnectCredentialStore = appStoreConnectCredentialStore
@@ -463,20 +468,46 @@ final class AppServices {
         }
         self.backgroundModelStore = backgroundModelStore
         self.backgroundModelStoreRevision = backgroundModelStore == nil ? 0 : 1
-        if let headlessRefreshService {
+        if headlessRefreshService != nil {
+            let dailyRefreshLock = CrossProcessFileLock(
+                namespace: namespace,
+                fileName: BackgroundRefreshRuntime.dailyLockFileName
+            )
             self.dailyRefreshScheduler = DailyRefreshScheduler(
-                evaluateAndClaim: { date, calendar in
-                    await settingsStore.evaluateAndClaimAutomaticRefresh(
-                        at: date,
-                        calendar: calendar
-                    )
-                },
-                runHeadlessRefresh: { [weak self] request in
-                    let summary = await headlessRefreshService.run(request)
-                    await MainActor.run {
-                        self?.recordHeadlessRefreshCompletion(summary)
+                runIteration: { [weak self] date, calendar in
+                    do {
+                        let attempt = try await dailyRefreshLock.attempt {
+                            let evaluation = await settingsStore
+                                .evaluateAndClaimAutomaticRefresh(
+                                    at: date,
+                                    calendar: calendar
+                                )
+                            if let claim = evaluation.claim, !Task.isCancelled {
+                                _ = await self?.runAutomaticHeadlessRefresh(
+                                    HeadlessRefreshRunRequest(
+                                        scheduledFor: claim.scheduledFor,
+                                        refreshRatingsAndReviews: claim
+                                            .refreshRatingsAndReviews
+                                    )
+                                )
+                            }
+                            return DailyRefreshSchedulerIteration(
+                                nextCheckAt: evaluation.nextCheckAt
+                            )
+                        }
+                        switch attempt {
+                        case .acquired(let iteration):
+                            return iteration
+                        case .unavailable:
+                            return DailyRefreshSchedulerIteration(
+                                nextCheckAt: date.addingTimeInterval(60)
+                            )
+                        }
+                    } catch {
+                        return DailyRefreshSchedulerIteration(
+                            nextCheckAt: date.addingTimeInterval(15 * 60)
+                        )
                     }
-                    return summary
                 }
             )
         }
@@ -494,12 +525,54 @@ final class AppServices {
     }
 
     func recordHeadlessRefreshCompletion(_ summary: HeadlessRefreshRunSummary) {
+        settingsStore.recordBackgroundRefreshRun(BackgroundRefreshRunRecord(summary: summary))
         if summary.plannedAppCount > 0 {
             markBackgroundModelStoreChanged()
         }
         if summary.ratingsReviewsFullySucceeded {
             settingsStore.markRatingsReviewsRefreshed(on: summary.scheduledFor)
         }
+    }
+
+    func runAutomaticHeadlessRefresh(
+        _ request: HeadlessRefreshRunRequest
+    ) async -> HeadlessRefreshRunSummary {
+        guard let headlessRefreshService else {
+            let now = Date.now
+            return HeadlessRefreshRunSummary(
+                runID: request.id,
+                activeRunID: nil,
+                scheduledFor: request.scheduledFor,
+                startedAt: now,
+                finishedAt: now,
+                disposition: .failure,
+                plannedAppCount: 0,
+                completedAppCount: 0,
+                successfulAppCount: 0,
+                partialFailureAppCount: 0,
+                failedAppCount: 0,
+                ratingsReviewsAttempted: false,
+                ratingsReviewsFullySucceeded: false,
+                issue: HeadlessRefreshIssue(kind: .planUnavailable)
+            )
+        }
+
+        let activity = ProcessInfo.processInfo.beginActivity(
+            options: [.background, .idleSystemSleepDisabled],
+            reason: "Completing OpenASO's scheduled background refresh"
+        )
+        defer { ProcessInfo.processInfo.endActivity(activity) }
+
+        let summary = await headlessRefreshService.run(request)
+        recordHeadlessRefreshCompletion(summary)
+        return summary
+    }
+
+    var inAppDailyRefreshConfiguration: InAppDailyRefreshConfiguration {
+        InAppDailyRefreshConfiguration(
+            schedule: settingsStore.scheduleConfiguration,
+            agentStatus: backgroundRefreshAgentController.status
+        )
     }
 
     func observeHeadlessRefreshes() async {

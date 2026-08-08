@@ -106,6 +106,10 @@ struct DailyRefreshClaimEvaluation: Hashable, Sendable {
     let nextCheckAt: Date?
 }
 
+struct DailyRefreshSchedulerIteration: Hashable, Sendable {
+    let nextCheckAt: Date?
+}
+
 struct DailyRefreshScheduler: Sendable {
     private static let maximumSleepInterval: TimeInterval = 60 * 60
 
@@ -119,9 +123,12 @@ struct DailyRefreshScheduler: Sendable {
     typealias DateProvider = @Sendable () -> Date
     typealias CalendarProvider = @Sendable () -> Calendar
     typealias Sleeper = @Sendable (_ date: Date) async throws -> Void
+    typealias IterationRunner = @Sendable (
+        _ now: Date,
+        _ calendar: Calendar
+    ) async -> DailyRefreshSchedulerIteration
 
-    private let evaluateAndClaim: ClaimEvaluator
-    private let runHeadlessRefresh: RefreshRunner
+    private let runIteration: IterationRunner
     private let now: DateProvider
     private let calendar: CalendarProvider
     private let sleepUntil: Sleeper
@@ -133,27 +140,43 @@ struct DailyRefreshScheduler: Sendable {
         calendar: @escaping CalendarProvider = { .current },
         sleepUntil: @escaping Sleeper = Self.liveSleep
     ) {
-        self.evaluateAndClaim = evaluateAndClaim
-        self.runHeadlessRefresh = runHeadlessRefresh
+        self.runIteration = { date, calendar in
+            let evaluation = await evaluateAndClaim(date, calendar)
+            if let claim = evaluation.claim, !Task.isCancelled {
+                _ = await runHeadlessRefresh(HeadlessRefreshRunRequest(
+                    scheduledFor: claim.scheduledFor,
+                    refreshRatingsAndReviews: claim.refreshRatingsAndReviews
+                ))
+            }
+            return DailyRefreshSchedulerIteration(nextCheckAt: evaluation.nextCheckAt)
+        }
         self.now = now
         self.calendar = calendar
         self.sleepUntil = sleepUntil
     }
 
+    init(
+        runIteration: @escaping IterationRunner,
+        now: @escaping DateProvider = { .now },
+        calendar: @escaping CalendarProvider = { .current },
+        sleepUntil: @escaping Sleeper = Self.liveSleep
+    ) {
+        self.runIteration = runIteration
+        self.now = now
+        self.calendar = calendar
+        self.sleepUntil = sleepUntil
+    }
+
+    func runSingleCheck() async -> DailyRefreshSchedulerIteration {
+        await runIteration(now(), calendar())
+    }
+
     func run() async {
         while !Task.isCancelled {
-            let evaluation = await evaluateAndClaim(now(), calendar())
+            let iteration = await runSingleCheck()
             guard !Task.isCancelled else { return }
 
-            if let claim = evaluation.claim {
-                _ = await runHeadlessRefresh(HeadlessRefreshRunRequest(
-                    scheduledFor: claim.scheduledFor,
-                    refreshRatingsAndReviews: claim.refreshRatingsAndReviews
-                ))
-                guard !Task.isCancelled else { return }
-            }
-
-            guard let nextCheckAt = evaluation.nextCheckAt else { return }
+            guard let nextCheckAt = iteration.nextCheckAt else { return }
             let wakeAt = min(
                 nextCheckAt,
                 now().addingTimeInterval(Self.maximumSleepInterval)
@@ -168,7 +191,6 @@ struct DailyRefreshScheduler: Sendable {
 
     private static func liveSleep(until date: Date) async throws {
         let seconds = max(0, date.timeIntervalSinceNow)
-        let nanoseconds = UInt64(min(seconds * 1_000_000_000, Double(UInt64.max)))
-        try await Task.sleep(nanoseconds: nanoseconds)
+        try await Task.sleep(for: .seconds(seconds))
     }
 }

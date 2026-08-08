@@ -57,9 +57,16 @@ struct SettingsView: View {
                             services.settingsStore.saveRefreshTime(from: newValue)
                         }
 
+                    BackgroundRefreshAgentStatusView(
+                        controller: services.backgroundRefreshAgentController,
+                        automaticRefreshEnabled: services.settingsStore
+                            .isAutomaticRefreshEnabled
+                    )
+
                     DailyRefreshRunStatusView(
                         activeRun: services.headlessRefreshSnapshot.activeRun,
-                        latestRun: services.headlessRefreshSnapshot.recentRuns.first
+                        latestRun: services.headlessRefreshSnapshot.recentRuns.first,
+                        persistedRun: services.settingsStore.lastBackgroundRefreshRun
                     )
 
                     if let lastClaimedAt = services.settingsStore.lastAutomaticRefreshClaimedAt {
@@ -72,7 +79,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Daily Refresh")
                 } footer: {
-                    Text("OpenASO refreshes stale keyword rankings once per local day after this time when automatic refresh is enabled.")
+                    Text("OpenASO refreshes stale keyword rankings once per local day after this time. A sleeping Mac catches up after it wakes; the service cannot run while the user is logged out.")
                 }
                 .id(AppleAdsSettingsFocusSection.dailyRefresh)
 
@@ -100,6 +107,13 @@ struct SettingsView: View {
             )
             .navigationTitle("Settings")
             .onAppear {
+                services.settingsStore.reloadBackgroundRefreshState()
+                services.backgroundRefreshAgentController.refreshStatus()
+                Task { @MainActor in
+                    await services.backgroundRefreshAgentController.reconcile(
+                        isEnabled: services.settingsStore.isAutomaticRefreshEnabled
+                    )
+                }
                 let recoveredSession = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
                 loadCredentials()
                 loadAppStoreConnectCredentials()
@@ -567,7 +581,14 @@ struct SettingsView: View {
     private var automaticRefreshEnabled: Binding<Bool> {
         Binding(
             get: { services.settingsStore.isAutomaticRefreshEnabled },
-            set: { services.settingsStore.setAutomaticRefreshEnabled($0) }
+            set: { isEnabled in
+                services.settingsStore.setAutomaticRefreshEnabled(isEnabled)
+                Task { @MainActor in
+                    await services.backgroundRefreshAgentController.reconcile(
+                        isEnabled: isEnabled
+                    )
+                }
+            }
         )
     }
 

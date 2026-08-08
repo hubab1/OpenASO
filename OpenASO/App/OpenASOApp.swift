@@ -10,6 +10,10 @@ struct OpenASOApp: App {
     private let startupState: OpenASOStartupState
 
     init() {
+        if Self.shouldRunBackgroundRefresh {
+            Self.runBackgroundRefreshAndExit()
+        }
+
         let startupState = Self.makeStartupState()
         if Self.shouldRunMCPStdio {
             switch startupState {
@@ -42,6 +46,18 @@ struct OpenASOApp: App {
         ProcessInfo.processInfo.arguments.contains("--mcp-stdio")
     }
 
+    private static var shouldRunBackgroundRefresh: Bool {
+        ProcessInfo.processInfo.arguments.contains(BackgroundRefreshRuntime.argument)
+    }
+
+    private static func runBackgroundRefreshAndExit() -> Never {
+        Task { @MainActor in
+            Foundation.exit(await BackgroundRefreshRuntime.runOnce())
+        }
+        RunLoop.main.run()
+        fatalError("The background refresh run loop stopped unexpectedly.")
+    }
+
     private static func runMCPStdioAndExit(
         serverProvider: OpenASOMCPServerProvider
     ) -> Never {
@@ -58,7 +74,6 @@ struct OpenASOApp: App {
             }
             Foundation.exit(exitCode)
         }
-
         dispatchMain()
     }
 
@@ -76,6 +91,11 @@ struct OpenASOApp: App {
                     .modelContainer(modelContainer)
                     .frame(minWidth: 1000, minHeight: 760)
                     .task {
+                        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+                            await services.backgroundRefreshAgentController.reconcile(
+                                isEnabled: services.settingsStore.isAutomaticRefreshEnabled
+                            )
+                        }
                         services.analyticsService.capture(.appLaunched())
                         await services.prepareBackgroundModelStore()
                         launchAlert = await Self.seedStorefrontCatalogIfNeeded(using: services)

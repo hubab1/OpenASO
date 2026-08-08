@@ -283,7 +283,7 @@ struct DailyRefreshSchedulerTests {
             year: 2026,
             month: 1,
             day: 2,
-            hour: 7,
+            hour: 5,
             calendar: calendar
         ))
         #expect(first.claim?.refreshRatingsAndReviews == true)
@@ -516,7 +516,7 @@ struct DailyRefreshSchedulerTests {
             year: 2026,
             month: 1,
             day: 2,
-            hour: 7,
+            hour: 5,
             calendar: calendar
         ))
         #expect(await recorder.sleepDates().count == 2)

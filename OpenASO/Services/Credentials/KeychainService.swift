@@ -61,7 +61,40 @@ struct SystemKeychainService: KeychainService {
     }
 
     func readData(service: String, account: String) -> KeychainReadResult {
-        var query = keychainQuery(service: service, account: account)
+        let protectedResult = readData(
+            query: keychainQuery(
+                service: service,
+                account: account,
+                usesDataProtectionKeychain: true
+            )
+        )
+        guard protectedResult == .notFound else {
+            reportFailureIfNeeded(protectedResult)
+            return protectedResult
+        }
+
+        let legacyResult = readData(
+            query: keychainQuery(
+                service: service,
+                account: account,
+                usesDataProtectionKeychain: false
+            )
+        )
+        if case .success(let data) = legacyResult,
+           (try? save(data, service: service, account: account)) != nil
+        {
+            SecItemDelete(keychainQuery(
+                service: service,
+                account: account,
+                usesDataProtectionKeychain: false
+            ) as CFDictionary)
+        }
+        reportFailureIfNeeded(legacyResult)
+        return legacyResult
+    }
+
+    private func readData(query baseQuery: [String: Any]) -> KeychainReadResult {
+        var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -82,14 +115,21 @@ struct SystemKeychainService: KeychainService {
             result = .failure(.status(status))
         }
 
-        if case .failure(let failure) = result {
-            reportReadFailure(failure)
-        }
         return result
     }
 
+    private func reportFailureIfNeeded(_ result: KeychainReadResult) {
+        if case .failure(let failure) = result {
+            reportReadFailure(failure)
+        }
+    }
+
     func save(_ data: Data, service: String, account: String) throws {
-        let query = keychainQuery(service: service, account: account)
+        let query = keychainQuery(
+            service: service,
+            account: account,
+            usesDataProtectionKeychain: true
+        )
         let attributes: [String: Any] = [kSecValueData as String: data]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
@@ -112,15 +152,32 @@ struct SystemKeychainService: KeychainService {
     }
 
     func delete(service: String, account: String) {
-        SecItemDelete(keychainQuery(service: service, account: account) as CFDictionary)
+        SecItemDelete(keychainQuery(
+            service: service,
+            account: account,
+            usesDataProtectionKeychain: true
+        ) as CFDictionary)
+        SecItemDelete(keychainQuery(
+            service: service,
+            account: account,
+            usesDataProtectionKeychain: false
+        ) as CFDictionary)
     }
 
-    private func keychainQuery(service: String, account: String) -> [String: Any] {
-        [
+    private func keychainQuery(
+        service: String,
+        account: String,
+        usesDataProtectionKeychain: Bool
+    ) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+        if usesDataProtectionKeychain {
+            query[kSecUseDataProtectionKeychain as String] = true
+        }
+        return query
     }
 
     private static func logReadFailure(_ failure: KeychainReadFailure) {

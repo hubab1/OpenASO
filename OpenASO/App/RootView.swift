@@ -37,8 +37,11 @@ struct RootView: View {
             }
             await services.observeHeadlessRefreshes()
         }
-        .task(id: services.settingsStore.scheduleConfiguration) {
+        .task(id: services.inAppDailyRefreshConfiguration) {
             guard !Self.isRunningUnderTests else {
+                return
+            }
+            guard !services.backgroundRefreshAgentController.isEnabled else {
                 return
             }
             await services.dailyRefreshScheduler?.run()
