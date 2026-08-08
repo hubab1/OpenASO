@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 - 2026-08-08
+
+OpenASO 0.4.1 makes daily refreshes significantly more responsive and reliable for large keyword workspaces.
+
+- Update only affected keyword cells during a refresh instead of rebuilding the full table.
+- Keep sorting and navigation responsive while rankings and popularity values arrive.
+- Parallelize ranking requests and reduce ranking persistence CPU, memory, and duplicate history storage.
+- Scope refresh progress to the selected tracked app, not competitor apps.
+- Preserve ranking history and popularity/trend data when Apple search authentication is refreshed.
+
 ## 0.4.0 - 2026-07-26
 
 OpenASO 0.4.0 adds a complete pre-live Keyword Research workspace for organizing projects, gathering ranking and popularity evidence, reviewing shared history, and copying selected keywords into tracked apps.
