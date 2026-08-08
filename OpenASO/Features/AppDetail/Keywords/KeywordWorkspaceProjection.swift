@@ -13,6 +13,16 @@ enum KeywordWorkspaceProjection {
         let platformFilterID: String
         let dateRangeID: String
         let tracks: [TrackIdentity]
+
+        func hasSameVisibleWorkspace(as other: Self) -> Bool {
+            // Refresh tokens request newer persisted values; they do not change
+            // which already-hydrated rows are safe to keep visible meanwhile.
+            appStoreID == other.appStoreID
+                && storefrontFilterID == other.storefrontFilterID
+                && platformFilterID == other.platformFilterID
+                && dateRangeID == other.dateRangeID
+                && tracks == other.tracks
+        }
     }
 
     struct Filters: Hashable, Sendable {

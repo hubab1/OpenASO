@@ -133,6 +133,119 @@ struct KeywordWorkspaceProjectionTests {
     }
 
     @Test
+    func popularityRevisionKeepsCompleteHistoryVisibleWhileReplacementMaterializes() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let initialID = materializationID(refreshToken: 1, backgroundStoreRevision: 0)
+        let refreshedID = materializationID(refreshToken: 1, backgroundStoreRevision: 1)
+        let history = [
+            summary(
+                id: "focus-old",
+                rank: 9,
+                date: Date(timeIntervalSince1970: 1_999_913_600)
+            ),
+            summary(
+                id: "focus-latest",
+                rank: 4,
+                date: Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        ]
+        let hydratedRow = makeRow(
+            term: "Focus Timer",
+            appStoreID: 1,
+            currentRank: 4,
+            popularity: 60,
+            trendSnapshots: history
+        )
+        let initialError = await model.materialize(
+            id: initialID,
+            initialFilters: filters()
+        ) {
+            [hydratedRow]
+        }
+        #expect(initialError == nil)
+
+        let shellRow = makeRow(term: "Focus Timer", appStoreID: 1)
+        model.prime(id: refreshedID, rows: [shellRow], filters: filters())
+
+        #expect(model.isLoading(for: refreshedID))
+        #expect(model.rows.first?.currentRank == 4)
+        #expect(model.rows.first?.trendSnapshots.map(\.rank) == [9, 4])
+        #expect(model.rows.first?.trendPoints.count == 2)
+
+        let loadTask = Task { @MainActor in
+            await model.materialize(
+                id: refreshedID,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+
+        #expect(model.rows.first?.currentRank == 4)
+        #expect(model.rows.first?.trendSnapshots.map(\.rank) == [9, 4])
+
+        materializer.succeedRequest(at: 0, with: [hydratedRow])
+        let refreshedError = await loadTask.value
+
+        #expect(refreshedError == nil)
+        #expect(!model.isLoading(for: refreshedID))
+        #expect(model.rows.first?.currentRank == 4)
+        #expect(model.rows.first?.trendSnapshots.map(\.rank) == [9, 4])
+    }
+
+    @Test
+    func failedPopularityRevisionKeepsPreviouslyLoadedHistory() async {
+        let model = KeywordWorkspaceModel()
+        let materializer = ControlledWorkspaceMaterializer()
+        let initialID = materializationID(refreshToken: 1, backgroundStoreRevision: 0)
+        let refreshedID = materializationID(refreshToken: 1, backgroundStoreRevision: 1)
+        let history = [
+            summary(
+                id: "focus-old",
+                rank: 9,
+                date: Date(timeIntervalSince1970: 1_999_913_600)
+            ),
+            summary(
+                id: "focus-latest",
+                rank: 4,
+                date: Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        ]
+        let hydratedRow = makeRow(
+            term: "Focus Timer",
+            appStoreID: 1,
+            currentRank: 4,
+            popularity: 60,
+            trendSnapshots: history
+        )
+        _ = await model.materialize(id: initialID, initialFilters: filters()) {
+            [hydratedRow]
+        }
+
+        model.prime(
+            id: refreshedID,
+            rows: [makeRow(term: "Focus Timer", appStoreID: 1)],
+            filters: filters()
+        )
+        let loadTask = Task { @MainActor in
+            await model.materialize(
+                id: refreshedID,
+                initialFilters: filters(),
+                using: materializer.load
+            )
+        }
+        await materializer.waitForRequestCount(1)
+        materializer.failRequest(at: 0)
+        let errorMessage = await loadTask.value
+
+        #expect(errorMessage != nil)
+        #expect(!model.isLoading(for: refreshedID))
+        #expect(model.rows.first?.currentRank == 4)
+        #expect(model.rows.first?.trendSnapshots.map(\.rank) == [9, 4])
+    }
+
+    @Test
     func failedHydrationDoesNotDiscardPrimedRows() async {
         let model = KeywordWorkspaceModel()
         let materializer = ControlledWorkspaceMaterializer()
@@ -535,10 +648,13 @@ struct KeywordWorkspaceProjectionTests {
         #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
     }
 
-    private func materializationID(refreshToken: Int) -> KeywordWorkspaceProjection.MaterializationID {
+    private func materializationID(
+        refreshToken: Int,
+        backgroundStoreRevision: Int = 0
+    ) -> KeywordWorkspaceProjection.MaterializationID {
         KeywordWorkspaceProjection.MaterializationID(
             refreshToken: refreshToken,
-            backgroundStoreRevision: 0,
+            backgroundStoreRevision: backgroundStoreRevision,
             appStoreID: 1,
             storefrontFilterID: "all",
             platformFilterID: "all",

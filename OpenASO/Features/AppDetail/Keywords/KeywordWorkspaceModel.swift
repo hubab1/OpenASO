@@ -50,6 +50,10 @@ final class KeywordWorkspaceModel {
         guard publication.completedMaterializationID != id else { return }
 
         desiredFilters = filters
+        if canRetainVisibleWorkspace(for: id) {
+            return
+        }
+
         let filteredRows = KeywordWorkspaceProjection.filteredRows(rows, filters: filters)
         publish(
             materializedRows: rows,
@@ -102,12 +106,25 @@ final class KeywordWorkspaceModel {
             let filters = desiredFilters ?? initialFilters
             pendingMaterializationRequestGeneration = nil
             if publication.completedMaterializationID != id {
-                publish(
-                    materializedRows: [],
-                    rows: [],
-                    completedMaterializationID: id,
-                    filters: filters
-                )
+                if canRetainVisibleWorkspace(for: id) {
+                    let materializedRows = publication.materializedRows
+                    publish(
+                        materializedRows: materializedRows,
+                        rows: KeywordWorkspaceProjection.filteredRows(
+                            materializedRows,
+                            filters: filters
+                        ),
+                        completedMaterializationID: id,
+                        filters: filters
+                    )
+                } else {
+                    publish(
+                        materializedRows: [],
+                        rows: [],
+                        completedMaterializationID: id,
+                        filters: filters
+                    )
+                }
             }
             return OpenASOError.map(error).localizedDescription
         }
@@ -146,6 +163,18 @@ final class KeywordWorkspaceModel {
         } catch {
             return
         }
+    }
+
+    private func canRetainVisibleWorkspace(
+        for materializationID: KeywordWorkspaceProjection.MaterializationID
+    ) -> Bool {
+        guard !publication.materializedRows.isEmpty,
+              let completedMaterializationID = publication.completedMaterializationID
+        else {
+            return false
+        }
+
+        return completedMaterializationID.hasSameVisibleWorkspace(as: materializationID)
     }
 
     private func publish(

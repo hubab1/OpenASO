@@ -987,6 +987,81 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
+    func popularityRefreshPreservesRankingHistory() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let client = MockHTTPClient { request in
+            let body = try #require(request.httpBody)
+            let requestBody = try JSONDecoder().decode(KeywordPopularityRequestBody.self, from: body)
+            let entries = requestBody.terms.map { term in
+                #"{"name":"\#(term)","popularity":74}"#
+            }.joined(separator: ",")
+            return (
+                Data(#"{"status":"success","data":[\#(entries)]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let service = makeKeywordMetricsService(
+            httpClient: client,
+            freshnessFetchRecorder: KeywordMetricsFreshnessFetchRecorder()
+        )
+        let backgroundModelStore = BackgroundModelStore(modelContainer: container)
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: "com.example.focus",
+            name: "Focus",
+            sellerName: "Example",
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let track = try makeTrack(term: "focus timer", trackedApp: trackedApp, in: modelContext)
+        let observedAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let crawl = KeywordRankingCrawl(
+            keyword: track.term,
+            storefront: track.storefront,
+            platform: track.platform,
+            observedAt: observedAt,
+            source: .appStoreWeb,
+            resultCount: 100,
+            query: track.query
+        )
+        let ranking = KeywordAppRanking(
+            position: 4,
+            appStoreID: trackedApp.appStoreID,
+            bundleID: trackedApp.bundleID,
+            name: trackedApp.name,
+            sellerName: trackedApp.sellerName,
+            observation: crawl
+        )
+        modelContext.insert(crawl)
+        modelContext.insert(ranking)
+        try modelContext.save()
+
+        let outcomes = try await service.refreshMetrics(
+            for: [track.identityKey],
+            popularityContextAppStoreID: 123_456_789,
+            webSession: completeWebSession,
+            using: backgroundModelStore
+        )
+        let stored = try await backgroundModelStore.read { context in
+            let crawls = try context.fetch(FetchDescriptor<KeywordRankingCrawl>())
+            let rankings = try context.fetch(FetchDescriptor<KeywordAppRanking>())
+            let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
+            return (
+                crawlKeys: crawls.map(\.observationKey),
+                rankingPositions: rankings.map(\.position),
+                popularityScores: metrics.compactMap(\.popularityScore)
+            )
+        }
+
+        #expect(outcomes.count == 1)
+        #expect(outcomes.first?.errorMessage == nil)
+        #expect(stored.crawlKeys == [crawl.observationKey])
+        #expect(stored.rankingPositions == [4])
+        #expect(stored.popularityScores == [74])
+    }
+
+    @Test
     func freshnessSkipClearsOnlyPopularityStatusMessages() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
