@@ -80,6 +80,13 @@ struct SystemKeychainService: KeychainService {
                 usesDataProtectionKeychain: false
             )
         )
+        #if DEBUG
+        // A debug build that had to use the legacy writer cannot prove that `save` migrated the
+        // item to the protected store, because `save` may itself have taken the debug fallback.
+        // Keep the source item so credentials and sessions survive the next development launch.
+        reportFailureIfNeeded(legacyResult)
+        return legacyResult
+        #else
         if case .success(let data) = legacyResult,
            (try? save(data, service: service, account: account)) != nil
         {
@@ -91,6 +98,7 @@ struct SystemKeychainService: KeychainService {
         }
         reportFailureIfNeeded(legacyResult)
         return legacyResult
+        #endif
     }
 
     private func readData(query baseQuery: [String: Any]) -> KeychainReadResult {
@@ -137,6 +145,11 @@ struct SystemKeychainService: KeychainService {
             return
         }
 
+        if Self.shouldUseLegacyWriteFallback(for: status) {
+            try saveToLegacyKeychain(data, service: service, account: account)
+            return
+        }
+
         guard status == errSecItemNotFound else {
             throw OpenASOError.providerUnavailable("Could not save item to Keychain.")
         }
@@ -146,7 +159,46 @@ struct SystemKeychainService: KeychainService {
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
 
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if Self.shouldUseLegacyWriteFallback(for: addStatus) {
+            try saveToLegacyKeychain(data, service: service, account: account)
+            return
+        }
         guard addStatus == errSecSuccess else {
+            throw OpenASOError.providerUnavailable("Could not save item to Keychain.")
+        }
+    }
+
+    /// Local ad-hoc/debug builds can lack the application identifier entitlement required by the
+    /// Data Protection Keychain. Keep Release on the protected store while allowing development
+    /// builds to use the encrypted macOS login Keychain that `readData` already migrates from.
+    nonisolated static func shouldUseLegacyWriteFallback(for status: OSStatus) -> Bool {
+        #if DEBUG
+        status == errSecMissingEntitlement
+        #else
+        false
+        #endif
+    }
+
+    private func saveToLegacyKeychain(_ data: Data, service: String, account: String) throws {
+        let query = keychainQuery(
+            service: service,
+            account: account,
+            usesDataProtectionKeychain: false
+        )
+        let attributes: [String: Any] = [kSecValueData as String: data]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return
+        }
+
+        guard updateStatus == errSecItemNotFound else {
+            throw OpenASOError.providerUnavailable("Could not save item to Keychain.")
+        }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        guard SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess else {
             throw OpenASOError.providerUnavailable("Could not save item to Keychain.")
         }
     }

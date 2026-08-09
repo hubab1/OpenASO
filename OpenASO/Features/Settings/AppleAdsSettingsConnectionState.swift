@@ -22,6 +22,7 @@ enum AppleAdsSettingsFocusSection {
 
 enum AppleAdsConnectionState: Equatable {
     case notConnected
+    case accountSelectionRequired
     case openingBrowser
     case detectingLinkedApp
     case validatingSession
@@ -37,6 +38,8 @@ enum AppleAdsConnectionState: Equatable {
         switch self {
         case .notConnected:
             return "Not connected"
+        case .accountSelectionRequired:
+            return "Choose an Apple Account"
         case .openingBrowser:
             return "Signing in"
         case .detectingLinkedApp:
@@ -58,8 +61,10 @@ enum AppleAdsConnectionState: Equatable {
         switch self {
         case .notConnected:
             return "Connect Apple Ads to fetch keyword popularity."
+        case .accountSelectionRequired:
+            return AppleAdsWebLoginError.explicitAccountRequired.localizedDescription
         case .openingBrowser:
-            return "Sign in to Apple Ads in the window OpenASO opened. Complete 2FA if Apple asks."
+            return "Enter the Apple Account you want OpenASO to use. Saved credentials are filled automatically."
         case .detectingLinkedApp:
             return "Finding an app linked to this Apple Ads account."
         case .validatingSession:
@@ -84,7 +89,7 @@ enum AppleAdsConnectionState: Equatable {
             return "checkmark.circle.fill"
         case .expiredSession, .apiIssue:
             return "xmark.circle.fill"
-        case .noLinkedApps:
+        case .accountSelectionRequired, .noLinkedApps:
             return "exclamationmark.triangle.fill"
         case .openingBrowser, .detectingLinkedApp, .validatingSession:
             return "arrow.triangle.2.circlepath"
@@ -99,7 +104,7 @@ enum AppleAdsConnectionState: Equatable {
             return .green
         case .expiredSession, .apiIssue:
             return .red
-        case .noLinkedApps:
+        case .accountSelectionRequired, .noLinkedApps:
             return .orange
         case .openingBrowser, .detectingLinkedApp, .validatingSession:
             return .accentColor
@@ -112,7 +117,7 @@ enum AppleAdsConnectionState: Equatable {
         switch self {
         case .openingBrowser, .detectingLinkedApp, .validatingSession:
             return true
-        case .notConnected, .connected, .expiredSession, .noLinkedApps, .apiIssue:
+        case .notConnected, .accountSelectionRequired, .connected, .expiredSession, .noLinkedApps, .apiIssue:
             return false
         }
     }
@@ -121,6 +126,8 @@ enum AppleAdsConnectionState: Equatable {
         switch self {
         case .connected, .expiredSession, .noLinkedApps, .apiIssue:
             return "Refresh Session"
+        case .accountSelectionRequired:
+            return "Choose Account"
         case .openingBrowser:
             return "Waiting For Sign In..."
         case .detectingLinkedApp:
@@ -146,6 +153,8 @@ enum AppleAdsConnectionState: Equatable {
             switch loginError {
             case .closedBeforeCapture:
                 return inferred(hasSession: hasSession, requiresReconnect: false, updatedAt: nil)
+            case .explicitAccountRequired:
+                return .accountSelectionRequired
             case .timedOut:
                 return .expiredSession(loginError.localizedDescription)
             }

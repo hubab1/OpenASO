@@ -288,7 +288,7 @@ final class AppleAdsWebSessionManager {
     private let settingsStore: AppSettingsStore
     private let credentialStore: AppleAdsCredentialStore
     private let httpClient: HTTPClient
-    private let loginController: AppleAdsWebLoginController
+    private let loginController: any AppleAdsWebLoginCapturing
     private let namespace: AppNamespace
     private var capturedLinkedApps: [AppleAdsPromotedApp] = []
     private var capturedAccountName: String?
@@ -299,7 +299,7 @@ final class AppleAdsWebSessionManager {
         credentialStore: AppleAdsCredentialStore,
         httpClient: HTTPClient,
         namespace: AppNamespace = .current,
-        loginController: AppleAdsWebLoginController = AppleAdsWebLoginController()
+        loginController: any AppleAdsWebLoginCapturing = AppleAdsWebLoginController()
     ) {
         self.sessionStore = sessionStore
         self.settingsStore = settingsStore
@@ -311,7 +311,11 @@ final class AppleAdsWebSessionManager {
 
     /// Signs in through the in-app WebKit window and stores the captured session.
     func refreshSession() async throws -> AppleAdsWebSession {
-        let capture = try await loginController.captureSession()
+        let savedCredentials = credentialStore.webLoginCredentials.trimmed
+        let capture = try await loginController.captureSession(
+            credentials: savedCredentials.isComplete ? savedCredentials : nil,
+            timeout: .seconds(300)
+        )
         let session = AppleAdsWebSession(
             cookieHeader: capture.cookieHeader,
             xsrfToken: capture.xsrfToken,
@@ -325,11 +329,9 @@ final class AppleAdsWebSessionManager {
         return session
     }
 
-    /// Removes what the retired Playwright helper left behind: the bundled Chromium, its browser
-    /// profile, and the Apple ID password that only ever existed to drive that automated browser.
+    /// Removes the retired Playwright helper's browser profile and installation artifacts. Saved
+    /// Apple ID credentials remain in Keychain because the native WebKit login can reuse them.
     func purgeLegacyBrowserHelperArtifacts() {
-        credentialStore.clearWebLoginCredentials()
-
         guard let baseURL = try? namespace.applicationSupportDirectoryURL() else { return }
 
         for directoryName in ["AppleAdsBrowserProfile", "WebSessionHelper"] {

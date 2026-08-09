@@ -147,4 +147,15 @@ struct AppleAdsConnectionStateTests {
 
         #expect(state == .expiredSession(AppleAdsWebLoginError.timedOut.localizedDescription))
     }
+
+    @Test
+    func macAccountLoginRequiresExplicitAccountSelection() {
+        let state = AppleAdsConnectionState.classified(
+            error: AppleAdsWebLoginError.explicitAccountRequired,
+            hasSession: false
+        )
+
+        #expect(state == .accountSelectionRequired)
+        #expect(state.primaryActionTitle == "Choose Account")
+    }
 }

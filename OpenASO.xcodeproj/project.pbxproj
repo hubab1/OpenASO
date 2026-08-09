@@ -1160,7 +1160,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "/bin/sh \"${PROJECT_DIR}/script/generate_refresh_agent_plist.sh\"\n";
-			};
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */

@@ -729,6 +729,89 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func nativeWebLoginReusesSavedCredentialsAndStoresCapturedSession() async throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.web-login")
+        let sessionStore = AppleAdsWebSessionStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        let credentialStore = AppleAdsCredentialStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace,
+            loadsEnvironmentCredentials: false
+        )
+        let credentials = AppleAdsWebLoginCredentials(
+            username: "person@example.com",
+            password: "password"
+        )
+        try credentialStore.saveWebLoginCredentials(credentials)
+        let capture = AppleAdsWebLoginCapture(
+            cookieHeader: "XSRF-TOKEN-CM=token; searchads.soid=session",
+            xsrfToken: "token",
+            accountName: "Example Account"
+        )
+        let loginController = RecordingAppleAdsWebLoginController(capture: capture)
+        let manager = AppleAdsWebSessionManager(
+            sessionStore: sessionStore,
+            settingsStore: AppSettingsStore(defaults: defaults),
+            credentialStore: credentialStore,
+            httpClient: MockHTTPClient { _ in throw URLError(.unsupportedURL) },
+            namespace: namespace,
+            loginController: loginController
+        )
+
+        let session = try await manager.refreshSession()
+
+        #expect(loginController.receivedCredentials == credentials)
+        #expect(loginController.receivedTimeout == .seconds(300))
+        #expect(session.cookieHeader == capture.cookieHeader)
+        #expect(session.xsrfToken == capture.xsrfToken)
+        #expect(session.accountName == capture.accountName)
+        #expect(sessionStore.session == session)
+    }
+
+    @Test
+    func legacyBrowserArtifactCleanupPreservesSavedLogin() throws {
+        let defaults = Self.makeDefaults()
+        let keychain = InMemoryKeychainService()
+        let namespace = AppNamespace(bundleIdentifier: "com.thirdtech.openaso.tests.cleanup.\(UUID().uuidString)")
+        let credentialStore = AppleAdsCredentialStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace,
+            loadsEnvironmentCredentials: false
+        )
+        let credentials = AppleAdsWebLoginCredentials(
+            username: "person@example.com",
+            password: "password"
+        )
+        try credentialStore.saveWebLoginCredentials(credentials)
+        let manager = AppleAdsWebSessionManager(
+            sessionStore: AppleAdsWebSessionStore(
+                defaults: defaults,
+                keychain: keychain,
+                namespace: namespace
+            ),
+            settingsStore: AppSettingsStore(defaults: defaults),
+            credentialStore: credentialStore,
+            httpClient: MockHTTPClient { _ in throw URLError(.unsupportedURL) },
+            namespace: namespace,
+            loginController: RecordingAppleAdsWebLoginController(
+                capture: AppleAdsWebLoginCapture(cookieHeader: "", xsrfToken: "", accountName: nil)
+            )
+        )
+
+        manager.purgeLegacyBrowserHelperArtifacts()
+
+        #expect(credentialStore.webLoginCredentials == credentials)
+        #expect(credentialStore.hasWebLoginCredentials)
+    }
+
+    @Test
     func keychainReadFailureRetriesOnlyKnownTransientStatuses() {
         #expect(KeychainReadFailure.status(errSecInteractionNotAllowed).isTransient)
         #expect(KeychainReadFailure.status(errSecNotAvailable).isTransient)
@@ -754,6 +837,15 @@ struct AppServicesDependencyTests {
 
         #expect(result == .failure(.status(errSecInteractionNotAllowed)))
         #expect(reportedFailures == [.status(errSecInteractionNotAllowed)])
+    }
+
+    @Test
+    func debugBuildFallsBackToLoginKeychainOnlyForMissingEntitlement() {
+        #if DEBUG
+        #expect(SystemKeychainService.shouldUseLegacyWriteFallback(for: errSecMissingEntitlement))
+        #endif
+        #expect(!SystemKeychainService.shouldUseLegacyWriteFallback(for: errSecAuthFailed))
+        #expect(!SystemKeychainService.shouldUseLegacyWriteFallback(for: errSecInteractionNotAllowed))
     }
 
     @Test
@@ -1268,6 +1360,26 @@ private enum SimulatedPersistentStoreFailure: String, Error, CaseIterable, Senda
 
 private enum SimulatedDirectoryLookupFailure: Error {
     case unavailable
+}
+
+@MainActor
+private final class RecordingAppleAdsWebLoginController: AppleAdsWebLoginCapturing {
+    let capture: AppleAdsWebLoginCapture
+    private(set) var receivedCredentials: AppleAdsWebLoginCredentials?
+    private(set) var receivedTimeout: Duration?
+
+    init(capture: AppleAdsWebLoginCapture) {
+        self.capture = capture
+    }
+
+    func captureSession(
+        credentials: AppleAdsWebLoginCredentials?,
+        timeout: Duration
+    ) async throws -> AppleAdsWebLoginCapture {
+        receivedCredentials = credentials
+        receivedTimeout = timeout
+        return capture
+    }
 }
 
 private final class RecordingKeychainService: KeychainService {
