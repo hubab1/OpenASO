@@ -119,22 +119,32 @@ struct AppleAdsConnectionStateTests {
     }
 
     @Test
-    func dependencyFailuresMapToDependencyIssue() {
+    func closingTheSignInWindowWithoutASessionStaysNotConnected() {
         let state = AppleAdsConnectionState.classified(
-            error: OpenASOError.providerUnavailable("Node.js is required to connect Apple Ads."),
+            error: AppleAdsWebLoginError.closedBeforeCapture,
             hasSession: false
         )
 
-        #expect(state == .dependencyIssue("Node.js is required to connect Apple Ads."))
+        #expect(state == .notConnected)
     }
 
     @Test
-    func npmLaunchFailuresMapToDependencyIssue() {
+    func closingTheSignInWindowKeepsAnExistingSessionConnected() {
         let state = AppleAdsConnectionState.classified(
-            error: OpenASOError.providerUnavailable("env: npm: No such file or directory"),
+            error: AppleAdsWebLoginError.closedBeforeCapture,
+            hasSession: true
+        )
+
+        #expect(state == .connected(updatedAt: nil))
+    }
+
+    @Test
+    func signInTimeoutAsksForAnotherAttempt() {
+        let state = AppleAdsConnectionState.classified(
+            error: AppleAdsWebLoginError.timedOut,
             hasSession: false
         )
 
-        #expect(state == .dependencyIssue("env: npm: No such file or directory"))
+        #expect(state == .expiredSession(AppleAdsWebLoginError.timedOut.localizedDescription))
     }
 }
