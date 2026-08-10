@@ -59,22 +59,20 @@ struct AddAppSheet: View {
                 }
 
                 HStack {
-                    TextField("Direct App Store ID", text: $appStoreIDText)
+                    TextField("App Store ID or URL", text: $appStoreIDText)
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.large)
                         .font(.body)
                         .onSubmit {
-                            addByAppStoreID()
+                            addDirectly()
                         }
 
-                    Button("Add by ID") {
-                        addByAppStoreID()
-                    }
-                    .controlSize(.large)
-                    .disabled(appStoreIDText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSearching)
+                    Button("Add Directly", action: addDirectly)
+                        .controlSize(.large)
+                        .disabled(appStoreIDText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSearching)
                 }
 
-                Text("Search by name to pick the exact app or paste the numeric App Store ID for a direct lookup.")
+                Text("Search by name to pick the exact app, or paste its App Store URL or numeric ID for a direct lookup.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -161,17 +159,17 @@ struct AddAppSheet: View {
         }
     }
 
-    private func addByAppStoreID() {
+    private func addDirectly() {
         guard !isSearching else {
             return
         }
 
-        let trimmedAppStoreID = appStoreIDText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let appStoreID = Int64(trimmedAppStoreID) else {
-            errorMessage = OpenASOError.invalidAppStoreID.localizedDescription
+        guard let appStoreID = AppStoreIDInputParser.appStoreID(from: appStoreIDText) else {
+            errorMessage = "Enter a valid numeric App Store ID or apps.apple.com URL."
             return
         }
 
+        appStoreIDText = String(appStoreID)
         isSearching = true
         errorMessage = nil
 
