@@ -42,7 +42,7 @@ The hosted docs are the canonical guide for using OpenASO:
 4. Connect Apple Ads from the app Settings window. Sign-in opens in a WebKit window inside OpenASO, so 2FA and passkeys behave like they do in Safari. If you would rather sign in with the browser you already use, expand "Sign In With My Own Browser" and paste the cookie header from an Apple Ads page.
 5. Enter App Store Connect credentials in the app Settings window when needed.
 
-Analytics is off by default for checked-in OSS builds. Non-OSS builds that omit `OPENASO_OSS_BUILD` keep analytics enabled by default.
+Anonymous analytics are enabled by default and can be disabled at any time in Settings. OpenASO uses anonymous product usage events to understand which features are used and how often; it does not collect identifying information or details about your apps, keywords, reviews, replies, credentials, search text, or countries.
 
 ## Data And Credentials
 

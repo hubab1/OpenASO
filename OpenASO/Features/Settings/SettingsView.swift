@@ -154,11 +154,7 @@ struct SettingsView: View {
         } header: {
             Text("Analytics")
         } footer: {
-            #if OPENASO_OSS_BUILD
-            Text("Off by default. When enabled, OpenASO sends anonymous product usage events to understand which features are used and how often. It does not collect identifying information or details about your apps, keywords, reviews, replies, credentials, search text, or countries.")
-            #else
-            Text("OpenASO sends anonymous product usage events to understand which features are used and how often. It does not collect identifying information or details about your apps, keywords, reviews, replies, credentials, search text, or countries.")
-            #endif
+            Text("Anonymous analytics are enabled by default and can be disabled here at any time. OpenASO uses anonymous product usage events to understand which features are used and how often. It does not collect identifying information or details about your apps, keywords, reviews, replies, credentials, search text, or countries.")
         }
     }
 
