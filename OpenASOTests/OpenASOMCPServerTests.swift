@@ -859,18 +859,35 @@ private struct ServerTestContext {
             resultCount: 20,
             keywordTrack: track
         )
-        let newerResult = TrackedKeywordRankedResult(
+        let snapshotCrawl = RankingCrawlRecord(
+            keyword: track.term,
+            storefront: track.storefront,
+            platform: track.platform,
+            observedAt: newerSnapshot.searchedAt,
+            source: newerSnapshot.source,
+            resultCount: 1,
+            query: query
+        )
+        snapshotCrawl.observationKey = RankingCrawlRecord.makeTrackedRecoveryObservationKey(
+            snapshotKey: newerSnapshot.snapshotKey
+        )
+        let newerResult = makeRankingFact(
             position: 1,
             appStoreID: 321,
             bundleID: "com.example.321",
             name: "Ranked App",
             sellerName: "Example Seller",
-            snapshot: newerSnapshot
+            observation: snapshotCrawl,
+            in: modelContext
         )
-        newerSnapshot.topResults.append(newerResult)
         track.snapshots.append(newerSnapshot)
         modelContext.insert(newerSnapshot)
+        modelContext.insert(snapshotCrawl)
         modelContext.insert(newerResult)
+        modelContext.insert(TrackedRankingCrawlLink(
+            snapshotKey: newerSnapshot.snapshotKey,
+            crawl: snapshotCrawl
+        ))
 
         let olderSnapshot = TrackedKeywordDailyRanking(
             rank: 5,
@@ -882,7 +899,7 @@ private struct ServerTestContext {
         track.snapshots.append(olderSnapshot)
         modelContext.insert(olderSnapshot)
 
-        let crawl = KeywordRankingCrawl(
+        let crawl = RankingCrawlRecord(
             keyword: track.term,
             storefront: track.storefront,
             platform: track.platform,
@@ -891,15 +908,15 @@ private struct ServerTestContext {
             resultCount: 1,
             query: query
         )
-        let crawlItem = KeywordAppRanking(
+        let crawlItem = makeRankingFact(
             position: 1,
             appStoreID: 456,
             bundleID: "com.example.456",
             name: "Crawl App",
             sellerName: "Example Seller",
-            observation: crawl
+            observation: crawl,
+            in: modelContext
         )
-        crawl.items.append(crawlItem)
         modelContext.insert(crawl)
         modelContext.insert(crawlItem)
 

@@ -114,8 +114,17 @@ actor KeywordResearchRankingWorkflow {
                 forQueryKey: currentTarget.queryKey,
                 in: modelContext
             )
+            let observationKey = persisted.observation.observationKey
+            let facts = try modelContext.fetch(
+                FetchDescriptor<RankingFact>(
+                    predicate: #Predicate { fact in
+                        fact.observation.observationKey == observationKey
+                    }
+                )
+            )
             let snapshot = Self.snapshot(
                 persisted.observation,
+                facts: facts,
                 projectGeneration: projectGeneration,
                 keywordGeneration: keywordGeneration
             )
@@ -143,11 +152,12 @@ private extension KeywordResearchRankingWorkflow {
     }
 
     static func snapshot(
-        _ observation: KeywordRankingCrawl,
+        _ observation: RankingCrawlRecord,
+        facts: [RankingFact],
         projectGeneration: KeywordResearchProjectGeneration,
         keywordGeneration: KeywordResearchKeywordGeneration
     ) -> KeywordResearchRankingObservationSnapshot {
-        let items = observation.items
+        let items = facts
             .map {
                 KeywordResearchRankingItemSnapshot(
                     id: $0.itemKey,

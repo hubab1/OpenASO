@@ -1,7 +1,37 @@
 import Foundation
+import SwiftData
 @testable import OpenASO
 
 let testDate = Date(timeIntervalSinceReferenceDate: 807_000_000)
+
+func makeRankingFact(
+    position: Int,
+    appStoreID: Int64,
+    bundleID: String?,
+    name: String,
+    subtitle: String? = nil,
+    sellerName: String?,
+    observation: RankingCrawlRecord,
+    in modelContext: ModelContext
+) -> RankingFact {
+    let payload = RankingAppRevisionPayload(
+        appStoreID: appStoreID,
+        bundleID: bundleID,
+        name: name,
+        subtitle: subtitle,
+        sellerName: sellerName
+    )
+    let revision = try! RankingAppRevisionStore.revisions(
+        for: [payload],
+        in: modelContext
+    )[payload.revisionKey]!
+    return RankingFact(
+        position: position,
+        appStoreID: appStoreID,
+        revision: revision,
+        observation: observation
+    )
+}
 
 struct PageCall: Equatable, Sendable {
     let offset: Int

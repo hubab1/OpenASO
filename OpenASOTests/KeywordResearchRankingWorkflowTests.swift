@@ -80,7 +80,7 @@ struct KeywordResearchRankingWorkflowTests {
         #expect(state.screenshotCount == 2)
         #expect(state.latestRatingIDs == [10, 20])
         #expect(state.dailyRatingIDs == [10, 20])
-        #expect(state.statsAppStoreIDs == [10, 20])
+        #expect(state.statsAppStoreIDs.isEmpty)
         #expect(state.trackedCount == 0)
     }
 
@@ -299,7 +299,7 @@ struct KeywordResearchRankingWorkflowTests {
         let state = try await databaseState(in: fixture.backgroundStore)
         #expect(state.storeAppIDs == [1, 2, 3])
         #expect(state.latestRatingIDs == [1, 2, 3])
-        #expect(state.statsAppStoreIDs == [2, 3])
+        #expect(state.statsAppStoreIDs.isEmpty)
         #expect(!state.storeAppIDs.contains(4))
         #expect(!state.storeAppIDs.contains(5))
     }
@@ -343,13 +343,7 @@ struct KeywordResearchRankingWorkflowTests {
             ratingCount: 200,
             averageRating: 4.5
         ))
-        let stats = try await statsRecords(in: fixture.backgroundStore)
-        #expect(stats == [StatsRecord(
-            appStoreID: 1,
-            bestRank: 1,
-            latestRank: 3,
-            observationCount: 3
-        )])
+        #expect(try await statsRecords(in: fixture.backgroundStore).isEmpty)
     }
 
     @Test
@@ -803,13 +797,14 @@ struct KeywordResearchRankingWorkflowTests {
         }
         #expect(firstSnapshot.persistentModelID == secondSnapshot.persistentModelID)
         #expect(secondSnapshot.rank == 1)
-        #expect(secondSnapshot.topResults.map(\.appStoreID).sorted() == [1, 99])
-        #expect(try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>()).count == 1)
-        #expect(try modelContext.fetch(FetchDescriptor<KeywordAppRanking>()).map(\.appStoreID).sorted() == [1, 99])
+        #expect(secondSnapshot.topResults.isEmpty)
+        #expect(try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>()).count == 1)
+        #expect(try modelContext.fetch(FetchDescriptor<RankingFact>()).map(\.appStoreID).sorted() == [1, 99])
         #expect(try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>()).count == 1)
-        #expect(try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>()).map(\.appStoreID).sorted() == [1, 99])
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedKeywordRankedResult>()) == 0)
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedRankingCrawlLink>()) == 1)
         #expect(try modelContext.fetch(FetchDescriptor<StoreApp>()).map(\.appStoreID).sorted() == [1, 99])
-        #expect(try modelContext.fetch(FetchDescriptor<AppKeywordStats>()).map(\.appStoreID).sorted() == [1, 99])
+        #expect(try modelContext.fetchCount(FetchDescriptor<AppKeywordStats>()) == 0)
     }
 }
 
@@ -1060,15 +1055,26 @@ private func trackedSharedRaceState(
         }
 
         let targetQueryKey = queryKey
-        var crawlDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+        let recoveryPrefix = RankingCrawlRecord.trackedRecoveryObservationKeyPrefix
+        var crawlDescriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { crawl in
                 crawl.queryKey == targetQueryKey
+                    && !crawl.observationKey.starts(with: recoveryPrefix)
             }
         )
         crawlDescriptor.fetchLimit = 1
         guard let crawl = try modelContext.fetch(crawlDescriptor).first else {
             throw OpenASOError.unexpectedResponse
         }
+        let crawlKey = crawl.observationKey
+        let crawlItems = try modelContext.fetch(
+            FetchDescriptor<RankingFact>(
+                predicate: #Predicate { fact in
+                    fact.observation.observationKey == crawlKey
+                },
+                sortBy: [SortDescriptor(\.position)]
+            )
+        )
 
         var snapshotDescriptor = FetchDescriptor<TrackedKeywordDailyRanking>(
             predicate: #Predicate { snapshot in
@@ -1079,7 +1085,24 @@ private func trackedSharedRaceState(
         guard let snapshot = try modelContext.fetch(snapshotDescriptor).first else {
             throw OpenASOError.unexpectedResponse
         }
-        let rankedResults = snapshot.topResults.sorted {
+        let snapshotKey = snapshot.snapshotKey
+        var linkDescriptor = FetchDescriptor<TrackedRankingCrawlLink>(
+            predicate: #Predicate { link in
+                link.snapshotKey == snapshotKey
+            }
+        )
+        linkDescriptor.fetchLimit = 1
+        guard let linkedCrawlKey = try modelContext.fetch(linkDescriptor).first?.crawl.observationKey else {
+            throw OpenASOError.unexpectedResponse
+        }
+        let rankedResults = try modelContext.fetch(
+            FetchDescriptor<RankingFact>(
+                predicate: #Predicate { fact in
+                    fact.observation.observationKey == linkedCrawlKey
+                },
+                sortBy: [SortDescriptor(\.position)]
+            )
+        ).sorted {
             if $0.position != $1.position { return $0.position < $1.position }
             return $0.appStoreID < $1.appStoreID
         }
@@ -1089,7 +1112,7 @@ private func trackedSharedRaceState(
         )
         return TrackedSharedRaceState(
             sharedObservedAt: crawl.observedAt,
-            sharedAppStoreIDs: crawl.items.sorted { $0.position < $1.position }.map(\.appStoreID),
+            sharedAppStoreIDs: crawlItems.map(\.appStoreID),
             snapshotSearchedAt: snapshot.searchedAt,
             snapshotRank: snapshot.rank,
             snapshotResultCount: snapshot.resultCount,
@@ -1358,8 +1381,8 @@ private func databaseState(in store: BackgroundModelStore) async throws -> Datab
             + modelContext.fetchCount(FetchDescriptor<TrackedKeywordRefreshStatus>())
             + modelContext.fetchCount(FetchDescriptor<TrackedAppKeywordRefreshAttempt>())
         return DatabaseState(
-            crawlCount: try modelContext.fetchCount(FetchDescriptor<KeywordRankingCrawl>()),
-            observationItemCount: try modelContext.fetchCount(FetchDescriptor<KeywordAppRanking>()),
+            crawlCount: try modelContext.fetchCount(FetchDescriptor<RankingCrawlRecord>()),
+            observationItemCount: try modelContext.fetchCount(FetchDescriptor<RankingFact>()),
             storeAppIDs: try modelContext.fetch(FetchDescriptor<StoreApp>()).map(\.appStoreID).sorted(),
             metadataCount: try modelContext.fetchCount(FetchDescriptor<AppStorefrontMetadata>()),
             screenshotCount: try modelContext.fetchCount(FetchDescriptor<AppStoreScreenshot>()),
@@ -1373,8 +1396,8 @@ private func databaseState(in store: BackgroundModelStore) async throws -> Datab
 
 private func sharedWriteCount(in store: BackgroundModelStore) async throws -> Int {
     try await store.read { modelContext in
-        try modelContext.fetchCount(FetchDescriptor<KeywordRankingCrawl>())
-            + modelContext.fetchCount(FetchDescriptor<KeywordAppRanking>())
+        try modelContext.fetchCount(FetchDescriptor<RankingCrawlRecord>())
+            + modelContext.fetchCount(FetchDescriptor<RankingFact>())
             + modelContext.fetchCount(FetchDescriptor<StoreApp>())
             + modelContext.fetchCount(FetchDescriptor<AppStorefrontMetadata>())
             + modelContext.fetchCount(FetchDescriptor<AppStoreScreenshot>())
@@ -1393,9 +1416,14 @@ private struct ObservationRecord: Equatable, Sendable {
 
 private func observationRecords(in store: BackgroundModelStore) async throws -> [ObservationRecord] {
     try await store.read { modelContext in
-        try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+        let factsByCrawlKey = Dictionary(
+            grouping: try modelContext.fetch(FetchDescriptor<RankingFact>())
+        ) { fact in
+            fact.observation.observationKey
+        }
+        return try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
             .map { observation in
-                let items = observation.items.sorted {
+                let items = factsByCrawlKey[observation.observationKey, default: []].sorted {
                     if $0.position != $1.position { return $0.position < $1.position }
                     return $0.appStoreID < $1.appStoreID
                 }
@@ -1493,7 +1521,7 @@ private func crossSourceWatermarkRecord(
             }
         )
         storefrontMetadataDescriptor.fetchLimit = 1
-        var iTunesCrawlDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+        var iTunesCrawlDescriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { crawl in
                 crawl.queryKey == targetQueryKey
                     && crawl.sourceRaw == iTunesSourceRaw
@@ -1505,10 +1533,18 @@ private func crossSourceWatermarkRecord(
               let dailyRating = try modelContext.fetch(dailyRatingDescriptor).first,
               let storeApp = try modelContext.fetch(storeAppDescriptor).first,
               let storefrontMetadata = try modelContext.fetch(storefrontMetadataDescriptor).first,
-              let iTunesCrawl = try modelContext.fetch(iTunesCrawlDescriptor).first,
-              let iTunesCrawlItem = iTunesCrawl.items.first(where: {
-                  $0.appStoreID == targetAppStoreID
-              }) else {
+              let iTunesCrawl = try modelContext.fetch(iTunesCrawlDescriptor).first else {
+            throw OpenASOError.unexpectedResponse
+        }
+        let iTunesCrawlKey = iTunesCrawl.observationKey
+        var iTunesFactDescriptor = FetchDescriptor<RankingFact>(
+            predicate: #Predicate { fact in
+                fact.observation.observationKey == iTunesCrawlKey
+                    && fact.appStoreID == targetAppStoreID
+            }
+        )
+        iTunesFactDescriptor.fetchLimit = 1
+        guard let iTunesCrawlItem = try modelContext.fetch(iTunesFactDescriptor).first else {
             throw OpenASOError.unexpectedResponse
         }
 

@@ -1,10 +1,12 @@
 import Foundation
 import SwiftData
 
-extension OpenASOSchemaV1 {
+extension OpenASOSchemaV6 {
 @Model
-final class KeywordRankingCrawl {
-    #Index<KeywordRankingCrawl>(
+final class RankingCrawlRecord {
+    static let trackedRecoveryObservationKeyPrefix = "tracked-recovery::"
+
+    #Index<RankingCrawlRecord>(
         [\.queryKey],
         [\.queryKey, \.observedAt],
         [\.observedAt]
@@ -23,9 +25,6 @@ final class KeywordRankingCrawl {
     var winningCount: Int
     var confidenceRaw: String?
 
-    var items: [KeywordAppRanking]
-    var query: KeywordQuery
-
     init(
         keyword: String,
         storefront: String,
@@ -33,7 +32,7 @@ final class KeywordRankingCrawl {
         observedAt: Date,
         source: RankingSource,
         resultCount: Int,
-        query: KeywordQuery,
+        query: KeywordQuery? = nil,
         observedHour: Int? = nil,
         submissionCount: Int = 1,
         winningCount: Int = 1,
@@ -41,7 +40,6 @@ final class KeywordRankingCrawl {
     ) {
         let normalizedKeyword = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedStorefront = storefront.lowercased()
-
         let queryKey = TrackedAppKeyword.makeQueryKey(
             term: normalizedKeyword,
             storefront: normalizedStorefront,
@@ -63,13 +61,19 @@ final class KeywordRankingCrawl {
         self.submissionCount = submissionCount
         self.winningCount = winningCount
         self.confidenceRaw = confidence
-        self.items = []
-        self.query = query
     }
 
     static func makeObservationKey(queryKey: String, observedAt: Date, source: RankingSource) -> String {
-        let timestampBucket = utcDayBucket(for: observedAt)
-        return [queryKey, String(timestampBucket), source.rawValue].joined(separator: "::")
+        [queryKey, String(utcDayBucket(for: observedAt)), source.rawValue]
+            .joined(separator: "::")
+    }
+
+    static func makeTrackedRecoveryObservationKey(snapshotKey: String) -> String {
+        trackedRecoveryObservationKeyPrefix + snapshotKey
+    }
+
+    var isTrackedRecovery: Bool {
+        observationKey.hasPrefix(Self.trackedRecoveryObservationKeyPrefix)
     }
 
     static func utcHourBucket(for date: Date) -> Int {
@@ -90,11 +94,7 @@ final class KeywordRankingCrawl {
         set { sourceRaw = newValue.rawValue }
     }
 
-    var sortedItems: [KeywordAppRanking] {
-        items.sorted { $0.position < $1.position }
-    }
 }
 }
 
-typealias KeywordRankingCrawl = OpenASOSchemaV1.KeywordRankingCrawl
-typealias LegacyKeywordRankingCrawl = OpenASOSchemaV1.KeywordRankingCrawl
+typealias RankingCrawlRecord = OpenASOSchemaV6.RankingCrawlRecord

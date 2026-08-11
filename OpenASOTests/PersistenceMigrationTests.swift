@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct PersistenceMigrationTests {
     @Test
-    func migrationPlanAppendsThroughV5AndKeepsPriorSchemasFrozen() throws {
+    func migrationPlanAppendsThroughV6AndKeepsPriorSchemasFrozen() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -19,18 +19,21 @@ struct PersistenceMigrationTests {
         #expect(OpenASOSchemaV4.models.count == 21)
         #expect(OpenASOSchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
         #expect(OpenASOSchemaV5.models.count == 23)
-        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(5, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 5)
+        #expect(OpenASOSchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
+        #expect(OpenASOSchemaV6.models.count == 28)
+        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(6, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 6)
         #expect(OpenASOMigrationPlan.schemas[0].versionIdentifier == OpenASOSchemaV1.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[1].versionIdentifier == OpenASOSchemaV2.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[2].versionIdentifier == OpenASOSchemaV3.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[3].versionIdentifier == OpenASOSchemaV4.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[4].versionIdentifier == OpenASOSchemaV5.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas[5].versionIdentifier == OpenASOSchemaV6.versionIdentifier)
         #expect(
             OpenASOMigrationPlan.currentSchema.versionIdentifier
                 == OpenASOMigrationPlan.schemas.last?.versionIdentifier
         )
-        #expect(OpenASOMigrationPlan.stages.count == 4)
+        #expect(OpenASOMigrationPlan.stages.count == 5)
         #expect(container.migrationPlan != nil)
     }
 
@@ -226,7 +229,7 @@ struct PersistenceMigrationTests {
                 at: materialized.storeURL
             )
             let modelContext = ModelContext(container)
-            try assertExactV4FixtureSentinels(in: modelContext)
+            try assertExactV4FixtureSentinels(in: modelContext, normalizedRankings: true)
             #expect(try modelContext.fetch(FetchDescriptor<KeywordResearchProject>()).isEmpty)
             #expect(try modelContext.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
 
@@ -261,7 +264,7 @@ struct PersistenceMigrationTests {
                 at: materialized.storeURL
             )
             let modelContext = ModelContext(container)
-            try assertExactV4FixtureSentinels(in: modelContext)
+            try assertExactV4FixtureSentinels(in: modelContext, normalizedRankings: true)
 
             let projects = try modelContext.fetch(FetchDescriptor<KeywordResearchProject>())
             let memberships = try modelContext.fetch(FetchDescriptor<KeywordResearchKeyword>())
@@ -319,12 +322,12 @@ struct PersistenceMigrationTests {
             let configuration = ModelConfiguration(schema: schema, url: storeURL)
             let container = try ModelContainer(for: schema, configurations: [configuration])
             let context = ModelContext(container)
-            let query = KeywordQuery(
+            let query = OpenASOSchemaV1.KeywordQuery(
                 term: keyword,
                 storefront: storefront,
                 platform: platform
             )
-            let crawl = KeywordRankingCrawl(
+            let crawl = LegacyKeywordRankingCrawl(
                 keyword: keyword,
                 storefront: storefront,
                 platform: platform,
@@ -333,7 +336,7 @@ struct PersistenceMigrationTests {
                 resultCount: 1,
                 query: query
             )
-            let crawlItem = KeywordAppRanking(
+            let crawlItem = LegacyKeywordAppRanking(
                 position: 1,
                 appStoreID: 320_000_499,
                 bundleID: "com.example.v4-result",
@@ -570,8 +573,12 @@ struct PersistenceMigrationTests {
         let screenshots = try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>())
         let queries = try modelContext.fetch(FetchDescriptor<KeywordQuery>())
         let keywordMetrics = try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>())
-        let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
-        let crawlItems = try modelContext.fetch(FetchDescriptor<KeywordAppRanking>())
+        let crawls = try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
+        let crawlItems = try modelContext.fetch(FetchDescriptor<RankingFact>())
+        let revisions = try modelContext.fetch(FetchDescriptor<RankingAppRevision>())
+        let rankingLinks = try modelContext.fetch(FetchDescriptor<TrackedRankingCrawlLink>())
+        let legacyCrawls = try modelContext.fetch(FetchDescriptor<LegacyKeywordRankingCrawl>())
+        let legacyCrawlItems = try modelContext.fetch(FetchDescriptor<LegacyKeywordAppRanking>())
         let trackedApps = try modelContext.fetch(FetchDescriptor<TrackedApp>())
         let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
         let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
@@ -588,12 +595,16 @@ struct PersistenceMigrationTests {
         #expect(screenshots.count == 1)
         #expect(queries.count == 1)
         #expect(keywordMetrics.count == 1)
-        #expect(crawls.count == 1)
-        #expect(crawlItems.count == 1)
+        #expect(crawls.count == 2)
+        #expect(crawlItems.count == 2)
+        #expect(revisions.count == 2)
+        #expect(rankingLinks.count == 1)
+        #expect(legacyCrawls.isEmpty)
+        #expect(legacyCrawlItems.isEmpty)
         #expect(trackedApps.count == 1)
         #expect(tracks.count == 1)
         #expect(snapshots.count == 1)
-        #expect(rankedResults.count == 1)
+        #expect(rankedResults.isEmpty)
         #expect(storefronts.count == 1)
 
         let folder = try #require(folders.first)
@@ -606,12 +617,17 @@ struct PersistenceMigrationTests {
         let screenshot = try #require(screenshots.first)
         let query = try #require(queries.first)
         let metric = try #require(keywordMetrics.first)
-        let crawl = try #require(crawls.first)
-        let crawlItem = try #require(crawlItems.first)
+        let crawl = try #require(crawls.first { $0.source == .appStoreWeb })
+        let crawlItem = try #require(crawlItems.first {
+            $0.observation.observationKey == crawl.observationKey
+        })
         let trackedApp = try #require(trackedApps.first)
         let track = try #require(tracks.first)
         let snapshot = try #require(snapshots.first)
-        let rankedResult = try #require(rankedResults.first)
+        let rankingLink = try #require(rankingLinks.first)
+        let linkedResult = try #require(crawlItems.first {
+            $0.observation.observationKey == rankingLink.crawl.observationKey
+        })
         let storefront = try #require(storefronts.first)
 
         #expect(folder.id == ReleasedV1FixtureSentinel.folderID)
@@ -692,7 +708,7 @@ struct PersistenceMigrationTests {
         #expect(query.storefront == ReleasedV1FixtureSentinel.storefront)
         #expect(query.platform == .iphone)
         #expect(query.tracks.map(\.identityKey) == [track.identityKey])
-        #expect(query.observations.map(\.observationKey) == [crawl.observationKey])
+        #expect(query.observations.isEmpty)
 
         #expect(track.identityKey == ReleasedV1FixtureSentinel.trackIdentityKey)
         #expect(track.appStoreID == ReleasedV1FixtureSentinel.appStoreID)
@@ -715,16 +731,16 @@ struct PersistenceMigrationTests {
         #expect(snapshot.searchedAt == ReleasedV1FixtureSentinel.fixtureDate)
         #expect(snapshot.source == .iTunesFallback)
         #expect(snapshot.errorMessage == "released-snapshot-warning")
-        #expect(snapshot.topResults.map(\.appStoreID) == [rankedResult.appStoreID])
+        #expect(snapshot.topResults.isEmpty)
 
-        #expect(rankedResult.snapshot.snapshotKey == snapshot.snapshotKey)
-        #expect(rankedResult.snapshotKey == snapshot.snapshotKey)
-        #expect(rankedResult.position == ReleasedV1FixtureSentinel.competitorPosition)
-        #expect(rankedResult.appStoreID == ReleasedV1FixtureSentinel.competitorAppStoreID)
-        #expect(rankedResult.bundleID == ReleasedV1FixtureSentinel.competitorBundleID)
-        #expect(rankedResult.name == ReleasedV1FixtureSentinel.competitorName)
-        #expect(rankedResult.subtitle == "Fixture ranked subtitle")
-        #expect(rankedResult.sellerName == "Fixture Ranked Seller")
+        #expect(rankingLink.snapshotKey == snapshot.snapshotKey)
+        #expect(rankingLink.crawl.observationKey == "tracked-recovery::\(snapshot.snapshotKey)")
+        #expect(linkedResult.position == ReleasedV1FixtureSentinel.competitorPosition)
+        #expect(linkedResult.appStoreID == ReleasedV1FixtureSentinel.competitorAppStoreID)
+        #expect(linkedResult.bundleID == ReleasedV1FixtureSentinel.competitorBundleID)
+        #expect(linkedResult.name == ReleasedV1FixtureSentinel.competitorName)
+        #expect(linkedResult.subtitle == "Fixture ranked subtitle")
+        #expect(linkedResult.sellerName == "Fixture Ranked Seller")
 
         #expect(stats.identityKey == ReleasedV1FixtureSentinel.trackIdentityKey)
         #expect(stats.appStoreID == ReleasedV1FixtureSentinel.appStoreID)
@@ -829,8 +845,8 @@ struct PersistenceMigrationTests {
         #expect(crawl.submissionCount == 6)
         #expect(crawl.winningCount == 5)
         #expect(crawl.confidenceRaw == "fixture-crawl-confidence")
-        #expect(crawl.query.queryKey == query.queryKey)
-        #expect(crawl.items.map(\.itemKey) == [crawlItem.itemKey])
+        #expect(crawl.queryKey == query.queryKey)
+        #expect(crawlItem.observation.observationKey == crawl.observationKey)
 
         #expect(crawlItem.position == 2)
         #expect(crawlItem.appStoreID == ReleasedV1FixtureSentinel.competitorAppStoreID)
@@ -859,8 +875,8 @@ struct PersistenceMigrationTests {
         observedAt: Date
     ) throws {
         let query = try #require(modelContext.fetch(FetchDescriptor<KeywordQuery>()).first)
-        let crawl = try #require(modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>()).first)
-        let crawlItem = try #require(modelContext.fetch(FetchDescriptor<KeywordAppRanking>()).first)
+        let crawl = try #require(modelContext.fetch(FetchDescriptor<RankingCrawlRecord>()).first)
+        let crawlItem = try #require(modelContext.fetch(FetchDescriptor<RankingFact>()).first)
         let metrics = try #require(modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
         let attempt = try #require(
             modelContext.fetch(FetchDescriptor<TrackedAppKeywordRefreshAttempt>()).first
@@ -876,10 +892,10 @@ struct PersistenceMigrationTests {
         ).sorted { $0.position < $1.position }
 
         #expect(query.queryKey == queryKey)
-        #expect(query.observations.map(\.observationKey) == [crawl.observationKey])
+        #expect(query.observations.isEmpty)
         #expect(crawl.queryKey == queryKey)
         #expect(crawl.observedAt == observedAt)
-        #expect(crawl.items.map(\.itemKey) == [crawlItem.itemKey])
+        #expect(crawlItem.observation.observationKey == crawl.observationKey)
         #expect(crawlItem.queryKey == queryKey)
         #expect(crawlItem.name == "V4 Result")
         #expect(metrics.queryKey == queryKey)

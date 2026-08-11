@@ -9,24 +9,26 @@ enum KeywordRankingHistoryLoader {
     ) throws -> [KeywordRankingCrawlSummary] {
         let targetQueryKey = queryKey
         let targetAppStoreID = appStoreID
-        let crawlDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+        let crawlDescriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { crawl in
                 crawl.queryKey == targetQueryKey
             },
             sortBy: [
-                SortDescriptor(\KeywordRankingCrawl.observedAt, order: .forward),
-                SortDescriptor(\KeywordRankingCrawl.observationKey, order: .forward)
+                SortDescriptor(\RankingCrawlRecord.observedAt, order: .forward),
+                SortDescriptor(\RankingCrawlRecord.observationKey, order: .forward)
             ]
         )
         let crawls = try modelContext.fetch(crawlDescriptor)
+            .filter { !$0.isTrackedRecovery }
 
         guard !crawls.isEmpty else {
             return []
         }
 
-        let rankingDescriptor = FetchDescriptor<KeywordAppRanking>(
+        let rankingDescriptor = FetchDescriptor<RankingFact>(
             predicate: #Predicate { ranking in
-                ranking.queryKey == targetQueryKey && ranking.appStoreID == targetAppStoreID
+                ranking.observation.queryKey == targetQueryKey
+                    && ranking.appStoreID == targetAppStoreID
             }
         )
         let rankings = try modelContext.fetch(rankingDescriptor)

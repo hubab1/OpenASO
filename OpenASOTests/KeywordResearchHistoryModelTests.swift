@@ -354,7 +354,7 @@ private func historyCursor(
     _ observation: KeywordResearchRankingObservationSnapshot
 ) -> KeywordResearchRankingHistoryCursor {
     KeywordResearchRankingHistoryCursor(
-        dayBucket: KeywordRankingCrawl.utcDayBucket(
+        dayBucket: RankingCrawlRecord.utcDayBucket(
             for: observation.observedAt
         ),
         consumedSourceIDs: [observation.source.rawValue]

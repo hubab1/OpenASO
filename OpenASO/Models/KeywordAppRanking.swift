@@ -64,3 +64,4 @@ final class KeywordAppRanking {
 }
 
 typealias KeywordAppRanking = OpenASOSchemaV1.KeywordAppRanking
+typealias LegacyKeywordAppRanking = OpenASOSchemaV1.KeywordAppRanking

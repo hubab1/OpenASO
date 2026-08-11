@@ -254,21 +254,24 @@ struct KeywordRankingHistoryTests {
             makeRanking(
                 position: 4,
                 appStoreID: targetAppStoreID,
-                observation: oldTargetCrawl
+                observation: oldTargetCrawl,
+                in: modelContext
             )
         )
         modelContext.insert(
             makeRanking(
                 position: 1,
                 appStoreID: otherAppStoreID,
-                observation: recentTargetCrawl
+                observation: recentTargetCrawl,
+                in: modelContext
             )
         )
         modelContext.insert(
             makeRanking(
                 position: 2,
                 appStoreID: targetAppStoreID,
-                observation: otherQueryCrawl
+                observation: otherQueryCrawl,
+                in: modelContext
             )
         )
         try modelContext.save()
@@ -299,7 +302,8 @@ struct KeywordRankingHistoryTests {
             makeRanking(
                 position: 7,
                 appStoreID: 100,
-                observation: crawl
+                observation: crawl,
+                in: modelContext
             )
         )
         try modelContext.save()
@@ -448,7 +452,7 @@ struct KeywordRankingHistoryTests {
             resultCount: 10,
             keywordTrack: track
         )
-        let crawl = KeywordRankingCrawl(
+        let crawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -585,8 +589,8 @@ private func makeSummary(id: String, rank: Int?, date: Date) -> KeywordRankingCr
     )
 }
 
-private func makeCrawl(query: KeywordQuery, date: Date) -> KeywordRankingCrawl {
-    KeywordRankingCrawl(
+private func makeCrawl(query: KeywordQuery, date: Date) -> RankingCrawlRecord {
+    RankingCrawlRecord(
         keyword: query.term,
         storefront: query.storefront,
         platform: query.platform,
@@ -597,25 +601,26 @@ private func makeCrawl(query: KeywordQuery, date: Date) -> KeywordRankingCrawl {
     )
 }
 
+@MainActor
 private func makeRanking(
     position: Int,
     appStoreID: Int64,
-    observation: KeywordRankingCrawl
-) -> KeywordAppRanking {
-    KeywordAppRanking(
+    observation: RankingCrawlRecord,
+    in modelContext: ModelContext
+) -> RankingFact {
+    makeRankingFact(
         position: position,
         appStoreID: appStoreID,
         bundleID: "com.example.\(appStoreID)",
         name: "App \(appStoreID)",
         sellerName: "Example",
-        observation: observation
+        observation: observation,
+        in: modelContext
     )
 }
 
 private func makeInMemoryContainer() throws -> ModelContainer {
-    let schema = Schema(OpenASOSchemaV1.models)
-    let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-    return try ModelContainer(for: schema, configurations: [configuration])
+    try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 }
 
 private func utcCalendar() -> Calendar {

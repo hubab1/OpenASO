@@ -290,7 +290,7 @@ struct KeywordWorkspaceProjectionTests {
             trackedApp: trackedApp,
             query: query
         )
-        let oldCrawl = KeywordRankingCrawl(
+        let oldCrawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -299,7 +299,7 @@ struct KeywordWorkspaceProjectionTests {
             resultCount: 100,
             query: query
         )
-        let latestCrawl = KeywordRankingCrawl(
+        let latestCrawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -318,29 +318,32 @@ struct KeywordWorkspaceProjectionTests {
             source: .appleAdsPopularity
         )
         let rankings = [
-            KeywordAppRanking(
+            makeRankingFact(
                 position: 8,
                 appStoreID: appStoreID,
                 bundleID: trackedApp.bundleID,
                 name: trackedApp.name,
                 sellerName: trackedApp.sellerName,
-                observation: oldCrawl
+                observation: oldCrawl,
+                in: modelContext
             ),
-            KeywordAppRanking(
+            makeRankingFact(
                 position: 3,
                 appStoreID: appStoreID,
                 bundleID: trackedApp.bundleID,
                 name: trackedApp.name,
                 sellerName: trackedApp.sellerName,
-                observation: latestCrawl
+                observation: latestCrawl,
+                in: modelContext
             ),
-            KeywordAppRanking(
+            makeRankingFact(
                 position: 1,
                 appStoreID: 202,
                 bundleID: "com.example.competitor",
                 name: "Competitor",
                 sellerName: "Example",
-                observation: latestCrawl
+                observation: latestCrawl,
+                in: modelContext
             )
         ]
 
@@ -408,7 +411,7 @@ struct KeywordWorkspaceProjectionTests {
             query: query
         )
         let oldDate = Date.now.addingTimeInterval(-30 * 86_400)
-        let oldCrawl = KeywordRankingCrawl(
+        let oldCrawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -417,13 +420,14 @@ struct KeywordWorkspaceProjectionTests {
             resultCount: 100,
             query: query
         )
-        let ranking = KeywordAppRanking(
+        let ranking = makeRankingFact(
             position: 3,
             appStoreID: appStoreID,
             bundleID: trackedApp.bundleID,
             name: trackedApp.name,
             sellerName: trackedApp.sellerName,
-            observation: oldCrawl
+            observation: oldCrawl,
+            in: modelContext
         )
 
         modelContext.insert(trackedApp)

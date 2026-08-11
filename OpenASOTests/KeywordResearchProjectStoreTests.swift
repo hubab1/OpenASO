@@ -718,7 +718,7 @@ struct KeywordResearchProjectStoreTests {
                 source: .appleAdsPopularity,
                 updatedAt: baseDate
             )
-            let crawl = KeywordRankingCrawl(
+            let crawl = RankingCrawlRecord(
                 keyword: query.term,
                 storefront: query.storefront,
                 platform: query.platform,
@@ -727,13 +727,14 @@ struct KeywordResearchProjectStoreTests {
                 resultCount: 1,
                 query: query
             )
-            let ranking = KeywordAppRanking(
+            let ranking = makeRankingFact(
                 position: 1,
                 appStoreID: 320_000_001,
                 bundleID: "com.example.shared",
                 name: "Shared Result",
                 sellerName: "Example",
-                observation: crawl
+                observation: crawl,
+                in: modelContext
             )
             let difficulty = EstimatedKeywordDifficultyMetric(
                 queryKey: queryKey,
@@ -785,8 +786,6 @@ struct KeywordResearchProjectStoreTests {
                 exactTitlePhraseMatch: true,
                 exactSubtitlePhraseMatch: false
             )
-            query.observations.append(crawl)
-            crawl.items.append(ranking)
             modelContext.insert(metric)
             modelContext.insert(crawl)
             modelContext.insert(ranking)
@@ -802,8 +801,8 @@ struct KeywordResearchProjectStoreTests {
                 try modelContext.fetchCount(FetchDescriptor<KeywordResearchKeyword>()),
                 try modelContext.fetchCount(FetchDescriptor<KeywordQuery>()),
                 try modelContext.fetchCount(FetchDescriptor<KeywordDailyMetric>()),
-                try modelContext.fetchCount(FetchDescriptor<KeywordRankingCrawl>()),
-                try modelContext.fetchCount(FetchDescriptor<KeywordAppRanking>()),
+                try modelContext.fetchCount(FetchDescriptor<RankingCrawlRecord>()),
+                try modelContext.fetchCount(FetchDescriptor<RankingFact>()),
                 try modelContext.fetchCount(FetchDescriptor<EstimatedKeywordDifficultyMetric>()),
                 try modelContext.fetchCount(FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>())
             ]

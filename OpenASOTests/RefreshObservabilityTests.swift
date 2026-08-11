@@ -464,7 +464,7 @@ struct RefreshObservabilityTests {
             Set(snapshots.map(\.trackIdentityKey)).count
         }
         let persistedQueryCount = try await fixture.backgroundModelStore.fetch(
-            FetchDescriptor<KeywordRankingCrawl>()
+            FetchDescriptor<RankingCrawlRecord>()
         ) { observations in
             Set(observations.map(\.queryKey)).count
         }
@@ -595,7 +595,7 @@ struct RefreshObservabilityTests {
         let persisted = try await fixture.backgroundModelStore.read { modelContext in
             let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
             let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
-            let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+            let crawls = try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
             let statuses = try TrackedKeywordRefreshStatusStore.snapshots(
                 for: tracks.map(\.identityKey),
                 in: modelContext
