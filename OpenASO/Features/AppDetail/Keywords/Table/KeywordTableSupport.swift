@@ -675,7 +675,7 @@ struct KeywordRankingCrawlSummary: Identifiable, Equatable, Sendable {
         )
     }
 
-    init(crawl: KeywordRankingCrawl, rank: Int?, errorMessage: String? = nil) {
+    init(crawl: RankingCrawlRecord, rank: Int?, errorMessage: String? = nil) {
         self.init(
             id: crawl.observationKey,
             rank: rank,
@@ -724,7 +724,7 @@ struct KeywordRankingAppSummary: Identifiable, Equatable, Sendable {
         )
     }
 
-    init(_ ranking: KeywordAppRanking) {
+    init(_ ranking: RankingFact) {
         self.init(
             position: ranking.position,
             appStoreID: ranking.appStoreID,

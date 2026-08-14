@@ -225,7 +225,7 @@ private struct AppDetailPreviewHarness: View {
             platform: .iphone,
             in: modelContext
         )
-        let observation = KeywordRankingCrawl(
+        let observation = RankingCrawlRecord(
             keyword: keyword,
             storefront: storefront,
             platform: .iphone,
@@ -238,16 +238,21 @@ private struct AppDetailPreviewHarness: View {
 
         let rank = max(1, min(9, keyword.count % 10))
         for (index, app) in rankedApps(rank: rank, competitors: competitors).enumerated() {
-            let item = KeywordAppRanking(
-                position: index + 1,
-                appStoreID: app.id == 6448311069 ? trackedAppID : app.id,
+            let rankingAppStoreID = app.id == 6448311069 ? trackedAppID : app.id
+            let revision = RankingAppRevision(
+                appStoreID: rankingAppStoreID,
                 bundleID: app.bundleID,
                 name: app.name,
                 subtitle: nil,
-                sellerName: app.seller,
+                sellerName: app.seller
+            )
+            let item = RankingFact(
+                position: index + 1,
+                appStoreID: rankingAppStoreID,
+                revision: revision,
                 observation: observation
             )
-            observation.items.append(item)
+            modelContext.insert(revision)
             modelContext.insert(item)
         }
     }

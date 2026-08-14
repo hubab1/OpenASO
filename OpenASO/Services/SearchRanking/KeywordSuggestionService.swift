@@ -85,12 +85,12 @@ final class KeywordSuggestionService: Sendable {
         let targetAppStoreID = request.appStoreID
         let maximumCutoffDate = now.addingTimeInterval(-maximumSuggestionAge)
         let strongCutoffDate = now.addingTimeInterval(-strongSuggestionAge)
-        var targetItemDescriptor = FetchDescriptor<KeywordAppRanking>(
+        var targetItemDescriptor = FetchDescriptor<RankingFact>(
             predicate: #Predicate { item in
                 item.appStoreID == targetAppStoreID
             },
             sortBy: [
-                SortDescriptor(\.observedAt, order: .reverse),
+                SortDescriptor(\RankingFact.observation.observedAt, order: .reverse),
                 SortDescriptor(\.position, order: .forward)
             ]
         )
@@ -131,14 +131,14 @@ final class KeywordSuggestionService: Sendable {
         var appEvidenceByID: [Int64: AppSuggestionEvidence] = [:]
 
         for queryKey in request.trackedQueryKeys {
-            var competitorDescriptor = FetchDescriptor<KeywordAppRanking>(
+            var competitorDescriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { item in
-                    item.queryKey == queryKey
+                    item.observation.queryKey == queryKey
                     && item.appStoreID != targetAppStoreID
                     && item.position <= 10
                 },
                 sortBy: [
-                    SortDescriptor(\.observedAt, order: .reverse),
+                    SortDescriptor(\RankingFact.observation.observedAt, order: .reverse),
                     SortDescriptor(\.position, order: .forward)
                 ]
             )
@@ -200,11 +200,11 @@ final class KeywordSuggestionService: Sendable {
         let targetAppStoreID = request.appStoreID
         var latestDate: Date?
 
-        var targetDescriptor = FetchDescriptor<KeywordAppRanking>(
+        var targetDescriptor = FetchDescriptor<RankingFact>(
             predicate: #Predicate { item in
                 item.appStoreID == targetAppStoreID
             },
-            sortBy: [SortDescriptor(\.observedAt, order: .reverse)]
+            sortBy: [SortDescriptor(\RankingFact.observation.observedAt, order: .reverse)]
         )
         targetDescriptor.fetchLimit = 1
         if let observedAt = try modelContext.fetch(targetDescriptor).first?.observedAt, observedAt >= cutoffDate {
@@ -212,13 +212,13 @@ final class KeywordSuggestionService: Sendable {
         }
 
         for queryKey in request.trackedQueryKeys {
-            var competitorDescriptor = FetchDescriptor<KeywordAppRanking>(
+            var competitorDescriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { item in
-                    item.queryKey == queryKey
+                    item.observation.queryKey == queryKey
                     && item.appStoreID != targetAppStoreID
                     && item.position <= 10
                 },
-                sortBy: [SortDescriptor(\.observedAt, order: .reverse)]
+                sortBy: [SortDescriptor(\RankingFact.observation.observedAt, order: .reverse)]
             )
             competitorDescriptor.fetchLimit = 1
 
@@ -230,7 +230,7 @@ final class KeywordSuggestionService: Sendable {
         return latestDate
     }
 
-    private static func keyword(from item: KeywordAppRanking, queryKey: String) -> String? {
+    private static func keyword(from item: RankingFact, queryKey: String) -> String? {
         let suffix = "::\(item.storefront.lowercased())::\(item.platformRaw)"
         guard queryKey.hasSuffix(suffix) else {
             return queryKey
@@ -420,8 +420,8 @@ private struct KeywordSuggestionEvidence {
         self.platform = platform
     }
 
-    mutating func add(item: KeywordAppRanking, observedAt: Date) {
-        let day = KeywordRankingCrawl.utcDayBucket(for: observedAt)
+    mutating func add(item: RankingFact, observedAt: Date) {
+        let day = RankingCrawlRecord.utcDayBucket(for: observedAt)
         let evidenceKey = "\(item.queryKey)|\(day)"
         guard collapsedEvidenceKeys.insert(evidenceKey).inserted else {
             if item.position < bestObservedRank {
@@ -464,8 +464,8 @@ private struct AppSuggestionEvidence {
         self.sellerName = sellerName
     }
 
-    mutating func add(item: KeywordAppRanking, queryKey: String, observedAt: Date) {
-        let day = KeywordRankingCrawl.utcDayBucket(for: observedAt)
+    mutating func add(item: RankingFact, queryKey: String, observedAt: Date) {
+        let day = RankingCrawlRecord.utcDayBucket(for: observedAt)
         let evidenceKey = "\(queryKey)|\(day)"
         guard collapsedEvidenceKeys.insert(evidenceKey).inserted else {
             if item.position < bestObservedRank {

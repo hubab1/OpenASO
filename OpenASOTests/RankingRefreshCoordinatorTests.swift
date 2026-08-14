@@ -141,7 +141,7 @@ struct RankingRefreshCoordinatorTests {
         #expect(ranksByTrack[fixture.secondTrack.identityKey] == 3)
         #expect(ranksByTrack[fixture.thirdTrack.identityKey] == 2)
 
-        let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+        let crawls = try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
         #expect(crawls.count == 2)
         #expect(crawls.allSatisfy { $0.confidenceRaw == "single_source" })
         #expect(crawls.first(where: { $0.queryKey == fixture.firstTrack.queryKey })?.submissionCount == 1)
@@ -214,7 +214,7 @@ struct RankingRefreshCoordinatorTests {
 
         let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
         #expect(snapshots.map(\.trackIdentityKey) == [fixture.thirdTrack.identityKey])
-        let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+        let crawls = try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
         #expect(crawls.count == 1)
         #expect(crawls.first?.queryKey == fixture.thirdTrack.queryKey)
         #expect(crawls.first?.confidenceRaw == "single_source")
@@ -325,7 +325,7 @@ struct RankingRefreshCoordinatorTests {
         switch result {
         case .success(let snapshot):
             #expect(snapshot.rank == 2)
-            #expect(snapshot.topResults.count == 2)
+            #expect(snapshot.topResults.isEmpty)
             #expect(track.rankingAppCount == 2)
             #expect(track.lastRefreshAt != nil)
         case .failure(let error):
@@ -335,8 +335,8 @@ struct RankingRefreshCoordinatorTests {
         let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
         let rankedResults = try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>())
         let storeApps = try modelContext.fetch(FetchDescriptor<StoreApp>())
-        let observations = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
-        let observationItems = try modelContext.fetch(FetchDescriptor<KeywordAppRanking>())
+        let observations = try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
+        let observationItems = try modelContext.fetch(FetchDescriptor<RankingFact>())
         let latestRatings = try modelContext.fetch(FetchDescriptor<LatestAppRating>())
         let ratingSnapshots = try modelContext.fetch(FetchDescriptor<AppDailyRating>())
         let storefrontMetadata = try modelContext.fetch(FetchDescriptor<AppStorefrontMetadata>())
@@ -344,14 +344,13 @@ struct RankingRefreshCoordinatorTests {
         let appKeywordStats = try modelContext.fetch(FetchDescriptor<AppKeywordStats>())
 
         #expect(snapshots.count == 1)
-        #expect(rankedResults.count == 2)
+        #expect(rankedResults.isEmpty)
         #expect(storeApps.count == 2)
         #expect(observations.count == 1)
         #expect(observationItems.count == 2)
-        #expect(rankedResults.first(where: { $0.appStoreID == 361309726 })?.subtitle == "Documents that stand apart")
         #expect(observationItems.first(where: { $0.appStoreID == 361309726 })?.subtitle == "Documents that stand apart")
-        #expect(appKeywordStats.count == 2)
-        #expect(appKeywordStats.first(where: { $0.appStoreID == 842842640 })?.bestRank == 2)
+        #expect(appKeywordStats.isEmpty)
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedRankingCrawlLink>()) == 1)
         let pagesStoreApp = storeApps.first(where: { $0.appStoreID == 361309726 })
         #expect(pagesStoreApp?.iconURLString == "https://example.com/pages-100.png")
         #expect(pagesStoreApp?.supportedLanguageCodes == ["EN", "FR"])
@@ -439,12 +438,11 @@ struct RankingRefreshCoordinatorTests {
         )
         try modelContext.save()
 
-        #expect(try modelContext.fetch(FetchDescriptor<KeywordAppRanking>()).contains {
+        #expect(try modelContext.fetch(FetchDescriptor<RankingFact>()).contains {
             $0.appStoreID == competitorID
         })
-        #expect(try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>()).contains {
-            $0.appStoreID == competitorID
-        })
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedKeywordRankedResult>()) == 0)
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedRankingCrawlLink>()) == 1)
         let storedApps = try modelContext.fetch(FetchDescriptor<StoreApp>())
         let storedScreenshots = try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>())
         let storedRatings = try modelContext.fetch(FetchDescriptor<LatestAppRating>())
@@ -461,7 +459,7 @@ struct RankingRefreshCoordinatorTests {
     }
 
     @Test
-    func largePageStoresOneCanonicalCopyAndOnlyLegacyPreviewRows() throws {
+    func largePageStoresOneCanonicalCopyAndNoLegacyPreviewRows() throws {
         let container = try makeInMemoryContainer()
         let modelContext = ModelContext(container)
         modelContext.autosaveEnabled = false
@@ -514,11 +512,11 @@ struct RankingRefreshCoordinatorTests {
         )
         try modelContext.save()
 
-        let canonicalRows = try modelContext.fetch(FetchDescriptor<KeywordAppRanking>())
+        let canonicalRows = try modelContext.fetch(FetchDescriptor<RankingFact>())
         let legacyRows = try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>())
         #expect(canonicalRows.count == SearchRankingCrawl.fullKeywordRankingLimit)
-        #expect(legacyRows.count == 6)
-        #expect(Set(legacyRows.map(\.position)) == Set([1, 2, 3, 4, 5, 200]))
+        #expect(legacyRows.isEmpty)
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedRankingCrawlLink>()) == 1)
     }
 
     @Test
@@ -810,7 +808,7 @@ struct RankingRefreshCoordinatorTests {
                 .first(where: { $0.code == "yy" })
         )
         #expect(durableStorefront.name == "Persisted stats storefront name")
-        #expect(try verificationContext.fetchCount(FetchDescriptor<KeywordRankingCrawl>()) == 1)
+        #expect(try verificationContext.fetchCount(FetchDescriptor<RankingCrawlRecord>()) == 1)
         #expect(try verificationContext.fetchCount(FetchDescriptor<TrackedKeywordDailyRanking>()) == 1)
         #expect(try verificationContext.fetchCount(FetchDescriptor<AppKeywordStats>()) == 0)
     }
@@ -1470,7 +1468,7 @@ struct RankingRefreshCoordinatorTests {
                 platform: .iphone,
                 in: modelContext
             )
-            let observation = KeywordRankingCrawl(
+            let observation = RankingCrawlRecord(
                 keyword: keyword,
                 storefront: "us",
                 platform: .iphone,
@@ -1479,16 +1477,15 @@ struct RankingRefreshCoordinatorTests {
                 resultCount: 10,
                 query: query
             )
-            let item = KeywordAppRanking(
+            let item = makeRankingFact(
                 position: position,
                 appStoreID: trackedApp.appStoreID,
                 bundleID: trackedApp.bundleID,
                 name: trackedApp.name,
                 sellerName: trackedApp.sellerName,
-                observation: observation
+                observation: observation,
+                in: modelContext
             )
-            observation.items.append(item)
-            query.observations.append(observation)
             modelContext.insert(observation)
             modelContext.insert(item)
         }
@@ -1602,23 +1599,20 @@ struct RankingRefreshCoordinatorTests {
 
         let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
         let rankedResults = try modelContext.fetch(FetchDescriptor<TrackedKeywordRankedResult>())
-        let observations = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
-        let observationItems = try modelContext.fetch(FetchDescriptor<KeywordAppRanking>())
+        let observations = try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
+        let observationItems = try modelContext.fetch(FetchDescriptor<RankingFact>())
         let appKeywordStats = try modelContext.fetch(FetchDescriptor<AppKeywordStats>())
 
         #expect(snapshots.count == 1)
         #expect(snapshots.first?.persistentModelID == snapshot.persistentModelID)
         #expect(snapshot.rank == 1)
-        #expect(snapshot.topResults.count == 1)
-        #expect(rankedResults.count == 1)
-        #expect(rankedResults.first?.appStoreID == 842842640)
+        #expect(snapshot.topResults.isEmpty)
+        #expect(rankedResults.isEmpty)
         #expect(observations.count == 1)
         #expect(observationItems.count == 1)
         #expect(observationItems.first?.appStoreID == 842842640)
-        #expect(appKeywordStats.count == 1)
-        #expect(appKeywordStats.first?.appStoreID == 842842640)
-        #expect(appKeywordStats.first?.latestRank == 1)
-        #expect(appKeywordStats.first?.observationCount == 1)
+        #expect(appKeywordStats.isEmpty)
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedRankingCrawlLink>()) == 1)
     }
 
     @Test
@@ -2373,8 +2367,8 @@ private func rankingPersistenceState(in modelContext: ModelContext) throws -> Ra
         }
         .sorted { $0.identityKey < $1.identityKey }
     return RankingPersistenceState(
-        crawlCount: try modelContext.fetchCount(FetchDescriptor<KeywordRankingCrawl>()),
-        observationItemCount: try modelContext.fetchCount(FetchDescriptor<KeywordAppRanking>()),
+        crawlCount: try modelContext.fetchCount(FetchDescriptor<RankingCrawlRecord>()),
+        observationItemCount: try modelContext.fetchCount(FetchDescriptor<RankingFact>()),
         snapshotCount: try modelContext.fetchCount(FetchDescriptor<TrackedKeywordDailyRanking>()),
         rankedResultCount: try modelContext.fetchCount(FetchDescriptor<TrackedKeywordRankedResult>()),
         storeAppIDs: try modelContext.fetch(FetchDescriptor<StoreApp>()).map(\.appStoreID).sorted(),
@@ -3016,8 +3010,10 @@ private func makeInMemoryContainer() throws -> ModelContainer {
         AppStoreScreenshot.self,
         KeywordQuery.self,
         KeywordDailyMetric.self,
-        KeywordRankingCrawl.self,
-        KeywordAppRanking.self,
+        RankingAppRevision.self,
+        RankingCrawlRecord.self,
+        RankingFact.self,
+        TrackedRankingCrawlLink.self,
         TrackedApp.self,
         TrackedAppKeyword.self,
         TrackedKeywordRefreshStatus.self,

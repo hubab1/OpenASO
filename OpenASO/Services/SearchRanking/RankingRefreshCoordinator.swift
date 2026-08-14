@@ -118,7 +118,7 @@ struct RankingRefreshPageResult: Sendable {
 /// Context-bound result from the synchronous shared-observation transaction.
 /// It must never cross an actor or `ModelContext` boundary.
 struct RankingObservationPersistenceResult {
-    let observation: KeywordRankingCrawl
+    let observation: RankingCrawlRecord
     let appliedIncomingPage: Bool
 }
 
@@ -213,10 +213,9 @@ private struct RankingModelContextHasPendingChangesError: LocalizedError, Sendab
 }
 
 final class RankingRefreshCoordinator: Sendable {
-    // KeywordRankingCrawl is the canonical full-page history. Retain only the
+    // RankingCrawlRecord is the canonical full-page history. Retain only the
     // useful legacy preview rows on TrackedKeywordDailyRanking so each refresh
     // does not write the same 200-result page twice.
-    private static let legacySnapshotTopResultLimit = 5
 
     private let rankingProvider: any SearchRankingProvider
     private let appCatalogService: AppCatalogService
@@ -529,35 +528,36 @@ final class RankingRefreshCoordinator: Sendable {
             snapshot.errorMessage = nil
             snapshot.keywordTrack = track
 
-            let legacySnapshotItems = page.items.filter {
-                $0.position <= Self.legacySnapshotTopResultLimit
-                    || $0.appStoreID == trackedApp.appStoreID
-            }
-            var rankedResultsByAppStoreID = snapshot.topResults.reduce(
-                into: [Int64: TrackedKeywordRankedResult]()
-            ) { result, rankedResult in
-                result[rankedResult.appStoreID] = rankedResult
-            }
-            for item in legacySnapshotItems {
-                upsertRankedResult(
-                    from: item,
-                    snapshot: snapshot,
-                    snapshotKey: incomingSnapshotKey,
-                    in: modelContext,
-                    resultsByAppStoreID: &rankedResultsByAppStoreID
-                )
-            }
-            pruneRankedResults(
-                for: snapshot,
-                keeping: legacySnapshotItems.map(\.appStoreID),
-                in: modelContext
-            )
             track.rankingAppCount = page.resultCount
             if isNewSnapshot {
                 track.snapshots.append(snapshot)
             }
         } else {
             snapshot = existingSnapshot!
+        }
+
+        if incomingWinsTrackedSnapshot {
+            let linkedCrawl: RankingCrawlRecord
+            if sharedResult.appliedIncomingPage {
+                linkedCrawl = sharedResult.observation
+            } else if try observation(
+                sharedResult.observation,
+                exactlyMatches: pageResult.page,
+                in: modelContext
+            ) {
+                linkedCrawl = sharedResult.observation
+            } else {
+                linkedCrawl = try persistTrackedRecoveryObservation(
+                    pageResult,
+                    snapshotKey: snapshot.snapshotKey,
+                    in: modelContext
+                )
+            }
+            try upsertTrackedRankingLink(
+                snapshotKey: snapshot.snapshotKey,
+                crawl: linkedCrawl,
+                in: modelContext
+            )
         }
 
         try persistenceMutationCheckpoint?()
@@ -618,7 +618,7 @@ final class RankingRefreshCoordinator: Sendable {
             throw OpenASOError.unexpectedResponse
         }
 
-        let observationKey = KeywordRankingCrawl.makeObservationKey(
+        let observationKey = RankingCrawlRecord.makeObservationKey(
             queryKey: pageResult.request.queryKey,
             observedAt: pageResult.searchedAt,
             source: pageResult.page.source
@@ -638,7 +638,7 @@ final class RankingRefreshCoordinator: Sendable {
             )
         }
 
-        let observation = existingObservation ?? KeywordRankingCrawl(
+        let observation = existingObservation ?? RankingCrawlRecord(
             keyword: pageResult.request.term,
             storefront: pageResult.request.storefront,
             platform: pageResult.request.platform,
@@ -657,7 +657,6 @@ final class RankingRefreshCoordinator: Sendable {
 
         observation.observationKey = observationKey
         observation.queryKey = pageResult.request.queryKey
-        observation.query = query
         observation.keyword = pageResult.request.term
             .trimmingCharacters(in: .whitespacesAndNewlines)
         observation.storefront = pageResult.request.storefront
@@ -666,7 +665,7 @@ final class RankingRefreshCoordinator: Sendable {
         observation.platform = pageResult.request.platform
         observation.observedAt = pageResult.searchedAt
         observation.observedHour = pageResult.observedHour
-            ?? KeywordRankingCrawl.utcHourBucket(for: pageResult.searchedAt)
+            ?? RankingCrawlRecord.utcHourBucket(for: pageResult.searchedAt)
         observation.source = pageResult.page.source
         observation.resultCount = pageResult.page.resultCount
         observation.submissionCount = pageResult.submissionCount
@@ -687,11 +686,23 @@ final class RankingRefreshCoordinator: Sendable {
             observedAt: pageResult.searchedAt,
             in: modelContext
         )
-        var observationItemsByAppStoreID = observation.items.reduce(
-            into: [Int64: KeywordAppRanking]()
+        let currentObservationKey = observation.observationKey
+        let existingObservationItems = try modelContext.fetch(
+            FetchDescriptor<RankingFact>(
+                predicate: #Predicate { fact in
+                    fact.observation.observationKey == currentObservationKey
+                }
+            )
+        )
+        var observationItemsByAppStoreID = existingObservationItems.reduce(
+            into: [Int64: RankingFact]()
         ) { result, observationItem in
             result[observationItem.appStoreID] = observationItem
         }
+        let revisionsByKey = try RankingAppRevisionStore.revisions(
+            for: pageResult.page.items.map(RankingAppRevisionPayload.init),
+            in: modelContext
+        )
         for item in pageResult.page.items {
             if catalogEvidenceAppStoreIDs?.contains(item.appStoreID) != false {
                 let storeApp = try appCatalogService.upsertStoreApp(
@@ -713,15 +724,20 @@ final class RankingRefreshCoordinator: Sendable {
                     cache: &ratingCache
                 )
             }
+            let revisionKey = RankingAppRevisionPayload(item).revisionKey
+            guard let revision = revisionsByKey[revisionKey] else {
+                throw OpenASOError.unexpectedResponse
+            }
             upsertObservationItem(
                 from: item,
+                revision: revision,
                 observation: observation,
                 in: modelContext,
                 itemsByAppStoreID: &observationItemsByAppStoreID
             )
         }
         pruneObservationItems(
-            for: observation,
+            Array(observationItemsByAppStoreID.values),
             keeping: pageResult.page.items.map(\.appStoreID),
             in: modelContext
         )
@@ -781,110 +797,171 @@ final class RankingRefreshCoordinator: Sendable {
             }
     }
 
-    private func upsertRankedResult(
-        from item: SearchRankingItem,
-        snapshot: TrackedKeywordDailyRanking,
+    private func upsertTrackedRankingLink(
         snapshotKey: String,
-        in modelContext: ModelContext,
-        resultsByAppStoreID: inout [Int64: TrackedKeywordRankedResult]
-    ) {
-        let storedResult = resultsByAppStoreID[item.appStoreID] ?? TrackedKeywordRankedResult(
-            position: item.position,
-            appStoreID: item.appStoreID,
-            bundleID: item.bundleID,
-            name: item.name,
-            subtitle: item.subtitle,
-            sellerName: item.sellerName,
-            snapshot: snapshot
+        crawl: RankingCrawlRecord,
+        in modelContext: ModelContext
+    ) throws {
+        let targetSnapshotKey = snapshotKey
+        var descriptor = FetchDescriptor<TrackedRankingCrawlLink>(
+            predicate: #Predicate { link in
+                link.snapshotKey == targetSnapshotKey
+            }
         )
-        if storedResult.modelContext == nil {
-            snapshot.topResults.append(storedResult)
-            modelContext.insert(storedResult)
-            resultsByAppStoreID[item.appStoreID] = storedResult
+        descriptor.fetchLimit = 1
+        if let link = try modelContext.fetch(descriptor).first {
+            if link.crawl !== crawl {
+                link.crawl = crawl
+            }
+        } else {
+            modelContext.insert(TrackedRankingCrawlLink(snapshotKey: snapshotKey, crawl: crawl))
         }
-        if storedResult.snapshotKey != snapshotKey { storedResult.snapshotKey = snapshotKey }
-        if storedResult.position != item.position { storedResult.position = item.position }
-        if storedResult.appStoreID != item.appStoreID { storedResult.appStoreID = item.appStoreID }
-        if storedResult.bundleID != item.bundleID { storedResult.bundleID = item.bundleID }
-        if storedResult.name != item.name { storedResult.name = item.name }
-        if storedResult.subtitle != item.subtitle { storedResult.subtitle = item.subtitle }
-        if storedResult.sellerName != item.sellerName { storedResult.sellerName = item.sellerName }
-        if storedResult.snapshot !== snapshot {
-            storedResult.snapshot = snapshot
+    }
+
+    private func observation(
+        _ observation: RankingCrawlRecord,
+        exactlyMatches page: SearchRankingPage,
+        in modelContext: ModelContext
+    ) throws -> Bool {
+        let observationKey = observation.observationKey
+        let facts = try modelContext.fetch(
+            FetchDescriptor<RankingFact>(
+                predicate: #Predicate { fact in
+                    fact.observation.observationKey == observationKey
+                }
+            )
+        )
+        guard facts.count == page.items.count else { return false }
+        let factsByAppStoreID = Dictionary(
+            facts.map { ($0.appStoreID, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
+        guard factsByAppStoreID.count == page.items.count else { return false }
+        return page.items.allSatisfy { item in
+            guard let fact = factsByAppStoreID[item.appStoreID] else { return false }
+            return fact.position == item.position
+                && fact.revision.revisionKey == RankingAppRevisionPayload(item).revisionKey
         }
+    }
+
+    private func persistTrackedRecoveryObservation(
+        _ pageResult: RankingRefreshPageResult,
+        snapshotKey: String,
+        in modelContext: ModelContext
+    ) throws -> RankingCrawlRecord {
+        let recoveryKey = RankingCrawlRecord.makeTrackedRecoveryObservationKey(
+            snapshotKey: snapshotKey
+        )
+        var descriptor = FetchDescriptor<RankingCrawlRecord>(
+            predicate: #Predicate { crawl in
+                crawl.observationKey == recoveryKey
+            }
+        )
+        descriptor.fetchLimit = 1
+        let observation = try modelContext.fetch(descriptor).first ?? RankingCrawlRecord(
+            keyword: pageResult.request.term,
+            storefront: pageResult.request.storefront,
+            platform: pageResult.request.platform,
+            observedAt: pageResult.searchedAt,
+            source: pageResult.page.source,
+            resultCount: pageResult.page.resultCount,
+            observedHour: pageResult.observedHour,
+            submissionCount: pageResult.submissionCount,
+            winningCount: pageResult.winningCount,
+            confidence: pageResult.confidence
+        )
+        if observation.modelContext == nil {
+            modelContext.insert(observation)
+        }
+        observation.observationKey = recoveryKey
+        observation.queryKey = pageResult.request.queryKey
+        observation.keyword = pageResult.request.term
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        observation.storefront = pageResult.request.storefront
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        observation.platform = pageResult.request.platform
+        observation.observedAt = pageResult.searchedAt
+        observation.observedHour = pageResult.observedHour
+            ?? RankingCrawlRecord.utcHourBucket(for: pageResult.searchedAt)
+        observation.source = pageResult.page.source
+        observation.resultCount = pageResult.page.resultCount
+        observation.submissionCount = pageResult.submissionCount
+        observation.winningCount = pageResult.winningCount
+        observation.confidenceRaw = pageResult.confidence
+
+        let currentObservationKey = observation.observationKey
+        let existingFacts = try modelContext.fetch(
+            FetchDescriptor<RankingFact>(
+                predicate: #Predicate { fact in
+                    fact.observation.observationKey == currentObservationKey
+                }
+            )
+        )
+        var factsByAppStoreID = Dictionary(
+            existingFacts.map { ($0.appStoreID, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
+        let payloads = pageResult.page.items.map(RankingAppRevisionPayload.init)
+        let revisionsByKey = try RankingAppRevisionStore.revisions(
+            for: payloads,
+            in: modelContext
+        )
+        for (item, payload) in zip(pageResult.page.items, payloads) {
+            guard let revision = revisionsByKey[payload.revisionKey] else {
+                throw OpenASOError.unexpectedResponse
+            }
+            upsertObservationItem(
+                from: item,
+                revision: revision,
+                observation: observation,
+                in: modelContext,
+                itemsByAppStoreID: &factsByAppStoreID
+            )
+        }
+        pruneObservationItems(
+            Array(factsByAppStoreID.values),
+            keeping: pageResult.page.items.map(\.appStoreID),
+            in: modelContext
+        )
+        return observation
     }
 
     private func upsertObservationItem(
         from item: SearchRankingItem,
-        observation: KeywordRankingCrawl,
+        revision: RankingAppRevision,
+        observation: RankingCrawlRecord,
         in modelContext: ModelContext,
-        itemsByAppStoreID: inout [Int64: KeywordAppRanking]
+        itemsByAppStoreID: inout [Int64: RankingFact]
     ) {
-        let observationItem = itemsByAppStoreID[item.appStoreID] ?? KeywordAppRanking(
+        let observationItem = itemsByAppStoreID[item.appStoreID] ?? RankingFact(
             position: item.position,
             appStoreID: item.appStoreID,
-            bundleID: item.bundleID,
-            name: item.name,
-            subtitle: item.subtitle,
-            sellerName: item.sellerName,
+            revision: revision,
             observation: observation
         )
         if observationItem.modelContext == nil {
-            observation.items.append(observationItem)
             modelContext.insert(observationItem)
             itemsByAppStoreID[item.appStoreID] = observationItem
         }
         if observationItem.position != item.position { observationItem.position = item.position }
         if observationItem.appStoreID != item.appStoreID { observationItem.appStoreID = item.appStoreID }
-        if observationItem.bundleID != item.bundleID { observationItem.bundleID = item.bundleID }
-        if observationItem.name != item.name { observationItem.name = item.name }
-        if observationItem.subtitle != item.subtitle { observationItem.subtitle = item.subtitle }
-        if observationItem.sellerName != item.sellerName { observationItem.sellerName = item.sellerName }
-        if observationItem.crawlKey != observation.observationKey {
-            observationItem.crawlKey = observation.observationKey
-        }
-        if observationItem.queryKey != observation.queryKey { observationItem.queryKey = observation.queryKey }
-        if observationItem.storefront != observation.storefront {
-            observationItem.storefront = observation.storefront
-        }
-        if observationItem.platform != observation.platform { observationItem.platform = observation.platform }
-        if observationItem.observedAt != observation.observedAt {
-            observationItem.observedAt = observation.observedAt
-        }
-        let itemKey = KeywordAppRanking.makeItemKey(
-            observationKey: observation.observationKey,
-            appStoreID: item.appStoreID
-        )
-        if observationItem.itemKey != itemKey { observationItem.itemKey = itemKey }
+        if observationItem.revision !== revision { observationItem.revision = revision }
         if observationItem.observation !== observation {
             observationItem.observation = observation
         }
     }
 
-    private func pruneRankedResults(
-        for snapshot: TrackedKeywordDailyRanking,
-        keeping appStoreIDs: [Int64],
-        in modelContext: ModelContext
-    ) {
-        let retainedAppStoreIDs = Set(appStoreIDs)
-        let staleResults = snapshot.topResults.filter { !retainedAppStoreIDs.contains($0.appStoreID) }
-        for result in staleResults {
-            modelContext.delete(result)
-        }
-        snapshot.topResults.removeAll { !retainedAppStoreIDs.contains($0.appStoreID) }
-    }
-
     private func pruneObservationItems(
-        for observation: KeywordRankingCrawl,
+        _ observationItems: [RankingFact],
         keeping appStoreIDs: [Int64],
         in modelContext: ModelContext
     ) {
         let retainedAppStoreIDs = Set(appStoreIDs)
-        let staleItems = observation.items.filter { !retainedAppStoreIDs.contains($0.appStoreID) }
+        let staleItems = observationItems.filter { !retainedAppStoreIDs.contains($0.appStoreID) }
         for item in staleItems {
             modelContext.delete(item)
         }
-        observation.items.removeAll { !retainedAppStoreIDs.contains($0.appStoreID) }
     }
 
     private func fetchTrackedKeywordDailyRanking(
@@ -905,11 +982,11 @@ final class RankingRefreshCoordinator: Sendable {
             return snapshot
         }
 
-        let targetDayBucket = KeywordRankingCrawl.utcDayBucket(for: searchedAt)
+        let targetDayBucket = RankingCrawlRecord.utcDayBucket(for: searchedAt)
         return track.snapshots
             .filter {
                 $0.source == source
-                    && KeywordRankingCrawl.utcDayBucket(for: $0.searchedAt) == targetDayBucket
+                    && RankingCrawlRecord.utcDayBucket(for: $0.searchedAt) == targetDayBucket
             }
             .max { $0.searchedAt < $1.searchedAt }
     }
@@ -934,9 +1011,9 @@ final class RankingRefreshCoordinator: Sendable {
         observedAt: Date,
         source: RankingSource,
         in modelContext: ModelContext
-    ) throws -> KeywordRankingCrawl? {
+    ) throws -> RankingCrawlRecord? {
         let targetObservationKey = observationKey
-        var descriptor = FetchDescriptor<KeywordRankingCrawl>(
+        var descriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { observation in
                 observation.observationKey == targetObservationKey
             }
@@ -947,16 +1024,16 @@ final class RankingRefreshCoordinator: Sendable {
         }
 
         let targetQueryKey = queryKey
-        let fallbackDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+        let fallbackDescriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { observation in
                 observation.queryKey == targetQueryKey
             }
         )
-        let targetDayBucket = KeywordRankingCrawl.utcDayBucket(for: observedAt)
+        let targetDayBucket = RankingCrawlRecord.utcDayBucket(for: observedAt)
         return try modelContext.fetch(fallbackDescriptor)
             .filter {
                 $0.source == source
-                    && KeywordRankingCrawl.utcDayBucket(for: $0.observedAt) == targetDayBucket
+                    && RankingCrawlRecord.utcDayBucket(for: $0.observedAt) == targetDayBucket
             }
             .max { $0.observedAt < $1.observedAt }
     }
@@ -1367,214 +1444,18 @@ final class RankingRefreshCoordinator: Sendable {
         for requests: some Sequence<RankingStatsRebuildRequest>,
         in modelContext: ModelContext
     ) throws {
-        let queryKeys = Set(requests.map(\.queryKey))
-        for queryKey in queryKeys {
-            try rebuildAppKeywordStats(queryKey: queryKey, in: modelContext)
-        }
+        // V6 computes ranking aggregates directly from indexed canonical facts.
+        // Keep this compatibility entry point while older workflows are updated.
+        _ = requests
+        _ = modelContext
     }
 
     func rebuildDerivedStats(
         forQueryKey queryKey: String,
         in modelContext: ModelContext
     ) throws {
-        try rebuildAppKeywordStats(queryKey: queryKey, in: modelContext)
-    }
-
-    private func rebuildAppKeywordStats(
-        queryKey: String,
-        in modelContext: ModelContext
-    ) throws {
-        let metrics = try fetchKeywordMetrics(queryKey: queryKey, in: modelContext)
-        let observations = try fetchKeywordRankingCrawls(queryKey: queryKey, in: modelContext)
-        let existingStats = try fetchAppKeywordStats(queryKey: queryKey, in: modelContext)
-
-        struct KeywordAggregate {
-            var appStoreID: Int64
-            var keyword: String
-            var storefront: String
-            var platform: AppPlatform
-            var bestRank: Int
-            var latestRank: Int
-            var averageRank: Double
-            var observationCount: Int
-            var firstSeenAt: Date
-            var lastSeenAt: Date
-        }
-
-        var aggregates: [Int64: KeywordAggregate] = [:]
-        let orderedObservations = observations.sorted { lhs, rhs in
-            if lhs.observedAt != rhs.observedAt {
-                return lhs.observedAt < rhs.observedAt
-            }
-            return lhs.observationKey < rhs.observationKey
-        }
-        for observation in orderedObservations {
-            for item in observation.items {
-                if var aggregate = aggregates[item.appStoreID] {
-                    aggregate.bestRank = min(aggregate.bestRank, item.position)
-                    aggregate.latestRank = item.position
-                    aggregate.averageRank = (
-                        aggregate.averageRank * Double(aggregate.observationCount)
-                        + Double(item.position)
-                    ) / Double(aggregate.observationCount + 1)
-                    aggregate.observationCount += 1
-                    aggregate.firstSeenAt = min(aggregate.firstSeenAt, observation.observedAt)
-                    aggregate.lastSeenAt = max(aggregate.lastSeenAt, observation.observedAt)
-                    aggregates[item.appStoreID] = aggregate
-                } else {
-                    aggregates[item.appStoreID] = KeywordAggregate(
-                        appStoreID: item.appStoreID,
-                        keyword: observation.keyword,
-                        storefront: observation.storefront,
-                        platform: observation.platform,
-                        bestRank: item.position,
-                        latestRank: item.position,
-                        averageRank: Double(item.position),
-                        observationCount: 1,
-                        firstSeenAt: observation.observedAt,
-                        lastSeenAt: observation.observedAt
-                    )
-                }
-            }
-        }
-
-        let existingStatsByAppStoreID = Dictionary(uniqueKeysWithValues: existingStats.map { ($0.appStoreID, $0) })
-        for staleStats in existingStats where aggregates[staleStats.appStoreID] == nil {
-            modelContext.delete(staleStats)
-        }
-
-        for aggregate in aggregates.values {
-            let stats = existingStatsByAppStoreID[aggregate.appStoreID] ?? AppKeywordStats(
-                appStoreID: aggregate.appStoreID,
-                queryKey: queryKey,
-                keyword: aggregate.keyword,
-                storefront: aggregate.storefront,
-                platform: aggregate.platform,
-                rank: aggregate.latestRank,
-                observedAt: aggregate.lastSeenAt,
-                popularityScore: metrics?.popularityScore,
-                difficultyScore: metrics?.difficultyScore
-            )
-            if stats.modelContext == nil {
-                modelContext.insert(stats)
-            }
-            stats.keyword = aggregate.keyword
-            stats.storefront = aggregate.storefront
-            stats.platform = aggregate.platform
-            stats.bestRank = aggregate.bestRank
-            stats.latestRank = aggregate.latestRank
-            stats.averageRank = aggregate.averageRank
-            stats.observationCount = aggregate.observationCount
-            stats.firstSeenAt = aggregate.firstSeenAt
-            stats.lastSeenAt = aggregate.lastSeenAt
-            stats.popularityScore = metrics?.popularityScore
-            stats.difficultyScore = metrics?.difficultyScore
-        }
-    }
-
-    private func upsertAppKeywordStats(
-        item: KeywordAppRanking,
-        observation: KeywordRankingCrawl,
-        metrics: KeywordDailyMetric?,
-        in modelContext: ModelContext
-    ) {
-        let identityKey = AppKeywordStats.makeIdentityKey(
-            appStoreID: item.appStoreID,
-            queryKey: observation.queryKey
-        )
-
-        let stats: AppKeywordStats
-        if let existing = try? fetchAppKeywordStats(identityKey: identityKey, in: modelContext) {
-            stats = existing
-            let previousObservationCount = max(1, stats.observationCount)
-            let previousAverage = stats.averageRank ?? Double(item.position)
-            stats.averageRank = (
-                previousAverage * Double(previousObservationCount)
-                + Double(item.position)
-            ) / Double(previousObservationCount + 1)
-            stats.observationCount = previousObservationCount + 1
-            stats.bestRank = min(stats.bestRank ?? item.position, item.position)
-            stats.latestRank = item.position
-            stats.firstSeenAt = min(stats.firstSeenAt, observation.observedAt)
-            stats.lastSeenAt = max(stats.lastSeenAt, observation.observedAt)
-        } else {
-            stats = AppKeywordStats(
-                appStoreID: item.appStoreID,
-                queryKey: observation.queryKey,
-                keyword: observation.keyword,
-                storefront: observation.storefront,
-                platform: observation.platform,
-                rank: item.position,
-                observedAt: observation.observedAt,
-                popularityScore: metrics?.popularityScore,
-                difficultyScore: metrics?.difficultyScore
-            )
-            modelContext.insert(stats)
-        }
-
-        stats.keyword = observation.keyword
-        stats.storefront = observation.storefront
-        stats.platform = observation.platform
-        stats.popularityScore = metrics?.popularityScore
-        stats.difficultyScore = metrics?.difficultyScore
-    }
-
-    private func fetchKeywordMetrics(queryKey: String, in modelContext: ModelContext) throws -> KeywordDailyMetric? {
-        let targetQueryKey = queryKey
-        var descriptor = FetchDescriptor<KeywordDailyMetric>(
-            predicate: #Predicate { metrics in
-                metrics.queryKey == targetQueryKey
-            }
-        )
-        descriptor.fetchLimit = 1
-        return try modelContext.fetch(descriptor).first
-    }
-
-    private func fetchAppKeywordStats(identityKey: String, in modelContext: ModelContext) throws -> AppKeywordStats? {
-        let targetIdentityKey = identityKey
-        var descriptor = FetchDescriptor<AppKeywordStats>(
-            predicate: #Predicate { stats in
-                stats.identityKey == targetIdentityKey
-            }
-        )
-        descriptor.fetchLimit = 1
-        return try modelContext.fetch(descriptor).first
-    }
-
-    private func fetchAppKeywordStats(queryKey: String, in modelContext: ModelContext) throws -> [AppKeywordStats] {
-        let targetQueryKey = queryKey
-        let descriptor = FetchDescriptor<AppKeywordStats>(
-            predicate: #Predicate { stats in
-                stats.queryKey == targetQueryKey
-            }
-        )
-        return try modelContext.fetch(descriptor)
-    }
-
-    private func fetchKeywordRankingCrawls(queryKey: String, in modelContext: ModelContext) throws -> [KeywordRankingCrawl] {
-        let targetQueryKey = queryKey
-        let descriptor = FetchDescriptor<KeywordRankingCrawl>(
-            predicate: #Predicate { observation in
-                observation.queryKey == targetQueryKey
-            }
-        )
-        return try modelContext.fetch(descriptor)
-    }
-
-    private func fetchKeywordRankingCrawls(
-        storefront: String,
-        platform: AppPlatform,
-        in modelContext: ModelContext
-    ) throws -> [KeywordRankingCrawl] {
-        let targetStorefront = storefront.lowercased()
-        let targetPlatformRaw = platform.rawValue
-        let descriptor = FetchDescriptor<KeywordRankingCrawl>(
-            predicate: #Predicate { observation in
-                observation.storefront == targetStorefront
-                    && observation.platformRaw == targetPlatformRaw
-            }
-        )
-        return try modelContext.fetch(descriptor)
+        _ = queryKey
+        _ = modelContext
     }
 
     @discardableResult

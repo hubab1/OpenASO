@@ -1,3 +1,5 @@
+import CryptoKit
+import Darwin
 import Foundation
 import SwiftData
 
@@ -93,7 +95,11 @@ enum ModelContainerFactory {
         let schema = Self.schema
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         do {
-            return try opener(schema, configuration)
+            return try withExclusiveMigrationLock(for: storeURL) {
+                let container = try opener(schema, configuration)
+                try RankingSchemaV6Migrator.migrateIfNeeded(in: container)
+                return container
+            }
         } catch {
             throw PersistentStoreError.openFailed(
                 storeURL: storeURL,
@@ -118,5 +124,36 @@ enum ModelContainerFactory {
             migrationPlan: OpenASOMigrationPlan.self,
             configurations: [configuration]
         )
+    }
+
+    private static func withExclusiveMigrationLock<Value>(
+        for storeURL: URL,
+        _ operation: () throws -> Value
+    ) throws -> Value {
+        let lockDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenASO-Migrations", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: lockDirectory,
+            withIntermediateDirectories: true
+        )
+        let digest = SHA256.hash(data: Data(storeURL.standardizedFileURL.path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let lockURL = lockDirectory.appendingPathComponent("\(digest).lock")
+        let descriptor = lockURL.path.withCString {
+            Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        }
+        guard descriptor >= 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { Darwin.close(descriptor) }
+
+        while flock(descriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else {
+                throw CocoaError(.fileLocking)
+            }
+        }
+        defer { flock(descriptor, LOCK_UN) }
+        return try operation()
     }
 }

@@ -128,11 +128,11 @@ enum KeywordRankingListLoader {
         }
 
         let targetCrawlKey = crawlKey
-        let descriptor = FetchDescriptor<KeywordAppRanking>(
+        let descriptor = FetchDescriptor<RankingFact>(
             predicate: #Predicate { ranking in
-                ranking.crawlKey == targetCrawlKey
+                ranking.observation.observationKey == targetCrawlKey
             },
-            sortBy: [SortDescriptor(\KeywordAppRanking.position, order: .forward)]
+            sortBy: [SortDescriptor(\RankingFact.position, order: .forward)]
         )
 
         let rankings = try modelContext.fetch(descriptor)
@@ -238,25 +238,31 @@ enum KeywordRankingListLoader {
         let uniqueAppStoreIDs = Array(Set(appStoreIDs)).sorted()
         snapshotsByID.reserveCapacity(uniqueAppStoreIDs.count)
 
-        for appStoreID in uniqueAppStoreIDs {
-            try checkCancellation()
-            let targetAppStoreID = appStoreID
-            var descriptor = FetchDescriptor<AppDailyRating>(
-                predicate: #Predicate { snapshot in
-                    snapshot.storefront == targetStorefront
-                        && snapshot.appStoreID == targetAppStoreID
-                        && snapshot.ratingCount != nil
-                },
-                sortBy: [
-                    SortDescriptor(\.ratingDate, order: .reverse),
-                    SortDescriptor(\.observedAt, order: .reverse)
-                ]
-            )
-            descriptor.fetchLimit = ratingSnapshotLimit
-            let snapshots = try modelContext.fetch(descriptor)
-            try checkCancellation()
-            guard !snapshots.isEmpty else { continue }
-            snapshotsByID[appStoreID] = snapshots.reversed().map(RatingSnapshotDisplayValue.init)
+        guard !uniqueAppStoreIDs.isEmpty else { return [:] }
+        let descriptor = FetchDescriptor<AppDailyRating>(
+            predicate: #Predicate { snapshot in
+                snapshot.storefront == targetStorefront
+                    && uniqueAppStoreIDs.contains(snapshot.appStoreID)
+                    && snapshot.ratingCount != nil
+            },
+            sortBy: [
+                SortDescriptor(\.appStoreID, order: .forward),
+                SortDescriptor(\.ratingDate, order: .reverse),
+                SortDescriptor(\.observedAt, order: .reverse)
+            ]
+        )
+        for (index, snapshot) in try modelContext.fetch(descriptor).enumerated() {
+            if snapshotsByID[snapshot.appStoreID, default: []].count < ratingSnapshotLimit {
+                snapshotsByID[snapshot.appStoreID, default: []].append(
+                    RatingSnapshotDisplayValue(snapshot)
+                )
+            }
+            if index.isMultiple(of: 256) {
+                try checkCancellation()
+            }
+        }
+        for appStoreID in snapshotsByID.keys {
+            snapshotsByID[appStoreID]?.reverse()
         }
 
         return snapshotsByID

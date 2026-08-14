@@ -675,7 +675,7 @@ struct KeywordResearchMetricsWorkflowTests {
     }
 
     @Test
-    func successfulRefreshRebuildsOnlyCanonicalDerivedRankingStats() async throws {
+    func successfulRefreshDoesNotMaterializeRedundantRankingStats() async throws {
         let client = ScriptedMetricsHTTPClient(defaultReply: .scores(defaultScore: 84))
         let fixture = try await makeFixture(httpClient: client, now: metricsTestDate)
         let keyword = try #require(fixture.keywords.first)
@@ -692,16 +692,10 @@ struct KeywordResearchMetricsWorkflowTests {
             policy: .requireNetwork
         )
 
-        let stats = try #require(try await storedRankingStats(
+        #expect(try await storedRankingStats(
             queryKey: keyword.queryKey,
             in: fixture.backgroundStore
-        ))
-        #expect(stats.appStoreID == 777)
-        #expect(stats.bestRank == 5)
-        #expect(stats.latestRank == 5)
-        #expect(stats.observationCount == 1)
-        #expect(stats.popularityScore == 84)
-        #expect(stats.difficultyScore == nil)
+        ) == nil)
     }
 
     @Test
@@ -1144,7 +1138,7 @@ private func seedRankingObservation(
         guard let query = try modelContext.fetch(descriptor).first else {
             throw OpenASOError.unexpectedResponse
         }
-        let observation = KeywordRankingCrawl(
+        let observation = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -1153,16 +1147,15 @@ private func seedRankingObservation(
             resultCount: 1,
             query: query
         )
-        let item = KeywordAppRanking(
+        let item = makeRankingFact(
             position: rank,
             appStoreID: appStoreID,
             bundleID: "example.derived.stats",
             name: "Derived stats sentinel",
             sellerName: "Sentinel seller",
-            observation: observation
+            observation: observation,
+            in: modelContext
         )
-        observation.items.append(item)
-        query.observations.append(observation)
         modelContext.insert(observation)
         modelContext.insert(item)
     }

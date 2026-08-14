@@ -127,7 +127,10 @@ struct ExactV4StoreFixtureTests {
 }
 
 @MainActor
-func assertExactV4FixtureSentinels(in modelContext: ModelContext) throws {
+func assertExactV4FixtureSentinels(
+    in modelContext: ModelContext,
+    normalizedRankings: Bool = false
+) throws {
     let folders = try modelContext.fetch(FetchDescriptor<AppFolder>())
     let appKeywordStats = try modelContext.fetch(FetchDescriptor<AppKeywordStats>())
     let latestRatings = try modelContext.fetch(FetchDescriptor<LatestAppRating>())
@@ -138,8 +141,17 @@ func assertExactV4FixtureSentinels(in modelContext: ModelContext) throws {
     let screenshots = try modelContext.fetch(FetchDescriptor<AppStoreScreenshot>())
     let queries = try modelContext.fetch(FetchDescriptor<KeywordQuery>())
     let keywordMetrics = try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>())
-    let crawls = try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
-    let crawlItems = try modelContext.fetch(FetchDescriptor<KeywordAppRanking>())
+    let crawls = try modelContext.fetch(FetchDescriptor<LegacyKeywordRankingCrawl>())
+    let crawlItems = try modelContext.fetch(FetchDescriptor<LegacyKeywordAppRanking>())
+    let normalizedCrawls = normalizedRankings
+        ? try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
+        : []
+    let normalizedCrawlItems = normalizedRankings
+        ? try modelContext.fetch(FetchDescriptor<RankingFact>())
+        : []
+    let rankingLinks = normalizedRankings
+        ? try modelContext.fetch(FetchDescriptor<TrackedRankingCrawlLink>())
+        : []
     let trackedApps = try modelContext.fetch(FetchDescriptor<TrackedApp>())
     let tracks = try modelContext.fetch(FetchDescriptor<TrackedAppKeyword>())
     let snapshots = try modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
@@ -162,12 +174,15 @@ func assertExactV4FixtureSentinels(in modelContext: ModelContext) throws {
     #expect(screenshots.count == 1)
     #expect(queries.count == 2)
     #expect(keywordMetrics.count == 1)
-    #expect(crawls.count == 1)
-    #expect(crawlItems.count == 1)
+    #expect(crawls.count == (normalizedRankings ? 0 : 1))
+    #expect(crawlItems.count == (normalizedRankings ? 0 : 1))
+    #expect(normalizedCrawls.count == (normalizedRankings ? 2 : 0))
+    #expect(normalizedCrawlItems.count == (normalizedRankings ? 2 : 0))
+    #expect(rankingLinks.count == (normalizedRankings ? 1 : 0))
     #expect(trackedApps.count == 1)
     #expect(tracks.count == 1)
     #expect(snapshots.count == 1)
-    #expect(rankedResults.count == 1)
+    #expect(rankedResults.count == (normalizedRankings ? 0 : 1))
     #expect(storefronts.count == 1)
     #expect(attempts.count == 1)
     #expect(statuses.count == 2)
@@ -188,12 +203,9 @@ func assertExactV4FixtureSentinels(in modelContext: ModelContext) throws {
         queryByKey[ExactV4FixtureSentinel.unavailableQueryKey],
     )
     let metric = try #require(keywordMetrics.first)
-    let crawl = try #require(crawls.first)
-    let crawlItem = try #require(crawlItems.first)
     let trackedApp = try #require(trackedApps.first)
     let track = try #require(tracks.first)
     let snapshot = try #require(snapshots.first)
-    let rankedResult = try #require(rankedResults.first)
     let storefront = try #require(storefronts.first)
     let attempt = try #require(attempts.first)
 
@@ -219,7 +231,7 @@ func assertExactV4FixtureSentinels(in modelContext: ModelContext) throws {
 
     #expect(query.queryKey == ReleasedV1FixtureSentinel.queryKey)
     #expect(query.tracks.map(\.identityKey) == [track.identityKey])
-    #expect(query.observations.map(\.observationKey) == [crawl.observationKey])
+    #expect(query.observations.count == (normalizedRankings ? 0 : 1))
     #expect(unavailableQuery.term == ExactV4FixtureSentinel.unavailableKeyword)
     #expect(unavailableQuery.storefront == ReleasedV1FixtureSentinel.storefront)
     #expect(unavailableQuery.platform == .iphone)
@@ -227,10 +239,25 @@ func assertExactV4FixtureSentinels(in modelContext: ModelContext) throws {
     #expect(unavailableQuery.observations.isEmpty)
     #expect(metric.queryKey == ReleasedV1FixtureSentinel.queryKey)
     #expect(metric.notes == "released-metric-notes")
-    #expect(crawl.observedHour == ReleasedV1FixtureSentinel.crawlObservedHour)
-    #expect(crawl.items.map(\.itemKey) == [crawlItem.itemKey])
-    #expect(crawlItem.appStoreID == ReleasedV1FixtureSentinel.competitorAppStoreID)
-    #expect(crawlItem.observation.observationKey == crawl.observationKey)
+    if normalizedRankings {
+        let crawl = try #require(normalizedCrawls.first { $0.source == .appStoreWeb })
+        let items = normalizedCrawlItems.filter {
+            $0.observation.observationKey == crawl.observationKey
+        }
+        let crawlItem = try #require(items.first)
+        #expect(crawl.observedHour == ReleasedV1FixtureSentinel.crawlObservedHour)
+        #expect(items.map(\.itemKey) == [crawlItem.itemKey])
+        #expect(crawlItem.appStoreID == ReleasedV1FixtureSentinel.competitorAppStoreID)
+        #expect(crawlItem.observation.observationKey == crawl.observationKey)
+    } else {
+        let crawl = try #require(crawls.first)
+        let crawlItem = try #require(crawlItems.first)
+        #expect(query.observations.map(\.observationKey) == [crawl.observationKey])
+        #expect(crawl.observedHour == ReleasedV1FixtureSentinel.crawlObservedHour)
+        #expect(crawl.items.map(\.itemKey) == [crawlItem.itemKey])
+        #expect(crawlItem.appStoreID == ReleasedV1FixtureSentinel.competitorAppStoreID)
+        #expect(crawlItem.observation.observationKey == crawl.observationKey)
+    }
 
     #expect(trackedApp.appStoreID == ReleasedV1FixtureSentinel.appStoreID)
     #expect(trackedApp.folder?.id == folder.id)
@@ -239,9 +266,21 @@ func assertExactV4FixtureSentinels(in modelContext: ModelContext) throws {
     #expect(track.statusMessage == nil)
     #expect(track.snapshots.map(\.snapshotKey) == [snapshot.snapshotKey])
     #expect(snapshot.rank == ReleasedV1FixtureSentinel.rank)
-    #expect(snapshot.topResults.map(\.appStoreID) == [rankedResult.appStoreID])
-    #expect(rankedResult.position == ReleasedV1FixtureSentinel.competitorPosition)
-    #expect(rankedResult.name == ReleasedV1FixtureSentinel.competitorName)
+    if normalizedRankings {
+        let rankingLink = try #require(rankingLinks.first)
+        let rankedResult = try #require(normalizedCrawlItems.first {
+            $0.observation.observationKey == rankingLink.crawl.observationKey
+        })
+        #expect(snapshot.topResults.isEmpty)
+        #expect(rankingLink.snapshotKey == snapshot.snapshotKey)
+        #expect(rankedResult.position == ReleasedV1FixtureSentinel.competitorPosition)
+        #expect(rankedResult.name == ReleasedV1FixtureSentinel.competitorName)
+    } else {
+        let rankedResult = try #require(rankedResults.first)
+        #expect(snapshot.topResults.map(\.appStoreID) == [rankedResult.appStoreID])
+        #expect(rankedResult.position == ReleasedV1FixtureSentinel.competitorPosition)
+        #expect(rankedResult.name == ReleasedV1FixtureSentinel.competitorName)
+    }
     #expect(storefront.code == ReleasedV1FixtureSentinel.storefront)
     #expect(storefront.title == "🇬🇧 United Kingdom")
 

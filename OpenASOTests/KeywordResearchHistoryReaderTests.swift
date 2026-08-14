@@ -35,7 +35,7 @@ struct KeywordResearchHistoryReaderTests {
         #expect(first.observations.map(\.id) == [keys[0], keys[2]].sorted())
         #expect(first.observations.map(\.observedAt) == [tiedDate, tiedDate])
         #expect(first.nextCursor == KeywordResearchRankingHistoryCursor(
-            dayBucket: KeywordRankingCrawl.utcDayBucket(for: tiedDate),
+            dayBucket: RankingCrawlRecord.utcDayBucket(for: tiedDate),
             consumedSourceIDs: Set([
                 RankingSource.appStoreWeb.rawValue,
                 RankingSource.iTunesFallback.rawValue,
@@ -505,7 +505,7 @@ private func seedObservations(
         }
 
         return seeds.map { seed in
-            let observation = KeywordRankingCrawl(
+            let observation = RankingCrawlRecord(
                 keyword: query.term,
                 storefront: query.storefront,
                 platform: query.platform,
@@ -514,20 +514,19 @@ private func seedObservations(
                 resultCount: seed.items.count,
                 query: query
             )
-            query.observations.append(observation)
             modelContext.insert(observation)
 
             for itemSeed in seed.items {
-                let item = KeywordAppRanking(
+                let item = makeRankingFact(
                     position: itemSeed.position,
                     appStoreID: itemSeed.appStoreID,
                     bundleID: "com.example.\(itemSeed.appStoreID)",
                     name: itemSeed.name,
                     subtitle: "Subtitle \(itemSeed.appStoreID)",
                     sellerName: "Seller \(itemSeed.appStoreID)",
-                    observation: observation
+                    observation: observation,
+                    in: modelContext
                 )
-                observation.items.append(item)
                 modelContext.insert(item)
             }
             return observation.observationKey
@@ -542,7 +541,7 @@ private func moveObservation(
     in store: BackgroundModelStore
 ) async throws -> String {
     try await store.write { modelContext in
-        var descriptor = FetchDescriptor<KeywordRankingCrawl>(
+        var descriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { observation in
                 observation.observationKey == id
             }
@@ -552,7 +551,7 @@ private func moveObservation(
             throw OpenASOError.unexpectedResponse
         }
         observation.observedAt = observedAt
-        observation.observedHour = KeywordRankingCrawl.utcHourBucket(
+        observation.observedHour = RankingCrawlRecord.utcHourBucket(
             for: observedAt
         )
         observation.observationKey = replacementID

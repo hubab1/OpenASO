@@ -7,7 +7,7 @@ import Testing
 @MainActor
 struct AppServicesDependencyTests {
     @Test
-    func modelContainerFactoryUsesAppendOnlyV5MigrationPlan() throws {
+    func modelContainerFactoryUsesAppendOnlyV6MigrationPlan() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -15,15 +15,17 @@ struct AppServicesDependencyTests {
         #expect(OpenASOSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
         #expect(OpenASOSchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
         #expect(OpenASOSchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 5)
+        #expect(OpenASOSchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 6)
         #expect(OpenASOMigrationPlan.schemas.first?.versionIdentifier == OpenASOSchemaV1.versionIdentifier)
-        #expect(OpenASOMigrationPlan.schemas.last?.versionIdentifier == OpenASOSchemaV5.versionIdentifier)
+        #expect(OpenASOMigrationPlan.schemas.last?.versionIdentifier == OpenASOSchemaV6.versionIdentifier)
         #expect(OpenASOSchemaV1.models.count == 17)
         #expect(OpenASOSchemaV2.models.count == 18)
         #expect(OpenASOSchemaV3.models.count == 19)
         #expect(OpenASOSchemaV4.models.count == 21)
         #expect(OpenASOSchemaV5.models.count == 23)
-        #expect(OpenASOMigrationPlan.stages.count == 4)
+        #expect(OpenASOSchemaV6.models.count == 28)
+        #expect(OpenASOMigrationPlan.stages.count == 5)
         #expect(container.migrationPlan != nil)
     }
 

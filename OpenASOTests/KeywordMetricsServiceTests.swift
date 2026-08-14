@@ -1016,7 +1016,7 @@ struct KeywordMetricsServiceTests {
         modelContext.insert(trackedApp)
         let track = try makeTrack(term: "focus timer", trackedApp: trackedApp, in: modelContext)
         let observedAt = Date(timeIntervalSince1970: 2_000_000_000)
-        let crawl = KeywordRankingCrawl(
+        let crawl = RankingCrawlRecord(
             keyword: track.term,
             storefront: track.storefront,
             platform: track.platform,
@@ -1025,13 +1025,14 @@ struct KeywordMetricsServiceTests {
             resultCount: 100,
             query: track.query
         )
-        let ranking = KeywordAppRanking(
+        let ranking = makeRankingFact(
             position: 4,
             appStoreID: trackedApp.appStoreID,
             bundleID: trackedApp.bundleID,
             name: trackedApp.name,
             sellerName: trackedApp.sellerName,
-            observation: crawl
+            observation: crawl,
+            in: modelContext
         )
         modelContext.insert(crawl)
         modelContext.insert(ranking)
@@ -1044,8 +1045,8 @@ struct KeywordMetricsServiceTests {
             using: backgroundModelStore
         )
         let stored = try await backgroundModelStore.read { context in
-            let crawls = try context.fetch(FetchDescriptor<KeywordRankingCrawl>())
-            let rankings = try context.fetch(FetchDescriptor<KeywordAppRanking>())
+            let crawls = try context.fetch(FetchDescriptor<RankingCrawlRecord>())
+            let rankings = try context.fetch(FetchDescriptor<RankingFact>())
             let metrics = try context.fetch(FetchDescriptor<KeywordDailyMetric>())
             return (
                 crawlKeys: crawls.map(\.observationKey),

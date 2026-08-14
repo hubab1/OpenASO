@@ -1897,13 +1897,26 @@ struct OpenASOMCPServiceTests {
         let snapshots = try context.modelContext.fetch(FetchDescriptor<TrackedKeywordDailyRanking>())
         let snapshot = try #require(snapshots.first)
         #expect(snapshot.rank == 3)
-        #expect(snapshot.topResults.map(\.appStoreID).sorted() == [123, 789])
-        #expect(snapshot.topResults.count == 2)
+        #expect(snapshot.topResults.isEmpty)
+        #expect(try context.modelContext.fetchCount(
+            FetchDescriptor<TrackedKeywordRankedResult>()
+        ) == 0)
+        #expect(try context.modelContext.fetchCount(
+            FetchDescriptor<TrackedRankingCrawlLink>()
+        ) == 1)
 
-        let crawls = try context.modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+        let crawls = try context.modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
         let crawl = try #require(crawls.first)
-        #expect(crawl.items.map(\.appStoreID).sorted() == [123, 789])
-        #expect(crawl.items.count == 2)
+        let crawlKey = crawl.observationKey
+        let facts = try context.modelContext.fetch(
+            FetchDescriptor<RankingFact>(
+                predicate: #Predicate { fact in
+                    fact.observation.observationKey == crawlKey
+                }
+            )
+        )
+        #expect(facts.map(\.appStoreID).sorted() == [123, 789])
+        #expect(facts.count == 2)
     }
 
     @Test
@@ -2532,7 +2545,7 @@ struct OpenASOMCPServiceTests {
         #expect(successfulDTO.source == RankingSource.iTunesFallback.rawValue)
         #expect(successfulDTO.rankedApps.map(\.position) == [1, 2])
         #expect(successfulDTO.rankedApps.map(\.appStoreID) == ["100", "200"])
-        #expect(successfulDTO.rankedAppsAvailableCount == 4)
+        #expect(successfulDTO.rankedAppsAvailableCount == 3)
         #expect(successfulDTO.rankedAppsTruncated)
     }
 
@@ -2703,7 +2716,7 @@ struct OpenASOMCPServiceTests {
         #expect(result.submissionCount == 3)
         #expect(result.winningCount == 2)
         #expect(result.confidence == "high")
-        #expect(result.observedHour == KeywordRankingCrawl.utcHourBucket(for: result.observedAt))
+        #expect(result.observedHour == RankingCrawlRecord.utcHourBucket(for: result.observedAt))
         #expect(result.rankedApps.map(\.position) == [1, 2])
         #expect(result.rankedApps.map(\.appStoreID) == ["1", "2"])
         #expect(result.rankedAppsAvailableCount == 102)
@@ -3614,20 +3627,37 @@ private struct MCPTestContext {
             modelContext.insert(track)
             modelContext.insert(snapshot)
 
+            let crawl = RankingCrawlRecord(
+                keyword: term,
+                storefront: "us",
+                platform: .iphone,
+                observedAt: searchedAt,
+                source: .iTunesFallback,
+                resultCount: rankedAppCount,
+                query: query
+            )
+            crawl.observationKey = RankingCrawlRecord.makeTrackedRecoveryObservationKey(
+                snapshotKey: snapshot.snapshotKey
+            )
+            modelContext.insert(crawl)
             for rankedAppIndex in 0..<rankedAppCount {
                 let position = rankedAppIndex + 1
                 let rankedAppStoreID = Int64((parentIndex + 1) * 1_000 + position)
-                let result = TrackedKeywordRankedResult(
+                let result = makeRankingFact(
                     position: position,
                     appStoreID: rankedAppStoreID,
                     bundleID: "com.example.\(rankedAppStoreID)",
                     name: "Ranked App \(rankedAppStoreID)",
                     sellerName: "Example Seller",
-                    snapshot: snapshot
+                    observation: crawl,
+                    in: modelContext
                 )
-                snapshot.topResults.append(result)
                 modelContext.insert(result)
             }
+            modelContext.insert(TrackedRankingCrawlLink(
+                snapshotKey: snapshot.snapshotKey,
+                crawl: crawl
+            ))
         }
 
         try modelContext.save()
@@ -3646,8 +3676,8 @@ private struct MCPTestContext {
         winningCount: Int = 1,
         confidence: String? = nil,
         rows: [RankingRow]
-    ) throws -> KeywordRankingCrawl {
-        let crawl = KeywordRankingCrawl(
+    ) throws -> RankingCrawlRecord {
+        let crawl = RankingCrawlRecord(
             keyword: keyword,
             storefront: storefront,
             platform: platform,
@@ -3661,16 +3691,16 @@ private struct MCPTestContext {
         )
         modelContext.insert(crawl)
         for row in rows {
-            let ranking = KeywordAppRanking(
+            let ranking = makeRankingFact(
                 position: row.position,
                 appStoreID: row.appStoreID,
                 bundleID: row.bundleID ?? "com.example.\(row.appStoreID)",
                 name: row.name,
                 subtitle: row.subtitle,
                 sellerName: row.sellerName,
-                observation: crawl
+                observation: crawl,
+                in: modelContext
             )
-            crawl.items.append(ranking)
             modelContext.insert(ranking)
         }
         try modelContext.save()
@@ -3697,18 +3727,37 @@ private struct MCPTestContext {
         )
         track.snapshots.append(snapshot)
         modelContext.insert(snapshot)
-        for row in rows {
-            let result = TrackedKeywordRankedResult(
-                position: row.position,
-                appStoreID: row.appStoreID,
-                bundleID: row.bundleID ?? "com.example.\(row.appStoreID)",
-                name: row.name,
-                subtitle: row.subtitle,
-                sellerName: row.sellerName,
-                snapshot: snapshot
+        if !rows.isEmpty {
+            let crawl = RankingCrawlRecord(
+                keyword: track.term,
+                storefront: track.storefront,
+                platform: track.platform,
+                observedAt: searchedAt,
+                source: source,
+                resultCount: resultCount,
+                query: track.query
             )
-            snapshot.topResults.append(result)
-            modelContext.insert(result)
+            crawl.observationKey = RankingCrawlRecord.makeTrackedRecoveryObservationKey(
+                snapshotKey: snapshot.snapshotKey
+            )
+            modelContext.insert(crawl)
+            for row in rows {
+                let result = makeRankingFact(
+                    position: row.position,
+                    appStoreID: row.appStoreID,
+                    bundleID: row.bundleID ?? "com.example.\(row.appStoreID)",
+                    name: row.name,
+                    subtitle: row.subtitle,
+                    sellerName: row.sellerName,
+                    observation: crawl,
+                    in: modelContext
+                )
+                modelContext.insert(result)
+            }
+            modelContext.insert(TrackedRankingCrawlLink(
+                snapshotKey: snapshot.snapshotKey,
+                crawl: crawl
+            ))
         }
         try modelContext.save()
         return snapshot
@@ -3806,7 +3855,7 @@ private final class MCPMetadataEnrichmentRecorder: Sendable {
         let record = MCPMetadataEnrichmentRecord(
             requests: requests,
             committedCrawlCount: (try? modelContext.fetchCount(
-                FetchDescriptor<KeywordRankingCrawl>()
+                FetchDescriptor<RankingCrawlRecord>()
             )) ?? -1,
             committedSnapshotCount: (try? modelContext.fetchCount(
                 FetchDescriptor<TrackedKeywordDailyRanking>()

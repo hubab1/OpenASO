@@ -70,9 +70,14 @@ struct KeywordResearchHistoryReader: Sendable {
             try Task.checkCancellation()
             let hasMore = rowsWithLookahead.count > limit
             let rows = Array(rowsWithLookahead.prefix(limit))
+            let factsByObservationKey = try Self.factsByObservationKey(
+                rows.map(\.observationKey),
+                in: modelContext
+            )
             let observations = rows.map {
                 Self.snapshot(
                     $0,
+                    facts: factsByObservationKey[$0.observationKey, default: []],
                     projectGeneration: projectGeneration,
                     keywordGeneration: keywordGeneration
                 )
@@ -104,11 +109,13 @@ private extension KeywordResearchHistoryReader {
         after cursor: KeywordResearchRankingHistoryCursor?,
         limit: Int,
         in modelContext: ModelContext
-    ) throws -> [KeywordRankingCrawl] {
+    ) throws -> [RankingCrawlRecord] {
+        let recoveryPrefix = RankingCrawlRecord.trackedRecoveryObservationKeyPrefix
         guard let cursor else {
-            var descriptor = FetchDescriptor<KeywordRankingCrawl>(
+            var descriptor = FetchDescriptor<RankingCrawlRecord>(
                 predicate: #Predicate { crawl in
                     crawl.queryKey == queryKey
+                        && !crawl.observationKey.starts(with: recoveryPrefix)
                 },
                 sortBy: sortDescriptors
             )
@@ -120,11 +127,12 @@ private extension KeywordResearchHistoryReader {
             timeIntervalSince1970: TimeInterval(cursor.dayBucket) * 86_400
         )
         let boundaryEnd = boundaryStart.addingTimeInterval(86_400)
-        var boundaryDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+        var boundaryDescriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { crawl in
                 crawl.queryKey == queryKey
                     && crawl.observedAt >= boundaryStart
                     && crawl.observedAt < boundaryEnd
+                    && !crawl.observationKey.starts(with: recoveryPrefix)
             },
             sortBy: sortDescriptors
         )
@@ -139,10 +147,11 @@ private extension KeywordResearchHistoryReader {
             return Array(rows.prefix(limit + 1))
         }
 
-        var olderDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+        var olderDescriptor = FetchDescriptor<RankingCrawlRecord>(
             predicate: #Predicate { crawl in
                 crawl.queryKey == queryKey
                     && crawl.observedAt < boundaryStart
+                    && !crawl.observationKey.starts(with: recoveryPrefix)
             },
             sortBy: sortDescriptors
         )
@@ -151,11 +160,11 @@ private extension KeywordResearchHistoryReader {
         return rows
     }
 
-    static var sortDescriptors: [SortDescriptor<KeywordRankingCrawl>] {
+    static var sortDescriptors: [SortDescriptor<RankingCrawlRecord>] {
         [
-            SortDescriptor(\KeywordRankingCrawl.observedAt, order: .reverse),
+            SortDescriptor(\RankingCrawlRecord.observedAt, order: .reverse),
             SortDescriptor(
-                \KeywordRankingCrawl.observationKey,
+                \RankingCrawlRecord.observationKey,
                 comparator: .lexical,
                 order: .forward
             ),
@@ -164,10 +173,10 @@ private extension KeywordResearchHistoryReader {
 
     static func cursor(
         after previous: KeywordResearchRankingHistoryCursor?,
-        returnedRows: [KeywordRankingCrawl]
+        returnedRows: [RankingCrawlRecord]
     ) -> KeywordResearchRankingHistoryCursor? {
         guard let boundaryRow = returnedRows.last else { return nil }
-        let dayBucket = KeywordRankingCrawl.utcDayBucket(
+        let dayBucket = RankingCrawlRecord.utcDayBucket(
             for: boundaryRow.observedAt
         )
         var consumedSourceIDs = previous?.dayBucket == dayBucket
@@ -176,7 +185,7 @@ private extension KeywordResearchHistoryReader {
         consumedSourceIDs.formUnion(
             returnedRows.lazy
                 .filter {
-                    KeywordRankingCrawl.utcDayBucket(for: $0.observedAt)
+                    RankingCrawlRecord.utcDayBucket(for: $0.observedAt)
                         == dayBucket
                 }
                 .map(\.sourceRaw)
@@ -188,11 +197,12 @@ private extension KeywordResearchHistoryReader {
     }
 
     static func snapshot(
-        _ observation: KeywordRankingCrawl,
+        _ observation: RankingCrawlRecord,
+        facts: [RankingFact],
         projectGeneration: KeywordResearchProjectGeneration,
         keywordGeneration: KeywordResearchKeywordGeneration
     ) -> KeywordResearchRankingObservationSnapshot {
-        let items = observation.items
+        let items = facts
             .map {
                 KeywordResearchRankingItemSnapshot(
                     id: $0.itemKey,
@@ -231,5 +241,20 @@ private extension KeywordResearchHistoryReader {
             confidence: observation.confidenceRaw,
             items: items
         )
+    }
+
+    static func factsByObservationKey(
+        _ observationKeys: [String],
+        in modelContext: ModelContext
+    ) throws -> [String: [RankingFact]] {
+        guard !observationKeys.isEmpty else { return [:] }
+        let facts = try modelContext.fetch(
+            FetchDescriptor<RankingFact>(
+                predicate: #Predicate { fact in
+                    observationKeys.contains(fact.observation.observationKey)
+                }
+            )
+        )
+        return Dictionary(grouping: facts) { $0.observation.observationKey }
     }
 }

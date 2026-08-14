@@ -12,7 +12,7 @@ struct KeywordRankingListLoaderTests {
         let appStoreID: Int64 = 10_001
         let observedAt = Date(timeIntervalSince1970: 2_000_000_000)
         let query = KeywordQuery(term: "focus", storefront: "us", platform: .iphone)
-        let crawl = KeywordRankingCrawl(
+        let crawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -21,14 +21,15 @@ struct KeywordRankingListLoaderTests {
             resultCount: 300,
             query: query
         )
-        let ranking = KeywordAppRanking(
+        let ranking = makeRankingFact(
             position: 1,
             appStoreID: appStoreID,
             bundleID: "com.example.focus",
             name: "Ranking Name",
             subtitle: "Ranking Subtitle",
             sellerName: "Ranking Seller",
-            observation: crawl
+            observation: crawl,
+            in: modelContext
         )
         let storeApp = StoreApp(
             appStoreID: appStoreID,
@@ -176,7 +177,7 @@ struct KeywordRankingListLoaderTests {
         let fallbackAppStoreID: Int64 = 101
         let backgroundAppStoreID: Int64 = 202
         let query = KeywordQuery(term: "focus", storefront: "us", platform: .iphone)
-        let crawl = KeywordRankingCrawl(
+        let crawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -187,14 +188,15 @@ struct KeywordRankingListLoaderTests {
         )
         modelContext.insert(query)
         modelContext.insert(crawl)
-        modelContext.insert(KeywordAppRanking(
+        modelContext.insert(makeRankingFact(
             position: 1,
             appStoreID: backgroundAppStoreID,
             bundleID: "com.example.background-only",
             name: "Background Only",
             subtitle: nil,
             sellerName: "Example",
-            observation: crawl
+            observation: crawl,
+            in: modelContext
         ))
         try modelContext.save()
 
@@ -627,9 +629,7 @@ struct KeywordRankingListLoaderTests {
     }
 
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let schema = Schema(OpenASOSchemaV1.models)
-        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        return try ModelContainer(for: schema, configurations: [configuration])
+        try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
     }
 }
 

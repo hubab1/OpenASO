@@ -225,7 +225,7 @@ struct KeywordResearchPersistenceTests {
             source: .appleAdsPopularity
         )
         let observedAt = Date(timeIntervalSinceReferenceDate: 805_700_000)
-        let crawl = KeywordRankingCrawl(
+        let crawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -234,13 +234,14 @@ struct KeywordResearchPersistenceTests {
             resultCount: 1,
             query: query
         )
-        let crawlItem = KeywordAppRanking(
+        let crawlItem = makeRankingFact(
             position: 1,
             appStoreID: 320_000_001,
             bundleID: "com.example.shared",
             name: "Shared Result",
             sellerName: "Example",
-            observation: crawl
+            observation: crawl,
+            in: context
         )
         let calculationID = UUID(uuidString: "32000000-0000-4000-8000-000000000210")!
         let difficulty = EstimatedKeywordDifficultyMetric(
@@ -301,8 +302,6 @@ struct KeywordResearchPersistenceTests {
             project: project
         )
         project.attachKeyword(keyword)
-        query.observations.append(crawl)
-        crawl.items.append(crawlItem)
         context.insert(query)
         context.insert(metrics)
         context.insert(crawl)
@@ -320,8 +319,8 @@ struct KeywordResearchPersistenceTests {
         #expect(try context.fetch(FetchDescriptor<KeywordResearchKeyword>()).isEmpty)
         #expect(try context.fetch(FetchDescriptor<KeywordQuery>()).map(\.queryKey) == [query.queryKey])
         #expect(try context.fetch(FetchDescriptor<KeywordDailyMetric>()).map(\.queryKey) == [query.queryKey])
-        #expect(try context.fetch(FetchDescriptor<KeywordRankingCrawl>()).map(\.queryKey) == [query.queryKey])
-        #expect(try context.fetch(FetchDescriptor<KeywordAppRanking>()).map(\.queryKey) == [query.queryKey])
+        #expect(try context.fetch(FetchDescriptor<RankingCrawlRecord>()).map(\.queryKey) == [query.queryKey])
+        #expect(try context.fetch(FetchDescriptor<RankingFact>()).map(\.queryKey) == [query.queryKey])
         #expect(try context.fetch(FetchDescriptor<EstimatedKeywordDifficultyMetric>()).map(\.queryKey) == [query.queryKey])
         #expect(try context.fetch(
             FetchDescriptor<EstimatedKeywordDifficultyResultEvidenceRecord>()

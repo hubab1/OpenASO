@@ -821,7 +821,7 @@ private func seedSharedEvidence(
             throw CopyServiceTestError.injected
         }
         let observedAt = Date(timeIntervalSinceReferenceDate: 806_400_150)
-        let crawl = KeywordRankingCrawl(
+        let crawl = RankingCrawlRecord(
             keyword: query.term,
             storefront: query.storefront,
             platform: query.platform,
@@ -830,7 +830,6 @@ private func seedSharedEvidence(
             resultCount: 1,
             query: query
         )
-        query.observations.append(crawl)
         modelContext.insert(crawl)
         modelContext.insert(KeywordDailyMetric(
             queryKey: query.queryKey,
@@ -941,7 +940,7 @@ private func evidenceState(in store: BackgroundModelStore) async throws -> Evide
     try await store.read { modelContext in
         EvidenceState(
             queryKeys: try modelContext.fetch(FetchDescriptor<KeywordQuery>()).map(\.queryKey).sorted(),
-            observationKeys: try modelContext.fetch(FetchDescriptor<KeywordRankingCrawl>())
+            observationKeys: try modelContext.fetch(FetchDescriptor<RankingCrawlRecord>())
                 .map(\.observationKey).sorted(),
             metricQueryKeys: try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>())
                 .map(\.queryKey).sorted()

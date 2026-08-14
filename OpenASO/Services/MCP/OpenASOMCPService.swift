@@ -587,84 +587,28 @@ final class OpenASOMCPService: Sendable {
     in modelContext: ModelContext
   ) throws -> [String: BoundedHistoryRankedApps] {
     guard !snapshots.isEmpty else { return [:] }
-
-    let crawlKeyBySnapshotKey = Dictionary(uniqueKeysWithValues: snapshots.map { snapshot in
-      let track = tracksByIdentityKey[snapshot.trackIdentityKey] ?? snapshot.keywordTrack
-      return (
-        snapshot.snapshotKey,
-        KeywordRankingCrawl.makeObservationKey(
-          queryKey: track.queryKey,
-          observedAt: snapshot.searchedAt,
-          source: snapshot.source
-        )
+    _ = tracksByIdentityKey
+    let snapshotKeys = snapshots.map(\.snapshotKey)
+    let links = try modelContext.fetch(
+      FetchDescriptor<TrackedRankingCrawlLink>(
+        predicate: #Predicate { link in
+          snapshotKeys.contains(link.snapshotKey)
+        }
       )
-    })
-    let candidateCrawlKeys = Array(Set(crawlKeyBySnapshotKey.values))
-    let crawlDescriptor = FetchDescriptor<KeywordRankingCrawl>(
-      predicate: #Predicate { crawl in
-        candidateCrawlKeys.contains(crawl.observationKey)
-      }
     )
-    let crawlsByKey = Dictionary(uniqueKeysWithValues: try modelContext.fetch(crawlDescriptor).map {
-      ($0.observationKey, $0)
-    })
-    let matchingCrawlKeyBySnapshotKey = Dictionary(uniqueKeysWithValues: snapshots.compactMap {
-      snapshot -> (String, String)? in
-      guard let crawlKey = crawlKeyBySnapshotKey[snapshot.snapshotKey],
-            crawlsByKey[crawlKey]?.observedAt == snapshot.searchedAt else {
-        return nil
-      }
-      return (snapshot.snapshotKey, crawlKey)
-    })
+    let matchingCrawlKeyBySnapshotKey = Dictionary(
+      uniqueKeysWithValues: links.map { ($0.snapshotKey, $0.crawl.observationKey) }
+    )
     let crawlAppsByKey = try crawlRankedApps(
       crawlKeys: Array(Set(matchingCrawlKeyBySnapshotKey.values)),
       limit: limit,
       in: modelContext
     )
-    var rankedAppsBySnapshotKey = matchingCrawlKeyBySnapshotKey.reduce(
+    return matchingCrawlKeyBySnapshotKey.reduce(
       into: [String: BoundedHistoryRankedApps]()
     ) { result, entry in
       result[entry.key] = crawlAppsByKey[entry.value]
     }
-
-    // Stores created before shared crawl history was introduced only have the
-    // tracked snapshot relationship. Fall back for those rows while preferring
-    // the canonical crawl so the MCP response still exposes the full page.
-    let missingSnapshotKeys = snapshots.map(\.snapshotKey).filter {
-      rankedAppsBySnapshotKey[$0] == nil
-    }
-    guard !missingSnapshotKeys.isEmpty else { return rankedAppsBySnapshotKey }
-
-    var descriptor = FetchDescriptor<TrackedKeywordRankedResult>(
-      predicate: #Predicate { result in
-        missingSnapshotKeys.contains(result.snapshotKey)
-      },
-      sortBy: [
-        SortDescriptor(\.snapshotKey, comparator: .lexical, order: .forward),
-        SortDescriptor(\.position, order: .forward),
-        SortDescriptor(\.appStoreID, order: .forward),
-        SortDescriptor(\.name, comparator: .lexical, order: .forward),
-      ]
-    )
-    descriptor.fetchLimit = ResponseLimits.maximumHistoryStoredRankedAppScanRows + 1
-    let results = try modelContext.fetch(descriptor)
-    guard results.count <= ResponseLimits.maximumHistoryStoredRankedAppScanRows else {
-      throw OpenASOError.providerUnavailable(
-        "Stored ranking history is too large for one response. Narrow the filters or page size."
-      )
-    }
-    let legacyAppsBySnapshotKey: [String: BoundedHistoryRankedApps] = results.reduce(
-      into: [:]
-    ) { grouped, result in
-      var rankedApps = grouped[result.snapshotKey] ?? BoundedHistoryRankedApps()
-      rankedApps.total += 1
-      if rankedApps.items.count < limit {
-        rankedApps.items.append(Self.storedRankedApp(result))
-      }
-      grouped[result.snapshotKey] = rankedApps
-    }
-    rankedAppsBySnapshotKey.merge(legacyAppsBySnapshotKey) { current, _ in current }
-    return rankedAppsBySnapshotKey
   }
 
   private static func crawlRankedApps(
@@ -673,15 +617,14 @@ final class OpenASOMCPService: Sendable {
     in modelContext: ModelContext
   ) throws -> [String: BoundedHistoryRankedApps] {
     guard !crawlKeys.isEmpty else { return [:] }
-    var descriptor = FetchDescriptor<KeywordAppRanking>(
+    var descriptor = FetchDescriptor<RankingFact>(
       predicate: #Predicate { result in
-        crawlKeys.contains(result.crawlKey)
+        crawlKeys.contains(result.observation.observationKey)
       },
       sortBy: [
-        SortDescriptor(\.crawlKey, comparator: .lexical, order: .forward),
+        SortDescriptor(\RankingFact.observation.observationKey, comparator: .lexical, order: .forward),
         SortDescriptor(\.position, order: .forward),
         SortDescriptor(\.appStoreID, order: .forward),
-        SortDescriptor(\.itemKey, comparator: .lexical, order: .forward),
       ]
     )
     descriptor.fetchLimit = ResponseLimits.maximumHistoryStoredRankedAppScanRows + 1
@@ -1222,22 +1165,25 @@ final class OpenASOMCPService: Sendable {
 
       let minimumDate = dateFrom ?? .distantPast
       let maximumDate = dateTo ?? .distantFuture
-      let countPredicate = #Predicate<KeywordRankingCrawl> { crawl in
+      let recoveryPrefix = RankingCrawlRecord.trackedRecoveryObservationKeyPrefix
+      let countPredicate = #Predicate<RankingCrawlRecord> { crawl in
         queryKeys.contains(crawl.queryKey)
           && crawl.observedAt >= minimumDate
           && crawl.observedAt <= maximumDate
+          && !crawl.observationKey.starts(with: recoveryPrefix)
       }
       let total = try modelContext.fetchCount(
-        FetchDescriptor<KeywordRankingCrawl>(predicate: countPredicate)
+        FetchDescriptor<RankingCrawlRecord>(predicate: countPredicate)
       )
       let hasCursor = historyCursor != nil
       let cursorTimestamp = historyCursor?.timestamp ?? .distantFuture
       let cursorTieKey = historyCursor?.tieKey ?? ""
-      var crawlDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+      var crawlDescriptor = FetchDescriptor<RankingCrawlRecord>(
         predicate: #Predicate { crawl in
           queryKeys.contains(crawl.queryKey)
             && crawl.observedAt >= minimumDate
             && crawl.observedAt <= maximumDate
+            && !crawl.observationKey.starts(with: recoveryPrefix)
             && (!hasCursor
               || crawl.observedAt < cursorTimestamp
               || (crawl.observedAt == cursorTimestamp && crawl.observationKey > cursorTieKey))
@@ -4257,7 +4203,7 @@ extension OpenASOMCPService {
   }
 
   fileprivate static func storedRankedApp(
-    _ result: KeywordAppRanking
+    _ result: RankingFact
   ) -> OpenASOMCPStoredRankedApp {
     OpenASOMCPStoredRankedApp(
       id: result.itemKey,
@@ -4297,7 +4243,7 @@ extension OpenASOMCPService {
   }
 
   fileprivate static func rankingCrawlSnapshot(
-    _ crawl: KeywordRankingCrawl,
+    _ crawl: RankingCrawlRecord,
     rankedApps: [OpenASOMCPStoredRankedApp],
     rankedAppsAvailableCount: Int
   ) -> OpenASOMCPRankingCrawlSnapshot {
@@ -4821,12 +4767,12 @@ extension OpenASOMCPService {
     snapshot.resultCount = page.resultCount
     snapshot.errorMessage = nil
 
-    let observationKey = KeywordRankingCrawl.makeObservationKey(
+    let observationKey = RankingCrawlRecord.makeObservationKey(
       queryKey: request.queryKey,
       observedAt: observedAt,
       source: source
     )
-    var observationDescriptor = FetchDescriptor<KeywordRankingCrawl>(
+    var observationDescriptor = FetchDescriptor<RankingCrawlRecord>(
       predicate: #Predicate { crawl in
         crawl.observationKey == observationKey
       }
@@ -4834,7 +4780,7 @@ extension OpenASOMCPService {
     observationDescriptor.fetchLimit = 1
     let observation =
       try modelContext.fetch(observationDescriptor).first
-      ?? KeywordRankingCrawl(
+      ?? RankingCrawlRecord(
         keyword: request.term,
         storefront: request.storefront,
         platform: request.platform,
@@ -4845,83 +4791,74 @@ extension OpenASOMCPService {
       )
     if observation.modelContext == nil {
       modelContext.insert(observation)
-      query.observations.append(observation)
     }
     observation.resultCount = page.resultCount
 
-    var retainedAppStoreIDs: [Int64] = []
-    for item in page.items {
-      retainedAppStoreIDs.append(item.appStoreID)
-      let itemKey = KeywordAppRanking.makeItemKey(
-        observationKey: observation.observationKey, appStoreID: item.appStoreID)
-      var itemDescriptor = FetchDescriptor<KeywordAppRanking>(
+    let revisionPayloads = page.items.map {
+      RankingAppRevisionPayload(
+        appStoreID: $0.appStoreID,
+        bundleID: $0.bundleID,
+        name: $0.name,
+        subtitle: $0.subtitle,
+        sellerName: $0.sellerName
+      )
+    }
+    let revisionsByKey = try RankingAppRevisionStore.revisions(
+      for: revisionPayloads,
+      in: modelContext
+    )
+    let currentObservationKey = observation.observationKey
+    let existingRankings = try modelContext.fetch(
+      FetchDescriptor<RankingFact>(
         predicate: #Predicate { ranking in
-          ranking.itemKey == itemKey
+          ranking.observation.observationKey == currentObservationKey
         }
       )
-      itemDescriptor.fetchLimit = 1
+    )
+    var rankingsByAppStoreID = Dictionary(
+      uniqueKeysWithValues: existingRankings.map { ($0.appStoreID, $0) }
+    )
+
+    var retainedAppStoreIDs: [Int64] = []
+    for (item, payload) in zip(page.items, revisionPayloads) {
+      retainedAppStoreIDs.append(item.appStoreID)
+      guard let revision = revisionsByKey[payload.revisionKey] else {
+        throw OpenASOError.providerUnavailable("Could not persist ranking app metadata.")
+      }
       let ranking =
-        try modelContext.fetch(itemDescriptor).first
-        ?? KeywordAppRanking(
+        rankingsByAppStoreID[item.appStoreID]
+        ?? RankingFact(
           position: item.position,
           appStoreID: item.appStoreID,
-          bundleID: item.bundleID,
-          name: item.name,
-          subtitle: item.subtitle,
-          sellerName: item.sellerName,
+          revision: revision,
           observation: observation
         )
       if ranking.modelContext == nil {
         modelContext.insert(ranking)
-        observation.items.append(ranking)
+        rankingsByAppStoreID[item.appStoreID] = ranking
       }
       ranking.position = item.position
-      ranking.name = item.name
-      ranking.subtitle = item.subtitle
-      ranking.sellerName = item.sellerName
-      ranking.bundleID = item.bundleID
-      ranking.crawlKey = observation.observationKey
-      ranking.queryKey = observation.queryKey
-      ranking.storefront = observation.storefront
-      ranking.platformRaw = observation.platformRaw
-      ranking.observedAt = observation.observedAt
-
-      let result =
-        snapshot.topResults.first { $0.appStoreID == item.appStoreID }
-        ?? TrackedKeywordRankedResult(
-          position: item.position,
-          appStoreID: item.appStoreID,
-          bundleID: item.bundleID,
-          name: item.name,
-          subtitle: item.subtitle,
-          sellerName: item.sellerName,
-          snapshot: snapshot
-        )
-      if result.modelContext == nil {
-        snapshot.topResults.append(result)
-        modelContext.insert(result)
-      }
-      result.snapshotKey = snapshot.snapshotKey
-      result.position = item.position
-      result.appStoreID = item.appStoreID
-      result.bundleID = item.bundleID
-      result.name = item.name
-      result.subtitle = item.subtitle
-      result.sellerName = item.sellerName
-      if result.snapshot !== snapshot {
-        result.snapshot = snapshot
-      }
+      ranking.revision = revision
     }
 
     let retainedAppStoreIDSet = Set(retainedAppStoreIDs)
-    for result in snapshot.topResults where !retainedAppStoreIDSet.contains(result.appStoreID) {
-      modelContext.delete(result)
-    }
-    snapshot.topResults.removeAll { !retainedAppStoreIDSet.contains($0.appStoreID) }
-    for item in observation.items where !retainedAppStoreIDSet.contains(item.appStoreID) {
+    for item in rankingsByAppStoreID.values
+      where !retainedAppStoreIDSet.contains(item.appStoreID)
+    {
       modelContext.delete(item)
     }
-    observation.items.removeAll { !retainedAppStoreIDSet.contains($0.appStoreID) }
+
+    var linkDescriptor = FetchDescriptor<TrackedRankingCrawlLink>(
+      predicate: #Predicate { link in
+        link.snapshotKey == snapshotKey
+      }
+    )
+    linkDescriptor.fetchLimit = 1
+    if let link = try modelContext.fetch(linkDescriptor).first {
+      link.crawl = observation
+    } else {
+      modelContext.insert(TrackedRankingCrawlLink(snapshotKey: snapshotKey, crawl: observation))
+    }
 
     try TrackedKeywordRefreshStatusStore.set(
       nil,
@@ -4976,15 +4913,15 @@ extension OpenASOMCPService {
 
     let cutoff = Date().addingTimeInterval(-Double(max(1, lookbackDays)) * 86_400)
     let storefrontSet = Set(storefronts)
-    let descriptor = FetchDescriptor<KeywordAppRanking>(
+    let descriptor = FetchDescriptor<RankingFact>(
       predicate: #Predicate { ranking in
-        queryKeys.contains(ranking.queryKey)
+        queryKeys.contains(ranking.observation.queryKey)
           && ranking.appStoreID != appStoreID
           && ranking.position <= 10
-          && ranking.observedAt >= cutoff
+          && ranking.observation.observedAt >= cutoff
       },
       sortBy: [
-        SortDescriptor(\.observedAt, order: .reverse),
+        SortDescriptor(\RankingFact.observation.observedAt, order: .reverse),
         SortDescriptor(\.position, order: .forward),
       ]
     )
@@ -5087,7 +5024,7 @@ private struct CompetitorAccumulator {
   var latestObservedAt = Date.distantPast
   var evidenceByQueryKey: [String: OpenASOMCPCompetitorKeywordEvidence] = [:]
 
-  mutating func add(row: KeywordAppRanking, keyword: String) {
+  mutating func add(row: RankingFact, keyword: String) {
     rankSum += row.position
     occurrenceCount += 1
     bestRank = min(bestRank, row.position)

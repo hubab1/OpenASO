@@ -309,31 +309,31 @@ final class KeywordInsightsService {
         cutoffDate: Date?,
         in modelContext: ModelContext
     ) throws -> [CrawlRecord] {
-        let crawls: [KeywordRankingCrawl]
+        let crawls: [RankingCrawlRecord]
         if let cutoffDate {
-            let descriptor = FetchDescriptor<KeywordRankingCrawl>(
+            let descriptor = FetchDescriptor<RankingCrawlRecord>(
                 predicate: #Predicate { crawl in
                     queryKeys.contains(crawl.queryKey) && crawl.observedAt >= cutoffDate
                 },
                 sortBy: [
-                    SortDescriptor(\KeywordRankingCrawl.queryKey, order: .forward),
-                    SortDescriptor(\KeywordRankingCrawl.observedAt, order: .forward)
+                    SortDescriptor(\RankingCrawlRecord.queryKey, order: .forward),
+                    SortDescriptor(\RankingCrawlRecord.observedAt, order: .forward)
                 ]
             )
             crawls = try modelContext.fetch(descriptor)
         } else {
-            let descriptor = FetchDescriptor<KeywordRankingCrawl>(
+            let descriptor = FetchDescriptor<RankingCrawlRecord>(
                 predicate: #Predicate { crawl in
                     queryKeys.contains(crawl.queryKey)
                 },
                 sortBy: [
-                    SortDescriptor(\KeywordRankingCrawl.queryKey, order: .forward),
-                    SortDescriptor(\KeywordRankingCrawl.observedAt, order: .forward)
+                    SortDescriptor(\RankingCrawlRecord.queryKey, order: .forward),
+                    SortDescriptor(\RankingCrawlRecord.observedAt, order: .forward)
                 ]
             )
             crawls = try modelContext.fetch(descriptor)
         }
-        return crawls.map {
+        return crawls.filter { !$0.isTrackedRecovery }.map {
             CrawlRecord(
                 queryKey: $0.queryKey,
                 observationKey: $0.observationKey,
@@ -353,14 +353,15 @@ final class KeywordInsightsService {
 
         for queryKey in queryKeys {
             let targetQueryKey = queryKey
-            var descriptor = FetchDescriptor<KeywordRankingCrawl>(
+            let descriptor = FetchDescriptor<RankingCrawlRecord>(
                 predicate: #Predicate { crawl in
                     crawl.queryKey == targetQueryKey
                 },
-                sortBy: [SortDescriptor(\KeywordRankingCrawl.observedAt, order: .reverse)]
+                sortBy: [SortDescriptor(\RankingCrawlRecord.observedAt, order: .reverse)]
             )
-            descriptor.fetchLimit = 1
-            guard let crawl = try modelContext.fetch(descriptor).first else { continue }
+            guard let crawl = try modelContext.fetch(descriptor).first(where: {
+                !$0.isTrackedRecovery
+            }) else { continue }
             records.append(
                 CrawlRecord(
                     queryKey: crawl.queryKey,
@@ -416,20 +417,20 @@ final class KeywordInsightsService {
         cutoffDate: Date?,
         in modelContext: ModelContext
     ) throws -> [RankingRecord] {
-        let rankings: [KeywordAppRanking]
+        let rankings: [RankingFact]
         if let cutoffDate {
-            let descriptor = FetchDescriptor<KeywordAppRanking>(
+            let descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
-                    queryKeys.contains(ranking.queryKey)
+                    queryKeys.contains(ranking.observation.queryKey)
                         && ranking.appStoreID == appStoreID
-                        && ranking.observedAt >= cutoffDate
+                        && ranking.observation.observedAt >= cutoffDate
                 }
             )
             rankings = try modelContext.fetch(descriptor)
         } else {
-            let descriptor = FetchDescriptor<KeywordAppRanking>(
+            let descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
-                    queryKeys.contains(ranking.queryKey)
+                    queryKeys.contains(ranking.observation.queryKey)
                         && ranking.appStoreID == appStoreID
                 }
             )
@@ -452,9 +453,9 @@ final class KeywordInsightsService {
             Array(crawlKeys),
             size: 500
         ) {
-            let descriptor = FetchDescriptor<KeywordAppRanking>(
+            let descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
-                    crawlKeyChunk.contains(ranking.crawlKey)
+                    crawlKeyChunk.contains(ranking.observation.observationKey)
                         && ranking.appStoreID == appStoreID
                 }
             )
@@ -476,14 +477,14 @@ final class KeywordInsightsService {
             Array(crawlKeys),
             size: 500
         ) {
-            let descriptor = FetchDescriptor<KeywordAppRanking>(
+            let descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
-                    crawlKeyChunk.contains(ranking.crawlKey)
+                    crawlKeyChunk.contains(ranking.observation.observationKey)
                         && ranking.position <= 5
                 },
                 sortBy: [
-                    SortDescriptor(\KeywordAppRanking.observedAt, order: .forward),
-                    SortDescriptor(\KeywordAppRanking.position, order: .forward)
+                    SortDescriptor(\RankingFact.observation.observedAt, order: .forward),
+                    SortDescriptor(\RankingFact.position, order: .forward)
                 ]
             )
             for ranking in try modelContext.fetch(descriptor) {
