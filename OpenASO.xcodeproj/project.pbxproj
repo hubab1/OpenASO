@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F1A200000000000000000001 /* AppStoreIDInputParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A200000000000000000002 /* AppStoreIDInputParser.swift */; };
+		F1A200000000000000000003 /* AppStoreIDInputParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */; };
 		B9A0000000000000000005 /* AppleAdsPastedSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */; };
 		B9A0000000000000000003 /* AppleAds/AppleAdsPastedSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000004 /* AppleAds/AppleAdsPastedSession.swift */; };
 		B9A0000000000000000001 /* AppleAds/AppleAdsWebLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000002 /* AppleAds/AppleAdsWebLoginController.swift */; };
@@ -326,6 +328,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		F1A200000000000000000002 /* AppStoreIDInputParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreIDInputParser.swift; sourceTree = "<group>"; };
+		F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreIDInputParserTests.swift; sourceTree = "<group>"; };
 		B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPastedSessionTests.swift; sourceTree = "<group>"; };
 		B9A0000000000000000004 /* AppleAds/AppleAdsPastedSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsPastedSession.swift; sourceTree = "<group>"; };
 		B9A0000000000000000002 /* AppleAds/AppleAdsWebLoginController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsWebLoginController.swift; sourceTree = "<group>"; };
@@ -615,6 +619,7 @@
 		1027BC248FF4568E8523C3A8 /* OpenASOTests */ = {
 			isa = PBXGroup;
 			children = (
+				F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */,
 				AA0000000000000000000001 /* AppleAdsConnectionStateTests.swift */,
 				B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */,
 				A60000000000000000000002 /* AIServiceTests.swift */,
@@ -923,6 +928,7 @@
 			isa = PBXGroup;
 			children = (
 				BCCBBF8A3FABA145BF5122ED /* AddAppSheet.swift */,
+				F1A200000000000000000002 /* AppStoreIDInputParser.swift */,
 			);
 			path = AppManagement;
 			sourceTree = "<group>";
@@ -1169,6 +1175,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EF3B2BA43807572789A250A7 /* AddAppSheet.swift in Sources */,
+				F1A200000000000000000001 /* AppStoreIDInputParser.swift in Sources */,
 				59E573ACDBBB76A905B92574 /* AddKeywordsSheet.swift in Sources */,
 				B70000000000000000000001 /* AddKeywordsStorefrontProjection.swift in Sources */,
 				B71000000000000000000001 /* AddKeywordsQueryResolver.swift in Sources */,
@@ -1359,6 +1366,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F1A200000000000000000003 /* AppStoreIDInputParserTests.swift in Sources */,
 				AA0000000000000000000002 /* AppleAdsConnectionStateTests.swift in Sources */,
 				B9A0000000000000000005 /* AppleAdsPastedSessionTests.swift in Sources */,
 				A60000000000000000000001 /* AIServiceTests.swift in Sources */,
