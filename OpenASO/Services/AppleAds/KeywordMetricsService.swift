@@ -249,15 +249,28 @@ final class KeywordMetricsService: Sendable {
             }
         }
         let metricsByQueryKey = freshnessMetricsMap(for: uniqueTracks.map(\.queryKey), in: modelContext)
+        let persistedStatuses = (try? TrackedKeywordRefreshStatusStore.snapshots(
+            for: uniqueTracks.map(\.identityKey),
+            in: modelContext
+        )) ?? [:]
         var outcomes: [KeywordMetricsRefreshOutcome] = []
         var tracksNeedingPopularity: [TrackedAppKeyword] = []
 
         for track in uniqueTracks {
             guard !Task.isCancelled else { return outcomes }
             let queryTracks = tracksByQueryKey[track.queryKey] ?? [track]
-            guard Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metricsByQueryKey[track.queryKey]) else {
+            let popularityStatus = TrackedKeywordRefreshStatusStore.snapshot(
+                for: track,
+                persisted: persistedStatuses[track.identityKey]
+            )
+            guard Self.shouldRefreshMetrics(
+                metricsTTL: metricsTTL,
+                metric: metricsByQueryKey[track.queryKey],
+                popularityStatus: popularityStatus
+            ) else {
                 do {
-                    if let metric = metricsByQueryKey[track.queryKey] {
+                    if let metric = metricsByQueryKey[track.queryKey],
+                       metric.popularityScore != nil {
                         for siblingTrack in queryTracks {
                             try TrackedKeywordRefreshStatusStore.set(
                                 nil,
@@ -400,15 +413,24 @@ final class KeywordMetricsService: Sendable {
                 for: Array(tracksByQueryKey.keys),
                 in: modelContext
             )
+            let persistedStatuses = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: tracks.map(\.identityKey),
+                in: modelContext
+            )
             return try tracksByQueryKey.values.compactMap { queryTracks -> KeywordMetricsRefreshCandidate? in
                 let sortedTracks = queryTracks.sorted { $0.identityKey < $1.identityKey }
                 guard let track = sortedTracks.first else { return nil }
                 let metric = metricsByQueryKey[track.queryKey]
+                let popularityStatus = TrackedKeywordRefreshStatusStore.snapshot(
+                    for: track,
+                    persisted: persistedStatuses[track.identityKey]
+                )
                 let shouldRefresh = Self.shouldRefreshMetrics(
                     metricsTTL: metricsTTL,
-                    metric: metric
+                    metric: metric,
+                    popularityStatus: popularityStatus
                 )
-                if !shouldRefresh, let metric {
+                if !shouldRefresh, let metric, metric.popularityScore != nil {
                     for siblingTrack in sortedTracks {
                         try TrackedKeywordRefreshStatusStore.set(
                             nil,
@@ -614,6 +636,10 @@ final class KeywordMetricsService: Sendable {
                 for: Array(tracksByQueryKey.keys),
                 in: modelContext
             )
+            let persistedStatuses = try TrackedKeywordRefreshStatusStore.snapshots(
+                for: tracks.map(\.identityKey),
+                in: modelContext
+            )
             var refreshIdentityKeys: [String] = []
             var refreshQueryCount = 0
             var clearedStatusCount = 0
@@ -621,10 +647,18 @@ final class KeywordMetricsService: Sendable {
                 let sortedTracks = queryTracks.sorted { $0.identityKey < $1.identityKey }
                 guard let track = sortedTracks.first else { continue }
                 let metric = metricsByQueryKey[track.queryKey]
-                if Self.shouldRefreshMetrics(metricsTTL: metricsTTL, metric: metric) {
+                let popularityStatus = TrackedKeywordRefreshStatusStore.snapshot(
+                    for: track,
+                    persisted: persistedStatuses[track.identityKey]
+                )
+                if Self.shouldRefreshMetrics(
+                    metricsTTL: metricsTTL,
+                    metric: metric,
+                    popularityStatus: popularityStatus
+                ) {
                     refreshIdentityKeys.append(contentsOf: sortedTracks.map(\.identityKey))
                     refreshQueryCount += 1
-                } else if let metric {
+                } else if let metric, metric.popularityScore != nil {
                     for siblingTrack in sortedTracks {
                         let previousStatus = try TrackedKeywordRefreshStatusStore.snapshot(
                             for: siblingTrack,
@@ -793,12 +827,25 @@ final class KeywordMetricsService: Sendable {
         }
     }
 
-    private static func shouldRefreshMetrics(metricsTTL: TimeInterval, metric: KeywordDailyMetric?) -> Bool {
+    private static func shouldRefreshMetrics(
+        metricsTTL: TimeInterval,
+        metric: KeywordDailyMetric?,
+        popularityStatus: KeywordRefreshStatusSnapshot
+    ) -> Bool {
         guard let metric else {
             return true
         }
 
-        return metric.popularityScore == nil || Date.now.timeIntervalSince(metric.updatedAt) >= metricsTTL
+        if metric.popularityScore != nil {
+            return Date.now.timeIntervalSince(metric.updatedAt) >= metricsTTL
+        }
+
+        guard popularityStatus.popularityMessage?.hasPrefix("Popularity unavailable.") == true,
+              let unavailableAt = popularityStatus.popularityUpdatedAt
+        else {
+            return true
+        }
+        return Date.now.timeIntervalSince(unavailableAt) >= metricsTTL
     }
 
     private static func orderedUniquePopularityTargets(

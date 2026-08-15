@@ -474,6 +474,24 @@ struct KeywordMetricsServiceTests {
             .init(completed: 0, total: 1, failureCount: 0),
             .init(completed: 1, total: 1, failureCount: 0),
         ])
+
+        let secondResult = try await services.keywordMetricsService.refreshMetricsBatch(
+            for: [track.identityKey],
+            using: BackgroundModelStore(modelContainer: container)
+        )
+        let retainedUnavailableStatus = try await BackgroundModelStore(
+            modelContainer: container
+        ).read { context in
+            let storedTrack = try #require(context.model(for: trackID) as? TrackedAppKeyword)
+            return try TrackedKeywordRefreshStatusStore.snapshot(
+                for: storedTrack,
+                in: context
+            ).popularityMessage
+        }
+
+        #expect(secondResult.outcomes.first?.disposition == .upToDate)
+        #expect(secondResult.failureCount == 0)
+        #expect(retainedUnavailableStatus?.contains("at least 500 searches and 10 impressions") == true)
     }
 
     @Test

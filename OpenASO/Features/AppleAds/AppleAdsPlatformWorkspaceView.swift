@@ -60,6 +60,7 @@ final class AppleAdsPlatformWorkspaceModel {
     }
 
     func selectAccount() async {
+        guard !isLoading else { return }
         guard let accountID = Int64(selectedAdAccountID), accountID > 0 else { return }
         var credentials = credentialStore.apiCredentials
         credentials.adAccountID = String(accountID)
@@ -231,6 +232,7 @@ private struct AppleAdsPlatformWorkspaceContent: View {
                         }
                     }
                     .frame(maxWidth: 340)
+                    .disabled(model.isLoading)
                     .onChange(of: model.selectedAdAccountID) { _, _ in
                         Task { await model.selectAccount() }
                     }
