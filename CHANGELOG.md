@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3 - 2026-08-15
+
+OpenASO 0.4.3 moves keyword popularity to Apple’s supported Apple Ads Platform API and strengthens ranking storage and day-to-day app management.
+
+- Use Apple’s official Swift client and Search Term Popularity API for current 1–100 keyword popularity.
+- Add guided Apple Ads credential verification and account selection, with private keys stored in macOS Keychain.
+- Add an Apple Ads workspace for Search Popularity, campaigns, and owned apps, plus corresponding read-only MCP tools.
+- Show Apple’s threshold-based unavailable state instead of retaining an invalid stale popularity score, and avoid repeatedly requesting the same unavailable term during its freshness window.
+- Keep keyword sorting active while ranking and popularity values update during a refresh.
+- Normalize ranking persistence with a validated V6 migration that preserves existing ranking history while reducing redundant storage.
+- Accept App Store URLs as well as numeric IDs when adding an app.
+- Improve window sizing and key sheets on smaller displays.
+
 ## 0.4.2 - 2026-08-08
 
 OpenASO 0.4.2 adds reliable scheduled daily refreshes that can run while the app is closed and hardens headless MCP operation.
