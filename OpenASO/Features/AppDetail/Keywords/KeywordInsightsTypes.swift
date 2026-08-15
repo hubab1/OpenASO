@@ -38,7 +38,7 @@ struct KeywordInsightsDataset {
                             observedAt: snapshot.searchedAt,
                             rank: snapshot.rank,
                             resultCount: snapshot.resultCount,
-                            popularityScore: row.metrics?.popularityScore,
+                            popularityScore: row.displayedPopularityScore,
                             confidence: nil
                         )
                     }

@@ -472,7 +472,7 @@ final class KeywordMetricsService: Sendable {
                     using: modelStore
                 )
                 outcomes.append(outcome)
-                if outcome.errorMessage != nil { failureCount += 1 }
+                if outcome.disposition == .failed { failureCount += 1 }
                 completedCount += 1
                 await didPersist?(candidate.persistenceUpdate)
                 await progress?(completedCount, totalCount, failureCount)
@@ -512,7 +512,7 @@ final class KeywordMetricsService: Sendable {
                         using: modelStore
                     )
                     outcomes.append(outcome)
-                    if outcome.errorMessage != nil { failureCount += 1 }
+                    if outcome.disposition == .failed { failureCount += 1 }
                     completedCount += 1
                     await didPersist?(candidate.persistenceUpdate)
                     await progress?(completedCount, totalCount, failureCount)
@@ -537,7 +537,7 @@ final class KeywordMetricsService: Sendable {
                     using: modelStore
                 )
                 outcomes.append(outcome)
-                if outcome.errorMessage != nil { failureCount += 1 }
+                if outcome.disposition == .failed { failureCount += 1 }
                 completedCount += 1
                 await didPersist?(candidate.persistenceUpdate)
                 await progress?(completedCount, totalCount, failureCount)
@@ -748,9 +748,17 @@ final class KeywordMetricsService: Sendable {
         }
         upsertMetrics(payload, for: track, in: modelContext)
         if let statusMessage = payload.statusMessage {
-            outcomes.append(KeywordMetricsRefreshOutcome(trackID: track.persistentModelID, errorMessage: statusMessage))
+            outcomes.append(KeywordMetricsRefreshOutcome(
+                trackID: track.persistentModelID,
+                errorMessage: statusMessage,
+                disposition: payload.outcomeDisposition
+            ))
         } else {
-            outcomes.append(KeywordMetricsRefreshOutcome(trackID: track.persistentModelID, errorMessage: nil))
+            outcomes.append(KeywordMetricsRefreshOutcome(
+                trackID: track.persistentModelID,
+                errorMessage: nil,
+                disposition: payload.outcomeDisposition
+            ))
         }
     }
 
@@ -933,7 +941,8 @@ final class KeywordMetricsService: Sendable {
         metrics.storefront = track.storefront
         metrics.platform = track.platform
 
-        let shouldPreserveExistingPopularity = payload.statusMessage != nil && metrics.popularityScore != nil
+        let shouldPreserveExistingPopularity = payload.preservesExistingPopularity
+            && metrics.popularityScore != nil
         guard !shouldPreserveExistingPopularity else {
             return
         }
@@ -961,21 +970,26 @@ final class KeywordMetricsService: Sendable {
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+                statusMessage: "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings.",
+                outcomeDisposition: .failed,
+                preservesExistingPopularity: true
             )
         case .missingContextApp:
             return KeywordMetricsPayload(
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity failed to fetch. Configure Apple Ads Platform API access in Settings."
+                statusMessage: "Popularity failed to fetch. Configure Apple Ads Platform API access in Settings.",
+                outcomeDisposition: .failed,
+                preservesExistingPopularity: true
             )
         case .notFound:
             return KeywordMetricsPayload(
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity unavailable. Apple Ads returned no eligible search-term popularity row for this keyword and country or region."
+                statusMessage: "Popularity unavailable. Apple Ads returned no eligible row for this keyword and country or region; terms need at least 500 searches and 10 impressions in the reporting period.",
+                outcomeDisposition: .skipped
             )
         case .failure(let message):
             if isUnsupportedAppleAdsStorefrontMessage(message) {
@@ -983,7 +997,8 @@ final class KeywordMetricsService: Sendable {
                     popularityScore: nil,
                     difficultyScore: nil,
                     source: .appleAdsPopularity,
-                    statusMessage: "Popularity unavailable. \(message)"
+                    statusMessage: "Popularity unavailable. \(message)",
+                    outcomeDisposition: .skipped
                 )
             }
 
@@ -991,7 +1006,9 @@ final class KeywordMetricsService: Sendable {
                 popularityScore: nil,
                 difficultyScore: nil,
                 source: .appleAdsPopularity,
-                statusMessage: "Popularity failed to fetch. \(message)"
+                statusMessage: "Popularity failed to fetch. \(message)",
+                outcomeDisposition: .failed,
+                preservesExistingPopularity: true
             )
         }
 
@@ -1131,11 +1148,12 @@ struct KeywordMetricsRefreshBatchResult: Sendable {
     }
 
     var failureCount: Int {
-        outcomes.lazy.filter { $0.errorMessage != nil }.count + batchErrors.count
+        outcomes.lazy.filter { $0.disposition == .failed }.count + batchErrors.count
     }
 
     var firstErrorMessage: String? {
-        batchErrors.first?.message ?? outcomes.lazy.compactMap(\.errorMessage).first
+        batchErrors.first?.message
+            ?? outcomes.lazy.first(where: { $0.disposition == .failed })?.errorMessage
     }
 }
 
@@ -1172,6 +1190,8 @@ private struct KeywordMetricsPayload: Sendable {
     let source: KeywordMetricsSource
     var notes: String? = nil
     var statusMessage: String? = nil
+    var outcomeDisposition: KeywordMetricsRefreshDisposition = .refreshed
+    var preservesExistingPopularity = false
     var popularityDate: String? = nil
     var submissionCount: Int = 1
     var winningCount: Int = 1

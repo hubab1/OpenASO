@@ -4417,7 +4417,9 @@ extension OpenASOMCPService {
       previousRank: previous?.rank,
       rankDelta: rankDelta,
       resultCount: latest?.resultCount ?? track.rankingAppCount,
-      popularityScore: metrics?.popularityScore,
+      popularityScore: resolvedStatus.popularityMessage?.hasPrefix("Popularity unavailable.") == true
+        ? nil
+        : metrics?.popularityScore,
       difficultyScore: metrics?.difficultyScore,
       notes: track.notes,
       rankingStatusMessage: resolvedStatus.rankingMessage,
