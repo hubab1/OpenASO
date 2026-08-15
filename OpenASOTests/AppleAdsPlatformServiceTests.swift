@@ -78,6 +78,24 @@ struct AppleAdsPlatformServiceTests {
     }
 
     @Test
+    func searchTermPopularityRequestOmitsRejectedGeneratedSortingProperty() throws {
+        let request = try OfficialAppleAdsPlatformAPI.searchTermPopularityRequest(
+            countryCode: "US",
+            searchTerms: ["focus"],
+            window: .init(start: "2026-07-12", end: "2026-08-08"),
+            offset: 0,
+            pageSize: 5_000
+        )
+        let data = try JSONEncoder().encode(request)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        #expect(object["sorting"] == nil)
+        #expect(String(decoding: data, as: UTF8.self).contains("\"order\"") == false)
+    }
+
+    @Test
     func credentialValidationRejectsPublicKeyBeforeVerification() {
         let credentials = AppleAdsCredentials(
             clientID: "client",

@@ -304,34 +304,12 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
                             headers: .init(
                                 xApContext: XApContext(adAccountID: accountID).rawValue
                             ),
-                            body: .json(.init(
-                                filters: [
-                                    .init(
-                                        field: "countryOrRegion",
-                                        _operator: .equals,
-                                        value: try OpenAPIValueContainer(
-                                            unvalidatedValue: countryCode
-                                        )
-                                    ),
-                                    .init(
-                                        field: "searchTerm",
-                                        _operator: ._in,
-                                        value: try OpenAPIValueContainer(
-                                            unvalidatedValue: batch
-                                        )
-                                    ),
-                                ],
-                                sorting: [
-                                    .init(field: "week", order: .desc),
-                                    .init(field: "rankInGenre", order: .asc),
-                                ],
-                                timeRange: .init(
-                                    start: window.start,
-                                    end: window.end,
-                                    timeZone: .utc,
-                                    granularity: .weeklySunSat
-                                ),
-                                pagination: .init(offset: offset, pageSize: pageSize)
+                            body: .json(try Self.searchTermPopularityRequest(
+                                countryCode: countryCode,
+                                searchTerms: batch,
+                                window: window,
+                                offset: offset,
+                                pageSize: pageSize
                             ))
                         )
                     )
@@ -370,6 +348,40 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
 
             return allRows.sorted(by: Self.searchTermPopularityOrdering)
         }
+    }
+
+    static func searchTermPopularityRequest(
+        countryCode: String,
+        searchTerms: [String],
+        window: AppleAdsSearchTermPopularityWindow,
+        offset: Int,
+        pageSize: Int
+    ) throws -> Components.Schemas.SearchTermPopularityQueryRequest {
+        .init(
+            filters: [
+                .init(
+                    field: "countryOrRegion",
+                    _operator: .equals,
+                    value: try OpenAPIValueContainer(unvalidatedValue: countryCode)
+                ),
+                .init(
+                    field: "searchTerm",
+                    _operator: ._in,
+                    value: try OpenAPIValueContainer(unvalidatedValue: searchTerms)
+                ),
+            ],
+            // AppleAdsClient 1.109.0 encodes generated sort items with an `order`
+            // property that the live endpoint rejects. Its documented default order
+            // is sufficient for pagination, and rows are sorted locally before return.
+            sorting: nil,
+            timeRange: .init(
+                start: window.start,
+                end: window.end,
+                timeZone: .utc,
+                granularity: .weeklySunSat
+            ),
+            pagination: .init(offset: offset, pageSize: pageSize)
+        )
     }
 
     private func credentialsWithAccount(
