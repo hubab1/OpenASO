@@ -308,85 +308,22 @@ struct SettingsView: View {
     }
 
     private var appleAdsPlatformSection: some View {
-        Section {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "apple.logo")
-                    .imageScale(.large)
-                    .frame(width: 20)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Official Swift client")
-                        .font(.headline)
-                    Text("Version \(services.appleAdsPlatformAPI.coverage.clientVersion) · \(services.appleAdsPlatformAPI.coverage.operationCount) generated operations")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, 4)
-
-            Text("1. Enter the OAuth client identifier Apple issued for Apple Ads.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("Client ID", text: $clientID)
-                .textContentType(.username)
-
-            Text("2. Add the team and key identifiers for the matching private key.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("Team ID", text: $teamID)
-            TextField("Key ID", text: $keyID)
-
-            Text("3. Paste the complete .p8 private key. It is stored only in macOS Keychain.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("Private Key (.p8 PEM)", text: $privateKey, axis: .vertical)
-                .lineLimit(3...8)
-                .font(.system(.caption, design: .monospaced))
-                .privacySensitive()
-
-            Text("4. Verify to discover your accessible ad accounts. Leave Ad Account ID empty to select the first available account.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("Ad Account ID (optional before verification)", text: $adAccountID)
-
-            HStack(spacing: 10) {
-                Button("Verify & Save", action: verifyAndSaveAppleAdsPlatformCredentials)
-                    .disabled(isVerifyingAppleAdsPlatform || !enteredCredentials.canVerify)
-
-                if isVerifyingAppleAdsPlatform {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-
-                Spacer()
-
-                Button(
-                    "Clear API Credentials",
-                    role: .destructive,
-                    action: clearAppleAdsPlatformCredentials
-                )
-                .disabled(
-                    isVerifyingAppleAdsPlatform
-                        || !services.appleAdsCredentialStore.hasCompleteAPICredentials
-                )
-            }
-
-            if let appleAdsPlatformStatus {
-                Label(appleAdsPlatformStatus.message, systemImage: appleAdsPlatformStatus.systemImage)
-                    .foregroundStyle(appleAdsPlatformStatus.tint)
-                    .font(.caption)
-            }
-
-            Link(
-                "Apple Ads Platform API setup documentation",
-                destination: URL(string: "https://developer.apple.com/documentation/apple-ads-platform-api")!
-            )
-            .font(.caption)
-        } header: {
-            Text("Apple Ads Platform API")
-        } footer: {
-            Text("This connection powers campaign and owned-app management plus public Search Term Popularity data through the UI and MCP. Browser cookies are no longer required for popularity refreshes.")
-        }
+        AppleAdsPlatformCredentialsSection(
+            clientID: $clientID,
+            teamID: $teamID,
+            keyID: $keyID,
+            privateKey: $privateKey,
+            adAccountID: $adAccountID,
+            clientVersion: services.appleAdsPlatformAPI.coverage.clientVersion,
+            operationCount: services.appleAdsPlatformAPI.coverage.operationCount,
+            privateKeyValidationIssue: enteredCredentials.privateKeyValidationIssue,
+            canVerify: enteredCredentials.canVerify,
+            hasStoredCredentials: services.appleAdsCredentialStore.hasCompleteAPICredentials,
+            isVerifying: isVerifyingAppleAdsPlatform,
+            status: appleAdsPlatformStatus,
+            verifyAction: verifyAndSaveAppleAdsPlatformCredentials,
+            clearAction: clearAppleAdsPlatformCredentials
+        )
     }
 
     private var savedLoginControls: some View {
@@ -774,6 +711,11 @@ struct SettingsView: View {
     }
 
     private func verifyAndSaveAppleAdsPlatformCredentials() {
+        if let validationIssue = enteredCredentials.privateKeyValidationIssue {
+            appleAdsPlatformStatus = .failure(validationIssue)
+            return
+        }
+
         isVerifyingAppleAdsPlatform = true
         appleAdsPlatformStatus = nil
 

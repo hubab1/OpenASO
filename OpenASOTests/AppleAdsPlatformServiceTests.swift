@@ -77,6 +77,39 @@ struct AppleAdsPlatformServiceTests {
         #expect(row.id == "US|focus|2026-08-02|Productivity")
     }
 
+    @Test
+    func credentialValidationRejectsPublicKeyBeforeVerification() {
+        let credentials = AppleAdsCredentials(
+            clientID: "client",
+            teamID: "team",
+            keyID: "key",
+            privateKey: """
+            -----BEGIN PUBLIC KEY-----
+            cHVibGlj
+            -----END PUBLIC KEY-----
+            """
+        )
+
+        #expect(credentials.canVerify)
+        #expect(credentials.privateKeyValidationIssue?.contains("public key") == true)
+    }
+
+    @Test
+    func credentialValidationAcceptsPrivatePEMEnvelope() {
+        let credentials = AppleAdsCredentials(
+            clientID: "client",
+            teamID: "team",
+            keyID: "key",
+            privateKey: """
+            -----BEGIN PRIVATE KEY-----
+            cHJpdmF0ZQ==
+            -----END PRIVATE KEY-----
+            """
+        )
+
+        #expect(credentials.privateKeyValidationIssue == nil)
+    }
+
     @MainActor
     @Test
     func credentialStorePersistsAdAccountAndKeepsPrivateKeyInKeychain() throws {

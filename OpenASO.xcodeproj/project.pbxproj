@@ -13,6 +13,7 @@
 		AD5100000000000000000002 /* AppleAds/AppleAdsPlatformService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5100000000000000000003 /* AppleAds/AppleAdsPlatformService.swift */; };
 		AD5200000000000000000001 /* AppleAdsPlatformWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5200000000000000000002 /* AppleAdsPlatformWorkspaceView.swift */; };
 		AD5300000000000000000001 /* AppleAdsPlatformServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5300000000000000000002 /* AppleAdsPlatformServiceTests.swift */; };
+		AD5400000000000000000001 /* AppleAdsPlatformCredentialsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5400000000000000000002 /* AppleAdsPlatformCredentialsSection.swift */; };
 		F1A200000000000000000001 /* AppStoreIDInputParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A200000000000000000002 /* AppStoreIDInputParser.swift */; };
 		F1A200000000000000000003 /* AppStoreIDInputParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */; };
 		B9A0000000000000000005 /* AppleAdsPastedSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */; };
@@ -354,6 +355,7 @@
 		AD5100000000000000000003 /* AppleAds/AppleAdsPlatformService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsPlatformService.swift; sourceTree = "<group>"; };
 		AD5200000000000000000002 /* AppleAdsPlatformWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPlatformWorkspaceView.swift; sourceTree = "<group>"; };
 		AD5300000000000000000002 /* AppleAdsPlatformServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPlatformServiceTests.swift; sourceTree = "<group>"; };
+		AD5400000000000000000002 /* AppleAdsPlatformCredentialsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPlatformCredentialsSection.swift; sourceTree = "<group>"; };
 		F1A200000000000000000002 /* AppStoreIDInputParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreIDInputParser.swift; sourceTree = "<group>"; };
 		F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreIDInputParserTests.swift; sourceTree = "<group>"; };
 		B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPastedSessionTests.swift; sourceTree = "<group>"; };
@@ -987,6 +989,7 @@
 		C10000000000000000000006 /* Settings */ = {
 			isa = PBXGroup;
 			children = (
+				AD5400000000000000000002 /* AppleAdsPlatformCredentialsSection.swift */,
 				04E8C4E18F1A4D519C0A1139 /* AppleAdsSettingsConnectionState.swift */,
 				04E8C4E18F1A4D519C0A113D /* SettingsViewPreviews.swift */,
 				04E8C4E18F1A4D519C0A113B /* AppleAdsSettingsStatusRows.swift */,
@@ -1264,6 +1267,7 @@
 				E78A00000000000000000001 /* OpenASOExecutionMode.swift in Sources */,
 				E8BA00000000000000000003 /* CrossProcessFileLock.swift in Sources */,
 				04E8C4E18F1A4D519C0A113A /* AppleAdsSettingsStatusRows.swift in Sources */,
+				AD5400000000000000000001 /* AppleAdsPlatformCredentialsSection.swift in Sources */,
 				D35D00000000000000000002 /* DailyRefreshRunStatusView.swift in Sources */,
 				E8BA00000000000000000004 /* BackgroundRefreshAgentStatusView.swift in Sources */,
 				04E8C4E18F1A4D519C0A110B /* SettingsView.swift in Sources */,

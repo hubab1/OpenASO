@@ -52,6 +52,29 @@ struct AppleAdsCredentials: Equatable, Sendable {
             && !credentials.keyID.isEmpty
             && !credentials.privateKey.isEmpty
     }
+
+    var privateKeyValidationIssue: String? {
+        let key = trimmed.privateKey
+        guard !key.isEmpty else { return nil }
+
+        if key.contains("-----BEGIN PUBLIC KEY-----") {
+            return "This is a public key. Paste the matching private .p8 key so OpenASO can sign Apple Ads requests."
+        }
+
+        if key.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
+            return "Encrypted private keys are not supported. Export the unencrypted Apple-issued .p8 key."
+        }
+
+        let hasPKCS8PrivateKey = key.contains("-----BEGIN PRIVATE KEY-----")
+            && key.contains("-----END PRIVATE KEY-----")
+        let hasECPrivateKey = key.contains("-----BEGIN EC PRIVATE KEY-----")
+            && key.contains("-----END EC PRIVATE KEY-----")
+        guard hasPKCS8PrivateKey || hasECPrivateKey else {
+            return "Paste the complete Apple-issued private .p8 key, including its BEGIN and END lines."
+        }
+
+        return nil
+    }
 }
 
 @MainActor
