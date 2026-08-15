@@ -159,6 +159,47 @@ struct AppleAdsPlatformServiceTests {
         #expect(credentials.privateKeyValidationIssue == nil)
     }
 
+    @Test
+    func environmentCredentialsLoadFromConfiguredDotEnvAndPrivateKeyFile() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let privateKeyURL = temporaryDirectory.appendingPathComponent("apple-ads-private-key.p8")
+        let privateKey = """
+        -----BEGIN PRIVATE KEY-----
+        cHJpdmF0ZQ==
+        -----END PRIVATE KEY-----
+        """
+        try privateKey.write(to: privateKeyURL, atomically: true, encoding: .utf8)
+
+        let environmentURL = temporaryDirectory.appendingPathComponent(".env")
+        try """
+        APPLE_SEARCH_ADS_CLIENT_ID=client-from-file
+        APPLE_SEARCH_ADS_TEAM_ID=team-from-file
+        APPLE_SEARCH_ADS_KEY_ID=key-from-file
+        APPLE_SEARCH_ADS_PRIVATE_KEY_PATH=\(privateKeyURL.path)
+        APPLE_SEARCH_ADS_ORG_ID=20
+        APPLE_ADS_PLATFORM_AD_ACCOUNT_ID=30
+        """.write(to: environmentURL, atomically: true, encoding: .utf8)
+
+        let credentials = EnvironmentAppleAdsCredentials.load(environment: [
+            "OPENASO_ENV_FILE": environmentURL.path,
+            "APPLE_SEARCH_ADS_CLIENT_ID": "client-from-process",
+        ])
+
+        #expect(credentials.clientID == "client-from-process")
+        #expect(credentials.teamID == "team-from-file")
+        #expect(credentials.keyID == "key-from-file")
+        #expect(credentials.privateKey == privateKey)
+        #expect(credentials.orgID == "20")
+        #expect(credentials.adAccountID == "30")
+    }
+
     @MainActor
     @Test
     func credentialStorePersistsAdAccountAndKeepsPrivateKeyInKeychain() throws {

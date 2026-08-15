@@ -218,7 +218,7 @@ final class AppleAdsCredentialStore {
     }
 }
 
-private struct EnvironmentAppleAdsCredentials {
+struct EnvironmentAppleAdsCredentials {
     var clientID = ""
     var teamID = ""
     var keyID = ""
@@ -226,19 +226,76 @@ private struct EnvironmentAppleAdsCredentials {
     var orgID = ""
     var adAccountID = ""
 
-    static func load() -> EnvironmentAppleAdsCredentials {
-        let environment = ProcessInfo.processInfo.environment
+    static func load(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> EnvironmentAppleAdsCredentials {
+        let environment = mergedEnvironment(processEnvironment: environment)
+        let privateKey = value(
+            for: ["APPLE_SEARCH_ADS_PRIVATE_KEY", "privateKey"],
+            environment: environment
+        )
+        let privateKeyPath = value(
+            for: ["APPLE_SEARCH_ADS_PRIVATE_KEY_PATH"],
+            environment: environment
+        )
+
         return EnvironmentAppleAdsCredentials(
             clientID: value(for: ["APPLE_SEARCH_ADS_CLIENT_ID", "clientId"], environment: environment),
             teamID: value(for: ["APPLE_SEARCH_ADS_TEAM_ID", "teamId"], environment: environment),
             keyID: value(for: ["APPLE_SEARCH_ADS_KEY_ID", "keyId"], environment: environment),
-            privateKey: value(for: ["APPLE_SEARCH_ADS_PRIVATE_KEY", "privateKey"], environment: environment),
+            privateKey: privateKey.isEmpty ? privateKeyContents(at: privateKeyPath) : privateKey,
             orgID: value(for: ["APPLE_SEARCH_ADS_ORG_ID", "orgId"], environment: environment),
             adAccountID: value(
                 for: ["APPLE_ADS_PLATFORM_AD_ACCOUNT_ID", "APPLE_SEARCH_ADS_AD_ACCOUNT_ID", "adAccountId"],
                 environment: environment
             )
         )
+    }
+
+    private static func mergedEnvironment(
+        processEnvironment: [String: String]
+    ) -> [String: String] {
+        var environment = environmentFileValues(
+            at: processEnvironment["OPENASO_ENV_FILE"]
+        )
+        for (key, value) in processEnvironment where !value.isEmpty {
+            environment[key] = value
+        }
+        return environment
+    }
+
+    private static func environmentFileValues(at path: String?) -> [String: String] {
+        guard let path, !path.isEmpty,
+              let contents = try? String(contentsOfFile: path, encoding: .utf8)
+        else {
+            return [:]
+        }
+
+        return contents.split(whereSeparator: \.isNewline).reduce(into: [:]) { values, line in
+            var entry = line.trimmingCharacters(in: .whitespaces)
+            guard !entry.isEmpty, !entry.hasPrefix("#") else { return }
+            if entry.hasPrefix("export ") {
+                entry.removeFirst("export ".count)
+            }
+            guard let separator = entry.firstIndex(of: "=") else { return }
+
+            let key = entry[..<separator].trimmingCharacters(in: .whitespaces)
+            var value = entry[entry.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+            if value.count >= 2,
+               let first = value.first,
+               let last = value.last,
+               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                value.removeFirst()
+                value.removeLast()
+            }
+            guard !key.isEmpty else { return }
+            values[key] = value
+        }
+    }
+
+    private static func privateKeyContents(at path: String) -> String {
+        guard !path.isEmpty else { return "" }
+        return (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     }
 
     private static func value(
