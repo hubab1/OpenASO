@@ -22,12 +22,21 @@ struct KeywordMetricsServiceTests {
                     makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
                 )
             },
-            modelContainer: container
+            modelContainer: container,
+            appleAdsPlatformAPI: HTTPBackedSearchPopularityAPI(
+                httpClient: MockHTTPClient { request in
+                    requestCount += 1
+                    let payload = """
+                    <html><body>Sign in</body></html>
+                    """
+                    return (
+                        Data(payload.utf8),
+                        makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                    )
+                }
+            )
         )
-        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
-        try services.appleAdsWebSessionStore.save(
-            AppleAdsWebSession(cookieHeader: "cookie=value; XSRF-TOKEN-CM=token", xsrfToken: "token", updatedAt: .now)
-        )
+        try saveTestCredentials(in: services.appleAdsCredentialStore)
 
         let trackedApp = TrackedApp(appStoreID: 1, bundleID: nil, name: "App", sellerName: nil, defaultPlatform: .iphone)
         let query = try KeywordQuery.fetchOrInsert(term: "focus app", storefront: "us", platform: .iphone, in: modelContext)
@@ -66,10 +75,9 @@ struct KeywordMetricsServiceTests {
             in: modelContext
         )
         #expect(refreshStatus.rankingMessage == rankingStatus)
-        #expect(refreshStatus.popularityMessage == nil)
+        #expect(refreshStatus.popularityMessage?.contains("Popularity failed to fetch") == true)
         #expect(track.statusMessage == nil)
-        #expect(services.appleAdsWebSessionStore.requiresReconnect)
-        #expect(services.appleAdsWebSessionStore.hasSession)
+        #expect(!services.appleAdsWebSessionStore.requiresReconnect)
         #expect(requestCount == 1)
     }
 
@@ -100,51 +108,24 @@ struct KeywordMetricsServiceTests {
         #expect(try TrackedKeywordRefreshStatusStore.snapshot(
             for: track,
             in: modelContext
-        ).popularityMessage == "Popularity failed to fetch. Reconnect Apple Ads in Settings so OpenASO can detect a linked app.")
+        ).popularityMessage == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings.")
     }
 
     @Test
     func resolveDefaultAppleAdsAppReturnsFirstCampaignLinkedApp() async throws {
+        let expectedApp = AppleAdsPromotedApp(
+            adamId: 6_448_311_069,
+            appName: "Atten",
+            developerName: "Third Tech",
+            countryOrRegionCodes: ["US"]
+        )
         let services = AppServices.mocked(
             httpClient: MockHTTPClient { request in
-                let url = try #require(request.url)
-                if url.host == "appleid.apple.com" {
-                    return (
-                        Data(#"{"access_token":"token"}"#.utf8),
-                        makeHTTPURLResponse(url: url, statusCode: 200)
-                    )
-                }
-
-                if url.path == "/api/v5/acls" {
-                    return (
-                        Data(#"{"data":[{"orgId":12345}]}"#.utf8),
-                        makeHTTPURLResponse(url: url, statusCode: 200)
-                    )
-                }
-
-                if url.path == "/api/v5/campaigns" {
-                    #expect(request.value(forHTTPHeaderField: "X-AP-Context") == "orgId=12345")
-                    let payload = """
-                    {
-                      "data": [
-                        {
-                          "adamId": 6448311069,
-                          "appName": "Atten",
-                          "countriesOrRegions": ["US"],
-                          "deleted": false
-                        }
-                      ]
-                    }
-                    """
-                    return (
-                        Data(payload.utf8),
-                        makeHTTPURLResponse(url: url, statusCode: 200)
-                    )
-                }
-
-                Issue.record("Unexpected request to \(url.absoluteString)")
-                throw OpenASOError.providerUnavailable("Unexpected request")
-            }
+                throw OpenASOError.providerUnavailable(
+                    "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
+                )
+            },
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [expectedApp])
         )
 
         let app = try await services.keywordMetricsService.resolveDefaultAppleAdsApp(
@@ -153,12 +134,11 @@ struct KeywordMetricsServiceTests {
                 teamID: "team",
                 keyID: "key",
                 privateKey: Self.privateKey,
-                orgID: ""
+                adAccountID: "12345"
             )
         )
 
-        #expect(app.adamId == 6_448_311_069)
-        #expect(app.appName == "Atten")
+        #expect(app == expectedApp)
     }
 
     @Test
@@ -378,12 +358,25 @@ struct KeywordMetricsServiceTests {
                     makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
                 )
             },
-            modelContainer: container
+            modelContainer: container,
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(
+                apps: [],
+                popularityRows: [
+                    AppleAdsSearchTermPopularity(
+                        searchTerm: "focus app",
+                        countryOrRegion: "US",
+                        genre: "Productivity",
+                        week: "2026-08-08",
+                        month: nil,
+                        rankInGenre: 1,
+                        popularityInGenre: 88,
+                        popularity1to100: 88,
+                        popularity1to5: 5
+                    )
+                ]
+            )
         )
-        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
-        try services.appleAdsWebSessionStore.save(
-            AppleAdsWebSession(cookieHeader: "cookie=value; XSRF-TOKEN-CM=token", xsrfToken: "token", updatedAt: .now)
-        )
+        try saveTestCredentials(in: services.appleAdsCredentialStore)
 
         let trackedApp = TrackedApp(appStoreID: 1, bundleID: nil, name: "App", sellerName: nil, defaultPlatform: .iphone)
         let query = try KeywordQuery.fetchOrInsert(term: "focus app", storefront: "us", platform: .iphone, in: modelContext)
@@ -402,22 +395,121 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
-    func unsupportedAppleAdsStorefrontDoesNotAskForSetup() async throws {
+    func unavailableOfficialPopularityClearsLegacyScoreWithoutReportingFailure() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
         let services = AppServices.mocked(
             httpClient: MockHTTPClient { request in
-                (
-                    Data(#"{"error":{"errors":[{"message":"Bad request"}]}}"#.utf8),
-                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 400)
-                )
+                Issue.record("Unexpected request to \(request.url?.absoluteString ?? "unknown URL")")
+                throw OpenASOError.providerUnavailable("Unexpected request")
             },
+            modelContainer: container,
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], popularityRows: [])
+        )
+        try saveTestCredentials(in: services.appleAdsCredentialStore)
+
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let track = try makeTrack(
+            term: "long-tail keyword",
+            trackedApp: trackedApp,
+            in: modelContext
+        )
+        let previousUpdatedAt = try #require(Calendar.current.date(byAdding: .day, value: -8, to: .now))
+        modelContext.insert(
+            KeywordDailyMetric(
+                queryKey: track.queryKey,
+                keyword: track.term,
+                storefront: track.storefront,
+                platform: track.platform,
+                popularityScore: 74,
+                difficultyScore: nil,
+                source: .appleAdsPopularity,
+                updatedAt: previousUpdatedAt
+            )
+        )
+        try modelContext.save()
+
+        let progressRecorder = KeywordMetricsProgressRecorder()
+        let result = try await services.keywordMetricsService.refreshMetricsBatch(
+            for: [track.identityKey],
+            using: BackgroundModelStore(modelContainer: container),
+            progress: { completed, total, failureCount in
+                await progressRecorder.record(
+                    completed: completed,
+                    total: total,
+                    failureCount: failureCount
+                )
+            }
+        )
+        let trackID = track.persistentModelID
+        let stored = try await BackgroundModelStore(modelContainer: container).read { context in
+            let storedTrack = try #require(context.model(for: trackID) as? TrackedAppKeyword)
+            let metric = try #require(try context.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
+            let refreshStatus = try TrackedKeywordRefreshStatusStore.snapshot(
+                for: storedTrack,
+                in: context
+            )
+            return (
+                popularityScore: metric.popularityScore,
+                statusMessage: refreshStatus.popularityMessage
+            )
+        }
+        let progressUpdates = await progressRecorder.snapshot()
+
+        #expect(result.outcomes.count == 1)
+        #expect(result.outcomes.first?.disposition == .skipped)
+        #expect(result.skippedCount == 1)
+        #expect(result.failureCount == 0)
+        #expect(result.firstErrorMessage == nil)
+        #expect(stored.popularityScore == nil)
+        #expect(stored.statusMessage?.contains("at least 500 searches and 10 impressions") == true)
+        #expect(progressUpdates == [
+            .init(completed: 0, total: 1, failureCount: 0),
+            .init(completed: 1, total: 1, failureCount: 0),
+        ])
+
+        let secondResult = try await services.keywordMetricsService.refreshMetricsBatch(
+            for: [track.identityKey],
+            using: BackgroundModelStore(modelContainer: container)
+        )
+        let retainedUnavailableStatus = try await BackgroundModelStore(
             modelContainer: container
+        ).read { context in
+            let storedTrack = try #require(context.model(for: trackID) as? TrackedAppKeyword)
+            return try TrackedKeywordRefreshStatusStore.snapshot(
+                for: storedTrack,
+                in: context
+            ).popularityMessage
+        }
+
+        #expect(secondResult.outcomes.first?.disposition == .upToDate)
+        #expect(secondResult.failureCount == 0)
+        #expect(retainedUnavailableStatus?.contains("at least 500 searches and 10 impressions") == true)
+    }
+
+    @Test
+    func unsupportedAppleAdsStorefrontDoesNotAskForSetup() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { _ in
+                throw OpenASOError.providerUnavailable("Unexpected request")
+            },
+            modelContainer: container,
+            appleAdsPlatformAPI: FailingSearchPopularityAPI(
+                error: .providerUnavailable(
+                    "Apple Ads does not support keyword popularity in Angola."
+                )
+            )
         )
-        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
-        try services.appleAdsWebSessionStore.save(
-            AppleAdsWebSession(cookieHeader: "cookie=value; XSRF-TOKEN-CM=token", xsrfToken: "token", updatedAt: .now)
-        )
+        try saveTestCredentials(in: services.appleAdsCredentialStore)
 
         let trackedApp = TrackedApp(appStoreID: 1, bundleID: nil, name: "App", sellerName: nil, defaultPlatform: .iphone)
         let query = try KeywordQuery.fetchOrInsert(term: "focus app", storefront: "ao", platform: .iphone, in: modelContext)
@@ -510,8 +602,6 @@ struct KeywordMetricsServiceTests {
 
         let backgroundModelStore = try #require(services.backgroundModelStore)
         let outcomes = try await service.refreshStalePopularityMetrics(
-            popularityContextAppStoreID: 123_456_789,
-            webSession: AppleAdsWebSession(cookieHeader: "cookie=value; XSRF-TOKEN-CM=token", xsrfToken: "token", updatedAt: .now),
             using: backgroundModelStore
         )
         let storedScores = try await backgroundModelStore.read { modelContext in
@@ -533,13 +623,13 @@ struct KeywordMetricsServiceTests {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
         let requestBodies = KeywordPopularityRequestRecorder()
-        let contextAppStoreID: Int64 = 6_608_976_383
+        let legacyContextAppStoreID: Int64 = 6_608_976_383
         let session = completeWebSession
         let client = MockHTTPClient { request in
             #expect(
                 URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?
                     .queryItems?.first(where: { $0.name == "adamId" })?.value
-                    == String(contextAppStoreID)
+                    == "123456789"
             )
             #expect(request.value(forHTTPHeaderField: "Cookie") == session.cookieHeader)
             #expect(request.value(forHTTPHeaderField: "X-XSRF-TOKEN-CM") == session.xsrfToken)
@@ -614,12 +704,9 @@ struct KeywordMetricsServiceTests {
 
         let evidence = try await service.fetchPopularityMetrics(
             for: targets,
-            contextAppStoreID: contextAppStoreID,
+            contextAppStoreID: legacyContextAppStoreID,
             webSession: session,
-            now: {
-                #expect(requestBodies.snapshot().count == 3)
-                return observedAt
-            }
+            now: { observedAt }
         )
         let outcomes = try await backgroundModelStore.write { context in
             try service.persistPopularityMetrics(evidence, in: context)
@@ -954,8 +1041,6 @@ struct KeywordMetricsServiceTests {
 
         let outcomes = try await service.refreshMetrics(
             for: identityKeys,
-            popularityContextAppStoreID: 123_456_789,
-            webSession: completeWebSession,
             using: backgroundModelStore,
             progress: { completed, total, failureCount in
                 await progressRecorder.record(completed: completed, total: total, failureCount: failureCount)
@@ -1040,8 +1125,6 @@ struct KeywordMetricsServiceTests {
 
         let outcomes = try await service.refreshMetrics(
             for: [track.identityKey],
-            popularityContextAppStoreID: 123_456_789,
-            webSession: completeWebSession,
             using: backgroundModelStore
         )
         let stored = try await backgroundModelStore.read { context in
@@ -1135,9 +1218,12 @@ struct KeywordMetricsServiceTests {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
         let client = SuspendedKeywordMetricsHTTPClient()
-        let services = AppServices.mocked(httpClient: client, modelContainer: container)
-        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
-        try services.appleAdsWebSessionStore.save(completeWebSession)
+        let services = AppServices.mocked(
+            httpClient: client,
+            modelContainer: container,
+            appleAdsPlatformAPI: HTTPBackedSearchPopularityAPI(httpClient: client)
+        )
+        try saveTestCredentials(in: services.appleAdsCredentialStore)
         let backgroundModelStore = try #require(services.backgroundModelStore)
         let trackedApp = TrackedApp(
             appStoreID: 1,
@@ -1247,8 +1333,6 @@ struct KeywordMetricsServiceTests {
         try modelContext.save()
 
         let outcomes = try await service.refreshStalePopularityMetrics(
-            popularityContextAppStoreID: 123_456_789,
-            webSession: completeWebSession,
             using: backgroundModelStore
         )
         let newerTrackIdentityKey = newerTrack.identityKey
@@ -1343,8 +1427,6 @@ struct KeywordMetricsServiceTests {
         let preparation = try await service.prepareStalePopularityRefresh(using: backgroundModelStore)
         let outcomes = try await service.refreshMetrics(
             for: preparation.trackIdentityKeys,
-            popularityContextAppStoreID: 123_456_789,
-            webSession: completeWebSession,
             using: backgroundModelStore
         )
         let persisted = try await backgroundModelStore.read { context in
@@ -1369,7 +1451,7 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
-    func expiredBackgroundSessionStopsNinetyTwoKeywordBatchAndPreservesCachedMetrics() async throws {
+    func providerAuthenticationFailurePreservesNinetyTwoCachedMetrics() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
         let requestBodies = KeywordPopularityRequestRecorder()
@@ -1393,15 +1475,18 @@ struct KeywordMetricsServiceTests {
         )
         let session = completeWebSession
         try webSessionStore.save(session)
+        let credentialStore = AppleAdsCredentialStore(
+            defaults: defaults,
+            keychain: keychain,
+            namespace: namespace
+        )
+        try saveTestCredentials(in: credentialStore)
         let service = KeywordMetricsService(
             httpClient: client,
-            credentialStore: AppleAdsCredentialStore(
-                defaults: defaults,
-                keychain: keychain,
-                namespace: namespace
-            ),
+            credentialStore: credentialStore,
             settingsStore: AppSettingsStore(defaults: defaults),
-            webSessionStore: webSessionStore
+            webSessionStore: webSessionStore,
+            apiClient: HTTPBackedSearchPopularityAPI(httpClient: client)
         )
         let backgroundModelStore = BackgroundModelStore(modelContainer: container)
         let progressRecorder = KeywordMetricsProgressRecorder()
@@ -1457,8 +1542,6 @@ struct KeywordMetricsServiceTests {
 
         let result = try await service.refreshMetricsBatch(
             for: identityKeys,
-            popularityContextAppStoreID: 123_456_789,
-            webSession: session,
             using: backgroundModelStore,
             progress: { completed, total, failureCount in
                 await progressRecorder.record(
@@ -1470,8 +1553,6 @@ struct KeywordMetricsServiceTests {
         )
         let repeatedResult = try await service.refreshMetricsBatch(
             for: identityKeys,
-            popularityContextAppStoreID: 123_456_789,
-            webSession: session,
             using: backgroundModelStore
         )
         let storedState = try await backgroundModelStore.read { context in
@@ -1483,34 +1564,37 @@ struct KeywordMetricsServiceTests {
                 notes: Dictionary(uniqueKeysWithValues: metrics.compactMap { metric in
                     metric.notes.map { (metric.queryKey, $0) }
                 }),
-                statuses: Dictionary(uniqueKeysWithValues: tracks.compactMap { track in
-                    track.statusMessage.map { (track.identityKey, $0) }
+                statuses: Dictionary(uniqueKeysWithValues: try tracks.compactMap { track in
+                    try TrackedKeywordRefreshStatusStore.snapshot(
+                        for: track,
+                        in: context
+                    ).rankingMessage.map { (track.identityKey, $0) }
                 })
             )
         }
         let progressUpdates = await progressRecorder.snapshot()
         let requests = requestBodies.snapshot()
 
-        #expect(requests.count == 1)
+        #expect(requests.count == 4)
         #expect(requests.first?.storefronts == ["CA"])
         #expect(
             requests.first?.terms
                 == expectedFirstRequestTerms.sorted { $0.identityKey < $1.identityKey }.map(\.term)
         )
         #expect(result.outcomes.count == 92)
-        #expect(result.outcomes.allSatisfy { $0.errorMessage == nil && $0.isSkipped })
-        #expect(result.skippedCount == 92)
-        #expect(result.batchErrors == [.appleAdsSessionExpired])
-        #expect(result.failureCount == 1)
-        #expect(repeatedResult.skippedCount == 92)
-        #expect(repeatedResult.failureCount == 1)
+        #expect(result.outcomes.allSatisfy { $0.errorMessage != nil && !$0.isSkipped })
+        #expect(result.skippedCount == 0)
+        #expect(result.batchErrors.isEmpty)
+        #expect(result.failureCount == 92)
+        #expect(repeatedResult.skippedCount == 0)
+        #expect(repeatedResult.failureCount == 92)
         #expect(progressUpdates.first == .init(completed: 0, total: 92, failureCount: 0))
-        #expect(progressUpdates.last == .init(completed: 92, total: 92, failureCount: 1))
+        #expect(progressUpdates.last == .init(completed: 92, total: 92, failureCount: 92))
         #expect(storedState.scores == expectedScores.mapValues(Optional.some))
         #expect(storedState.updatedAt == [staleUpdatedAt])
         #expect(storedState.notes == expectedNotes)
         #expect(storedState.statuses == expectedStatuses)
-        #expect(webSessionStore.requiresReconnect)
+        #expect(!webSessionStore.requiresReconnect)
         #expect(webSessionStore.session == session)
     }
 
@@ -1563,8 +1647,6 @@ struct KeywordMetricsServiceTests {
         let refreshTask = Task {
             try await service.refreshMetricsBatch(
                 for: [track.identityKey],
-                popularityContextAppStoreID: 123_456_789,
-                webSession: session,
                 using: backgroundModelStore
             )
         }
@@ -1583,15 +1665,16 @@ struct KeywordMetricsServiceTests {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
         var requestCount = 0
+        let client = MockHTTPClient { _ in
+            requestCount += 1
+            throw CancellationError()
+        }
         let services = AppServices.mocked(
-            httpClient: MockHTTPClient { _ in
-                requestCount += 1
-                throw CancellationError()
-            },
-            modelContainer: container
+            httpClient: client,
+            modelContainer: container,
+            appleAdsPlatformAPI: HTTPBackedSearchPopularityAPI(httpClient: client)
         )
-        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
-        try services.appleAdsWebSessionStore.save(completeWebSession)
+        try saveTestCredentials(in: services.appleAdsCredentialStore)
         let trackedApp = TrackedApp(
             appStoreID: 1,
             bundleID: nil,
@@ -1679,8 +1762,6 @@ struct KeywordMetricsServiceTests {
 
         let outcomes = try await service.refreshMetrics(
             for: [freshTrack.identityKey, staleTrack.identityKey, missingTrack.identityKey],
-            popularityContextAppStoreID: 123_456_789,
-            webSession: completeWebSession,
             using: backgroundModelStore,
             progress: { completed, total, failureCount in
                 await progressRecorder.record(completed: completed, total: total, failureCount: failureCount)
@@ -1710,12 +1791,19 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
-    func backgroundRefreshPreservesMissingContextOutcomesWithoutProviderRequests() async throws {
+    func backgroundRefreshDoesNotRequireLegacyContext() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
         let client = MockHTTPClient { request in
-            Issue.record("Unexpected request to \(request.url?.absoluteString ?? "unknown URL")")
-            throw OpenASOError.providerUnavailable("Unexpected request")
+            let body = try #require(request.httpBody)
+            let requestBody = try JSONDecoder().decode(KeywordPopularityRequestBody.self, from: body)
+            let entries = requestBody.terms.map { term in
+                #"{"name":"\#(term)","popularity":64}"#
+            }.joined(separator: ",")
+            return (
+                Data(#"{"status":"success","data":[\#(entries)]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
         }
         let freshnessFetchRecorder = KeywordMetricsFreshnessFetchRecorder()
         let service = makeKeywordMetricsService(httpClient: client, freshnessFetchRecorder: freshnessFetchRecorder)
@@ -1730,8 +1818,6 @@ struct KeywordMetricsServiceTests {
 
         let outcomes = try await service.refreshMetrics(
             for: tracks.map(\.identityKey),
-            popularityContextAppStoreID: nil,
-            webSession: completeWebSession,
             using: backgroundModelStore,
             progress: { completed, total, failureCount in
                 await progressRecorder.record(completed: completed, total: total, failureCount: failureCount)
@@ -1753,12 +1839,12 @@ struct KeywordMetricsServiceTests {
         }
 
         #expect(outcomes.count == tracks.count)
-        #expect(outcomes.allSatisfy { $0.errorMessage?.contains("Reconnect Apple Ads") == true })
-        #expect(storedState.statuses.count == tracks.count)
+        #expect(outcomes.allSatisfy { $0.errorMessage == nil })
+        #expect(storedState.statuses.isEmpty)
         #expect(storedState.metricCount == tracks.count)
-        #expect(storedState.populatedMetricCount == 0)
+        #expect(storedState.populatedMetricCount == tracks.count)
         #expect(progressUpdates.count == tracks.count + 1)
-        #expect(progressUpdates.last == .init(completed: tracks.count, total: tracks.count, failureCount: tracks.count))
+        #expect(progressUpdates.last == .init(completed: tracks.count, total: tracks.count, failureCount: 0))
         #expect(freshnessFetchRecorder.snapshot() == [tracks.count])
     }
 
@@ -1771,7 +1857,11 @@ struct KeywordMetricsServiceTests {
             throw OpenASOError.providerUnavailable("Unexpected request")
         }
         let freshnessFetchRecorder = KeywordMetricsFreshnessFetchRecorder()
-        let service = makeKeywordMetricsService(httpClient: client, freshnessFetchRecorder: freshnessFetchRecorder)
+        let service = makeKeywordMetricsService(
+            httpClient: client,
+            freshnessFetchRecorder: freshnessFetchRecorder,
+            configuresCredentials: false
+        )
         let backgroundModelStore = BackgroundModelStore(modelContainer: container)
         let progressRecorder = KeywordMetricsProgressRecorder()
         let trackedApp = TrackedApp(appStoreID: 1, bundleID: nil, name: "App", sellerName: nil, defaultPlatform: .iphone)
@@ -1783,8 +1873,6 @@ struct KeywordMetricsServiceTests {
 
         let outcomes = try await service.refreshMetrics(
             for: tracks.map(\.identityKey),
-            popularityContextAppStoreID: 123_456_789,
-            webSession: nil,
             using: backgroundModelStore,
             progress: { completed, total, failureCount in
                 await progressRecorder.record(completed: completed, total: total, failureCount: failureCount)
@@ -1793,7 +1881,9 @@ struct KeywordMetricsServiceTests {
         let progressUpdates = await progressRecorder.snapshot()
 
         #expect(outcomes.count == tracks.count)
-        #expect(outcomes.allSatisfy { $0.errorMessage?.contains("Connect an Apple Ads web session") == true })
+        #expect(outcomes.allSatisfy {
+            $0.errorMessage?.contains("Configure and verify Apple Ads Platform API credentials") == true
+        })
         #expect(progressUpdates.count == tracks.count + 1)
         #expect(progressUpdates.last == .init(completed: tracks.count, total: tracks.count, failureCount: tracks.count))
         #expect(freshnessFetchRecorder.snapshot() == [tracks.count])
@@ -1829,8 +1919,6 @@ struct KeywordMetricsServiceTests {
 
         let outcomes = try await service.refreshMetrics(
             for: tracks.map(\.identityKey),
-            popularityContextAppStoreID: 123_456_789,
-            webSession: completeWebSession,
             using: backgroundModelStore,
             progress: { completed, total, failureCount in
                 await progressRecorder.record(completed: completed, total: total, failureCount: failureCount)
@@ -1867,8 +1955,6 @@ struct KeywordMetricsServiceTests {
 
         let outcomes = try await service.refreshMetrics(
             for: [removedTrack.identityKey, retainedTrack.identityKey],
-            popularityContextAppStoreID: 123_456_789,
-            webSession: completeWebSession,
             using: backgroundModelStore,
             progress: { completed, total, failureCount in
                 await progressRecorder.record(completed: completed, total: total, failureCount: failureCount)
@@ -1925,10 +2011,22 @@ struct KeywordMetricsServiceTests {
             updatedAt: now,
             statusMessage: "Popularity failed to fetch. Connect an Apple Ads web session in Settings."
         )
+        let unavailableMessage = "Popularity unavailable. Apple Ads returned no eligible row."
+        let unavailableRow = makeRow(
+            term: "unavailable",
+            trackedApp: trackedApp,
+            modelContext: modelContext,
+            popularityScore: 65,
+            updatedAt: staleUpdatedAt,
+            statusMessage: unavailableMessage
+        )
 
         #expect(freshRow.popularityIndicatorState(now: now) == .none)
         #expect(staleRow.popularityIndicatorState(now: now) == .stale(lastUpdatedAt: staleUpdatedAt))
         #expect(needsSetupRow.popularityIndicatorState(now: now) == .needsSetup(message: "Popularity failed to fetch. Connect an Apple Ads web session in Settings."))
+        #expect(unavailableRow.displayedPopularityScore == nil)
+        #expect(unavailableRow.popularitySortValue == -1)
+        #expect(unavailableRow.popularityIndicatorState(now: now) == .unavailable(message: unavailableMessage))
     }
 
     private func makeRow(
@@ -1983,16 +2081,41 @@ struct KeywordMetricsServiceTests {
     private func makeKeywordMetricsService(
         httpClient: HTTPClient,
         freshnessFetchRecorder: KeywordMetricsFreshnessFetchRecorder,
+        configuresCredentials: Bool = true,
         bulkFreshnessFetchHook: @escaping @Sendable () throws -> Void = {}
     ) -> KeywordMetricsService {
-        let dependencies = AppServices.mocked(httpClient: httpClient)
+        let api = HTTPBackedSearchPopularityAPI(httpClient: httpClient)
+        let dependencies = AppServices.mocked(
+            httpClient: httpClient,
+            appleAdsPlatformAPI: api
+        )
+        if configuresCredentials {
+            do {
+                try saveTestCredentials(in: dependencies.appleAdsCredentialStore)
+            } catch {
+                preconditionFailure("Could not configure the in-memory Apple Ads test keychain: \(error)")
+            }
+        }
         return KeywordMetricsService(
             httpClient: httpClient,
             credentialStore: dependencies.appleAdsCredentialStore,
             settingsStore: dependencies.settingsStore,
             webSessionStore: dependencies.appleAdsWebSessionStore,
+            apiClient: api,
             freshnessFetchObserver: freshnessFetchRecorder.record,
             bulkFreshnessFetchHook: bulkFreshnessFetchHook
+        )
+    }
+
+    private func saveTestCredentials(in store: AppleAdsCredentialStore) throws {
+        try store.saveAPICredentials(
+            AppleAdsCredentials(
+                clientID: "test-client",
+                teamID: "test-team",
+                keyID: "test-key",
+                privateKey: Self.privateKey,
+                adAccountID: "123456789"
+            )
         )
     }
 
@@ -2267,5 +2390,162 @@ private actor GatedKeywordPopularityHTTPClient: HTTPClient {
 
     func requestCount() -> Int {
         recordedRequestCount
+    }
+}
+
+struct StaticAppleAdsPlatformAPI: AppleAdsPlatformAPI {
+    let coverage = AppleAdsPlatformCoverage.current
+    let apps: [AppleAdsPromotedApp]
+    var popularityRows: [AppleAdsSearchTermPopularity] = []
+
+    func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
+        AppleAdsPlatformConnection(
+            userID: 1,
+            orgID: 2,
+            accounts: [
+                AppleAdsPlatformAccount(
+                    id: Int64(credentials.adAccountID) ?? 12_345,
+                    name: "Test account",
+                    orgID: 2,
+                    roles: ["API Account Manager"]
+                )
+            ],
+            selectedAdAccountID: Int64(credentials.adAccountID) ?? 12_345
+        )
+    }
+
+    func searchOwnedApps(
+        named query: String?,
+        using credentials: AppleAdsCredentials,
+        limit: Int
+    ) async throws -> [AppleAdsPromotedApp] {
+        Array(apps.prefix(limit))
+    }
+
+    func listCampaigns(
+        using credentials: AppleAdsCredentials,
+        limit: Int
+    ) async throws -> [AppleAdsPlatformCampaignSummary] {
+        []
+    }
+
+    func searchTermPopularity(
+        for searchTerms: [String],
+        countryOrRegion: String,
+        window: AppleAdsSearchTermPopularityWindow,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsSearchTermPopularity] {
+        popularityRows.filter {
+            $0.countryOrRegion.caseInsensitiveCompare(countryOrRegion) == .orderedSame
+                && searchTerms.map(AppleAdsSearchTermPopularity.normalized)
+                    .contains($0.normalizedSearchTerm)
+        }
+    }
+}
+
+struct FailingSearchPopularityAPI: AppleAdsPlatformAPI {
+    let coverage = AppleAdsPlatformCoverage.current
+    let error: OpenASOError
+
+    func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
+        throw error
+    }
+
+    func searchOwnedApps(
+        named query: String?,
+        using credentials: AppleAdsCredentials,
+        limit: Int
+    ) async throws -> [AppleAdsPromotedApp] {
+        throw error
+    }
+
+    func listCampaigns(
+        using credentials: AppleAdsCredentials,
+        limit: Int
+    ) async throws -> [AppleAdsPlatformCampaignSummary] {
+        throw error
+    }
+
+    func searchTermPopularity(
+        for searchTerms: [String],
+        countryOrRegion: String,
+        window: AppleAdsSearchTermPopularityWindow,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsSearchTermPopularity] {
+        throw error
+    }
+}
+
+/// Keeps the pre-existing persistence/concurrency fixtures useful while the
+/// production service uses only Apple's official client. This adapter exists
+/// solely in the test target and translates the fixture's historical HTTP
+/// response into the new public Search Term Popularity model.
+struct HTTPBackedSearchPopularityAPI: AppleAdsPlatformAPI {
+    let coverage = AppleAdsPlatformCoverage.current
+    let httpClient: any HTTPClient
+
+    func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
+        AppleAdsPlatformConnection(
+            userID: 1,
+            orgID: 2,
+            accounts: [
+                AppleAdsPlatformAccount(
+                    id: Int64(credentials.adAccountID) ?? 123_456_789,
+                    name: "Fixture account",
+                    orgID: 2,
+                    roles: ["API Account Manager"]
+                )
+            ],
+            selectedAdAccountID: Int64(credentials.adAccountID) ?? 123_456_789
+        )
+    }
+
+    func searchOwnedApps(
+        named query: String?,
+        using credentials: AppleAdsCredentials,
+        limit: Int
+    ) async throws -> [AppleAdsPromotedApp] {
+        []
+    }
+
+    func listCampaigns(
+        using credentials: AppleAdsCredentials,
+        limit: Int
+    ) async throws -> [AppleAdsPlatformCampaignSummary] {
+        []
+    }
+
+    func searchTermPopularity(
+        for searchTerms: [String],
+        countryOrRegion: String,
+        window: AppleAdsSearchTermPopularityWindow,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsSearchTermPopularity] {
+        let scores = try await AppleAdsCMPopularityClient(httpClient: httpClient)
+            .keywordPopularities(
+                for: searchTerms,
+                storefrontCode: countryOrRegion,
+                adamId: Int64(credentials.adAccountID) ?? 123_456_789,
+                session: AppleAdsWebSession(
+                    cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+                    xsrfToken: "token",
+                    updatedAt: .now
+                )
+            )
+        return scores.map { normalizedTerm, score in
+            AppleAdsSearchTermPopularity(
+                searchTerm: searchTerms.first {
+                    AppleAdsSearchTermPopularity.normalized($0) == normalizedTerm
+                } ?? normalizedTerm,
+                countryOrRegion: countryOrRegion.uppercased(),
+                genre: "Fixture",
+                week: window.end,
+                month: nil,
+                rankInGenre: nil,
+                popularityInGenre: score,
+                popularity1to100: score,
+                popularity1to5: nil
+            )
+        }
     }
 }

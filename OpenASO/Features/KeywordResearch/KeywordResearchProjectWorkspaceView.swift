@@ -230,7 +230,7 @@ struct KeywordResearchProjectWorkspaceView: View {
                                 }
                             },
                             openSettings: {
-                                services.settingsStore.requestSettingsFocus(.webSession)
+                                services.settingsStore.requestSettingsFocus(.platformAPI)
                                 openSettings()
                             },
                             showHistory: {

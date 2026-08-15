@@ -79,7 +79,8 @@ enum OpenASOMCPRuntime {
     /// open the user's workspace.
     static func makeService(
         modelContainer: ModelContainer,
-        httpClient: any HTTPClient = URLSessionHTTPClient()
+        httpClient: any HTTPClient = URLSessionHTTPClient(),
+        namespace: AppNamespace = .current
     ) async -> OpenASOMCPService {
         let backgroundModelStore = BackgroundModelStore(modelContainer: modelContainer)
         let keywordResearchProjectStore = KeywordResearchProjectStore(
@@ -93,6 +94,15 @@ enum OpenASOMCPRuntime {
             appCatalogService: appCatalogService
         )
         let reviewService = AppStorefrontReviewService(httpClient: httpClient)
+        let appleAdsCredentialStore = await MainActor.run {
+            let defaults = UserDefaults(suiteName: namespace.userDefaultsSuiteName) ?? .standard
+            return AppleAdsCredentialStore(
+                defaults: defaults,
+                keychain: SystemKeychainService(),
+                namespace: namespace
+            )
+        }
+        let appleAdsPlatformAPI = OfficialAppleAdsPlatformAPI()
         let mcpService = OpenASOMCPService(
             backgroundModelStore: backgroundModelStore,
             keywordResearchProjectStore: keywordResearchProjectStore,
@@ -102,7 +112,11 @@ enum OpenASOMCPRuntime {
             screenshotDownloadService: ScreenshotDownloadService(),
             rankingProvider: rankingProvider,
             rankingRefreshCoordinator: rankingRefreshCoordinator,
-            reviewService: reviewService
+            reviewService: reviewService,
+            appleAdsPlatformAPI: appleAdsPlatformAPI,
+            appleAdsCredentialsProvider: {
+                appleAdsCredentialStore.apiCredentials
+            }
         )
         return mcpService
     }

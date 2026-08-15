@@ -481,7 +481,14 @@ struct KeywordWorkspaceRow: Identifiable, Equatable, Sendable {
         storefront?.name ?? track.storefront
     }
 
-    var popularitySortValue: Int { metrics?.popularityScore ?? -1 }
+    var displayedPopularityScore: Int? {
+        guard resolvedPopularityStatusMessage?.hasPrefix("Popularity unavailable.") != true else {
+            return nil
+        }
+        return metrics?.popularityScore
+    }
+
+    var popularitySortValue: Int { displayedPopularityScore ?? -1 }
 
     var positionSortValue: Int { currentRank ?? Int.max }
 
@@ -606,7 +613,12 @@ struct KeywordWorkspaceRow: Identifiable, Equatable, Sendable {
     }
 
     func popularityIndicatorState(now: Date) -> KeywordPopularityIndicatorState {
-        if metrics?.popularityScore != nil {
+        if let popularityStatusMessage = resolvedPopularityStatusMessage,
+           popularityStatusMessage.hasPrefix("Popularity unavailable.") {
+            return .unavailable(message: popularityStatusMessage)
+        }
+
+        if displayedPopularityScore != nil {
             guard let updatedAt = metrics?.updatedAt,
                   now.timeIntervalSince(updatedAt) >= Self.popularityStaleInterval
             else {
@@ -616,20 +628,8 @@ struct KeywordWorkspaceRow: Identifiable, Equatable, Sendable {
             return .stale(lastUpdatedAt: updatedAt)
         }
 
-        let popularityStatusMessage = refreshStatus.popularityMessage
-            ?? track.statusMessage.flatMap { legacyStatusMessage in
-                TrackedKeywordRefreshStatusStore.domain(forLegacyMessage: legacyStatusMessage) == .popularity
-                    ? legacyStatusMessage
-                    : nil
-            }
-            ?? statusMessage
-
-        guard let popularityStatusMessage else {
+        guard let popularityStatusMessage = resolvedPopularityStatusMessage else {
             return .none
-        }
-
-        if popularityStatusMessage.hasPrefix("Popularity unavailable.") {
-            return .unavailable(message: popularityStatusMessage)
         }
 
         if popularityStatusMessage.hasPrefix("Popularity failed to fetch.") {
@@ -637,6 +637,16 @@ struct KeywordWorkspaceRow: Identifiable, Equatable, Sendable {
         }
 
         return .none
+    }
+
+    private var resolvedPopularityStatusMessage: String? {
+        refreshStatus.popularityMessage
+            ?? track.statusMessage.flatMap { legacyStatusMessage in
+                TrackedKeywordRefreshStatusStore.domain(forLegacyMessage: legacyStatusMessage) == .popularity
+                    ? legacyStatusMessage
+                    : nil
+            }
+            ?? statusMessage
     }
 }
 

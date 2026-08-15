@@ -67,6 +67,7 @@ final class AppServices {
     let aiService: any AIService
     let reviewTranslationService: ReviewTranslationService
     let reviewLanguageDetectionService: ReviewLanguageDetectionService
+    let appleAdsPlatformAPI: any AppleAdsPlatformAPI
     let keywordMetricsService: KeywordMetricsService
     let keywordInsightsService: KeywordInsightsService
     let keywordSuggestionService: KeywordSuggestionService
@@ -91,6 +92,7 @@ final class AppServices {
         keychain: any KeychainService = SystemKeychainService(),
         namespace: AppNamespace = .current,
         aiService: (any AIService)? = nil,
+        appleAdsPlatformAPI: (any AppleAdsPlatformAPI)? = nil,
         loadsEnvironmentCredentials: Bool = true,
         allowsIconNetworkFetches: Bool = true,
         backgroundModelStore: BackgroundModelStore? = nil,
@@ -122,6 +124,7 @@ final class AppServices {
             namespace: namespace,
             loadsEnvironmentCredentials: loadsEnvironmentCredentials
         )
+        let appleAdsPlatformAPI = appleAdsPlatformAPI ?? OfficialAppleAdsPlatformAPI()
         let settingsStore = AppSettingsStore(defaults: defaults)
         let backgroundRefreshAgentController = BackgroundRefreshAgentController(
             defaults: defaults
@@ -194,7 +197,8 @@ final class AppServices {
             httpClient: httpClient,
             credentialStore: appleAdsCredentialStore,
             settingsStore: settingsStore,
-            webSessionStore: appleAdsWebSessionStore
+            webSessionStore: appleAdsWebSessionStore,
+            apiClient: appleAdsPlatformAPI
         )
         let keywordInsightsService = KeywordInsightsService()
         let rankedAppPricingService = RankedAppPricingService(httpClient: httpClient)
@@ -309,13 +313,8 @@ final class AppServices {
                     metricsService: keywordMetricsService,
                     rankingCoordinator: refreshCoordinator,
                     configurationProvider: {
-                        let session = appleAdsWebSessionStore.session
                         return KeywordResearchMetricsConfiguration(
-                            contextAppStoreID: settingsStore.popularityContextAppStoreID,
-                            webSession: session,
-                            requiresReconnect: session.map {
-                                appleAdsWebSessionStore.requiresReconnect(for: $0)
-                            } ?? false
+                            credentials: appleAdsCredentialStore.apiCredentials
                         )
                     },
                     reconnectMarker: { attemptedSession in
@@ -415,6 +414,7 @@ final class AppServices {
         self.aiService = aiService
         self.reviewTranslationService = reviewTranslationService
         self.reviewLanguageDetectionService = reviewLanguageDetectionService
+        self.appleAdsPlatformAPI = appleAdsPlatformAPI
         self.keywordMetricsService = keywordMetricsService
         self.keywordInsightsService = keywordInsightsService
         self.keywordSuggestionService = KeywordSuggestionService()
@@ -447,11 +447,9 @@ final class AppServices {
                 keywordMetricsService: keywordMetricsService,
                 rankedAppPricingService: rankedAppPricingService,
                 visibleProductPricingService: visibleProductPricingService,
-                popularityContextAppStoreIDProvider: {
-                    settingsStore.popularityContextAppStoreID
-                },
-                appleAdsWebSessionProvider: {
-                    appleAdsWebSessionStore.recoverSessionIfNeeded()
+                appleAdsPlatformAPI: appleAdsPlatformAPI,
+                appleAdsCredentialsProvider: {
+                    appleAdsCredentialStore.apiCredentials
                 }
             )
 
@@ -585,9 +583,7 @@ final class AppServices {
 
     func refreshStaleKeywordPopularityAfterAppleAdsConnection() {
         guard let backgroundModelStore,
-              let popularityContextAppStoreID = settingsStore.popularityContextAppStoreID,
-              let webSession = appleAdsWebSessionStore.recoverSessionIfNeeded(),
-              webSession.isComplete
+              appleAdsCredentialStore.hasCompleteAPICredentials
         else {
             return
         }
@@ -620,8 +616,6 @@ final class AppServices {
             do {
                 let result = try await keywordMetricsService.refreshMetricsBatch(
                     for: trackIdentityKeys,
-                    popularityContextAppStoreID: popularityContextAppStoreID,
-                    webSession: webSession,
                     using: backgroundModelStore,
                     progress: { completed, total, failureCount in
                         await refreshProgressStore.updateStep(
@@ -679,7 +673,8 @@ extension AppServices {
     static func mocked(
         httpClient: HTTPClient,
         modelContainer: ModelContainer? = nil,
-        allowsIconNetworkFetches: Bool = false
+        allowsIconNetworkFetches: Bool = false,
+        appleAdsPlatformAPI: (any AppleAdsPlatformAPI)? = nil
     ) -> AppServices {
         let backgroundModelStore = modelContainer.map {
             BackgroundModelStore(modelContainer: $0)
@@ -694,6 +689,7 @@ extension AppServices {
                 {"title":"Translated \(request.prompt.contains("Title:") ? "Review" : "Text")","content":"Preview translation"}
                 """
             },
+            appleAdsPlatformAPI: appleAdsPlatformAPI,
             loadsEnvironmentCredentials: false,
             allowsIconNetworkFetches: allowsIconNetworkFetches,
             backgroundModelStore: backgroundModelStore,

@@ -78,6 +78,19 @@ struct KeywordResearchMetricsConfiguration: Equatable, Sendable {
     let contextAppStoreID: Int64?
     let webSession: AppleAdsWebSession?
     let requiresReconnect: Bool
+    let credentials: AppleAdsCredentials?
+
+    init(
+        contextAppStoreID: Int64? = nil,
+        webSession: AppleAdsWebSession? = nil,
+        requiresReconnect: Bool = false,
+        credentials: AppleAdsCredentials? = nil
+    ) {
+        self.contextAppStoreID = contextAppStoreID
+        self.webSession = webSession
+        self.requiresReconnect = requiresReconnect
+        self.credentials = credentials
+    }
 }
 
 /// App-only popularity workflow for pre-live research memberships.
@@ -213,11 +226,9 @@ actor KeywordResearchMetricsWorkflow {
             )
             return Self.orderedResult(selections: selections, outcomesByKeywordID: outcomesByKeywordID)
         }
-        guard let contextAppStoreID = configuration.contextAppStoreID,
-              let webSession = configuration.webSession
-        else {
-            throw OpenASOError.unexpectedResponse
-        }
+        let adAccountID = Int64(configuration.credentials?.adAccountID ?? "")
+            ?? configuration.contextAppStoreID
+            ?? 0
 
         var fetchedEvidence: [KeywordPopularityMetricEvidence] = []
         var failedIssuesByQueryKey: [String: KeywordResearchMetricsIssue] = [:]
@@ -234,31 +245,8 @@ actor KeywordResearchMetricsWorkflow {
                 do {
                     fetchedEvidence.append(contentsOf: try await metricsService.fetchPopularityMetrics(
                         for: storefrontSelections.map(\.target),
-                        contextAppStoreID: contextAppStoreID,
-                        webSession: webSession,
                         now: now
                     ))
-                } catch is AppleAdsWebSessionExpiredError {
-                    // Recording exact-session expiry is a security-state
-                    // commit point. Once marked, return a truthful outcome
-                    // instead of reporting cancellation after the durable UI
-                    // state already changed.
-                    await reconnectMarker(webSession)
-                    let issue = Self.issue(.sessionExpired)
-                    let currentMetrics = try await currentMetricsAfterRevalidating(
-                        networkSelections,
-                        honorCancellation: false
-                    )
-                    Self.applyFallback(
-                        issue: issue,
-                        to: networkSelections,
-                        currentMetrics: currentMetrics,
-                        outcomesByKeywordID: &outcomesByKeywordID
-                    )
-                    return Self.orderedResult(
-                        selections: selections,
-                        outcomesByKeywordID: outcomesByKeywordID
-                    )
                 } catch {
                     if Self.isCancellation(error) {
                         throw CancellationError()
@@ -276,9 +264,7 @@ actor KeywordResearchMetricsWorkflow {
 
         let currentConfiguration = await configurationProvider()
         try Task.checkCancellation()
-        guard currentConfiguration == configuration,
-              !currentConfiguration.requiresReconnect
-        else {
+        guard currentConfiguration == configuration else {
             let currentMetrics = try await currentMetricsAfterRevalidating(
                 networkSelections,
                 honorCancellation: true
@@ -365,7 +351,7 @@ actor KeywordResearchMetricsWorkflow {
                         persistence: persistence,
                         currentMetric: currentMetric
                     ),
-                    contextAppStoreID: contextAppStoreID
+                    adAccountID: adAccountID
                 )
             } else {
                 outcomesByKeywordID[selection.keywordGeneration.id] = selection.fallbackOutcome(
@@ -450,7 +436,7 @@ private extension KeywordResearchMetricsWorkflow {
 
         func outcome(
             commitOutcome: CommitOutcome,
-            contextAppStoreID: Int64
+            adAccountID: Int64
         ) -> KeywordResearchMetricsOutcome {
             switch commitOutcome.persistence.disposition {
             case .inserted, .updated:
@@ -463,7 +449,7 @@ private extension KeywordResearchMetricsWorkflow {
                     platform: target.platform,
                     popularityScore: commitOutcome.persistence.popularityScore,
                     observedAt: commitOutcome.persistence.observedAt,
-                    provenance: .requestedContext(appStoreID: contextAppStoreID),
+                    provenance: .requestedContext(appStoreID: adAccountID),
                     disposition: .refreshed,
                     issue: nil
                 )
@@ -608,6 +594,13 @@ private extension KeywordResearchMetricsWorkflow {
     static func configurationIssue(
         _ configuration: KeywordResearchMetricsConfiguration
     ) -> KeywordResearchMetricsIssue? {
+        if let credentials = configuration.credentials {
+            guard credentials.isComplete else {
+                return issue(.missingSession)
+            }
+            return nil
+        }
+
         guard let contextAppStoreID = configuration.contextAppStoreID,
               contextAppStoreID > 0
         else {
@@ -643,11 +636,11 @@ private extension KeywordResearchMetricsWorkflow {
         case .missingContextApp:
             message = "Connect Apple Ads and choose a linked context app before refreshing popularity."
         case .missingSession:
-            message = "Connect an Apple Ads web session before refreshing popularity."
+            message = "Configure and verify Apple Ads Platform API credentials before refreshing popularity."
         case .reconnectRequired:
-            message = "Reconnect the Apple Ads web session before refreshing popularity."
+            message = "Verify the current Apple Ads Platform API credentials before refreshing popularity."
         case .sessionExpired:
-            message = AppleAdsWebSessionExpiredError.message
+            message = "Apple Ads Platform API authorization expired. Verify the credentials in Settings."
         case .configurationChanged:
             message = "Apple Ads settings changed during refresh. Run it again with the current configuration."
         case .unsupportedStorefront:

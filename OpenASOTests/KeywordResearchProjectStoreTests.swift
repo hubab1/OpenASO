@@ -963,7 +963,10 @@ struct KeywordResearchProjectStoreTests {
         try runtimeContext.save()
         let runtimeService = await OpenASOMCPRuntime.makeService(
             modelContainer: runtimeContainer,
-            httpClient: httpClient
+            httpClient: httpClient,
+            namespace: AppNamespace(
+                bundleIdentifier: "com.thirdtech.openaso.tests.runtime.\(UUID().uuidString)"
+            )
         )
         let runtimeReader = try #require(runtimeService.keywordResearchProjectStore)
         #expect(try await runtimeReader.listProjects(offset: 0, limit: 50).map(\.name) == [

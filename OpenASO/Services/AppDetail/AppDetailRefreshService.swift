@@ -451,8 +451,6 @@ final class AppDetailRefreshService: Sendable {
                     try Task.checkCancellation()
                     let metricResult = try await keywordMetricsService.refreshMetricsBatch(
                         for: rankingRequests.map(\.identityKey),
-                        popularityContextAppStoreID: request.popularityContextAppStoreID,
-                        webSession: request.appleAdsWebSession,
                         using: backgroundModelStore,
                         progress: { completed, total, failureCount in
                             await self.progressStore?.updateStep(

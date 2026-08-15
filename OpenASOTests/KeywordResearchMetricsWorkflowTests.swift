@@ -43,8 +43,6 @@ struct KeywordResearchMetricsWorkflowTests {
         #expect(requests.first?.storefronts == ["GB"])
         #expect(requests.first?.terms == [keyword.term])
         #expect(requests.first?.contextAppStoreID == metricsContextAppStoreID)
-        #expect(requests.first?.cookieHeader == metricsSession.cookieHeader)
-        #expect(requests.first?.xsrfToken == metricsSession.xsrfToken)
     }
 
     @Test
@@ -174,7 +172,7 @@ struct KeywordResearchMetricsWorkflowTests {
     }
 
     @Test
-    func missingSessionAndReconnectRequirementAreExplicitUnavailableOutcomes() async throws {
+    func incompletePlatformCredentialsAreAnExplicitUnavailableOutcome() async throws {
         let missingSessionClient = ScriptedMetricsHTTPClient(defaultReply: .scores(defaultScore: 90))
         let missingSession = try await makeFixture(
             httpClient: missingSessionClient,
@@ -193,23 +191,6 @@ struct KeywordResearchMetricsWorkflowTests {
         #expect(missingSessionOutcome.issue?.code == .missingSession)
         #expect(await missingSessionClient.recordedRequests().isEmpty)
 
-        let reconnectClient = ScriptedMetricsHTTPClient(defaultReply: .scores(defaultScore: 90))
-        let reconnect = try await makeFixture(
-            httpClient: reconnectClient,
-            now: metricsTestDate,
-            configuration: .reconnectRequired
-        )
-        let reconnectKeyword = try #require(reconnect.keywords.first)
-
-        let reconnectOutcome = try await reconnect.workflow.refresh(
-            projectGeneration: reconnect.project.generation,
-            keywordGeneration: reconnectKeyword.generation
-        )
-
-        #expect(reconnectOutcome.disposition == .unavailable)
-        #expect(reconnectOutcome.issue?.code == .reconnectRequired)
-        #expect(await reconnectClient.recordedRequests().isEmpty)
-        #expect(reconnect.services.appleAdsWebSessionStore.requiresReconnect(for: metricsSession))
     }
 
     @Test
@@ -274,7 +255,7 @@ struct KeywordResearchMetricsWorkflowTests {
     }
 
     @Test
-    func expiredCurrentSessionMarksReconnectAndPersistsNothing() async throws {
+    func providerAuthorizationFailurePersistsNothing() async throws {
         let client = ScriptedMetricsHTTPClient(defaultReply: .status(403))
         let fixture = try await makeFixture(httpClient: client, now: metricsTestDate)
         let keyword = try #require(fixture.keywords.first)
@@ -286,10 +267,8 @@ struct KeywordResearchMetricsWorkflowTests {
         )
 
         #expect(outcome.disposition == .unavailable)
-        #expect(outcome.issue?.code == .sessionExpired)
+        #expect(outcome.issue?.code == .providerFailure)
         #expect(outcome.popularityScore == nil)
-        #expect(fixture.services.appleAdsWebSessionStore.requiresReconnect(for: metricsSession))
-        #expect(fixture.services.appleAdsWebSessionStore.hasSession)
         #expect(try await metricCount(in: fixture.backgroundStore) == 0)
     }
 
@@ -429,10 +408,9 @@ struct KeywordResearchMetricsWorkflowTests {
         }
         await client.waitUntilStarted()
 
-        fixture.services.settingsStore.savePopularityContextAppStoreID(
-            metricsContextAppStoreID + 1
-        )
-        try fixture.services.appleAdsWebSessionStore.save(replacementMetricsSession)
+        var replacementCredentials = metricsAPICredentials
+        replacementCredentials.adAccountID = String(metricsContextAppStoreID + 1)
+        try fixture.services.appleAdsCredentialStore.saveAPICredentials(replacementCredentials)
         await client.release()
 
         let outcome = try await task.value
@@ -440,7 +418,6 @@ struct KeywordResearchMetricsWorkflowTests {
         #expect(outcome.issue?.code == .configurationChanged)
         #expect(outcome.popularityScore == nil)
         #expect(try await metricCount(in: fixture.backgroundStore) == 0)
-        #expect(!fixture.services.appleAdsWebSessionStore.requiresReconnect(for: replacementMetricsSession))
     }
 
     @Test
@@ -776,21 +753,27 @@ private extension KeywordResearchMetricsWorkflowTests {
             keywords.append(addition.keyword)
         }
 
-        let services = AppServices.mocked(httpClient: httpClient)
+        let platformAPI = HTTPBackedSearchPopularityAPI(httpClient: httpClient)
+        let services = AppServices.mocked(
+            httpClient: httpClient,
+            appleAdsPlatformAPI: platformAPI
+        )
         switch configuration {
         case .connected:
-            services.settingsStore.savePopularityContextAppStoreID(metricsContextAppStoreID)
-            try services.appleAdsWebSessionStore.save(metricsSession)
+            try services.appleAdsCredentialStore.saveAPICredentials(metricsAPICredentials)
         case .missingContext:
-            try services.appleAdsWebSessionStore.save(metricsSession)
+            break
         case .missingSession:
-            services.settingsStore.savePopularityContextAppStoreID(metricsContextAppStoreID)
+            try services.appleAdsCredentialStore.saveAPICredentials(
+                AppleAdsCredentials(
+                    clientID: metricsAPICredentials.clientID,
+                    teamID: metricsAPICredentials.teamID,
+                    keyID: metricsAPICredentials.keyID,
+                    privateKey: metricsAPICredentials.privateKey
+                )
+            )
         case .missingContextAndSession:
             break
-        case .reconnectRequired:
-            services.settingsStore.savePopularityContextAppStoreID(metricsContextAppStoreID)
-            try services.appleAdsWebSessionStore.save(metricsSession)
-            services.appleAdsWebSessionStore.markReconnectRequired(for: metricsSession)
         }
 
         let workflow = KeywordResearchMetricsWorkflow(
@@ -798,13 +781,11 @@ private extension KeywordResearchMetricsWorkflowTests {
             metricsService: services.keywordMetricsService,
             rankingCoordinator: services.refreshCoordinator,
             configurationProvider: { [services] in
-                let session = services.appleAdsWebSessionStore.session
                 return KeywordResearchMetricsConfiguration(
-                    contextAppStoreID: services.settingsStore.popularityContextAppStoreID,
-                    webSession: session,
-                    requiresReconnect: session.map {
-                        services.appleAdsWebSessionStore.requiresReconnect(for: $0)
-                    } ?? services.appleAdsWebSessionStore.requiresReconnect
+                    credentials: configuration == .missingContext
+                        || configuration == .missingContextAndSession
+                        ? nil
+                        : services.appleAdsCredentialStore.apiCredentials
                 )
             },
             reconnectMarker: { [services] session in
@@ -835,12 +816,11 @@ private struct MetricsWorkflowFixture {
     let keywords: [KeywordResearchKeywordSnapshot]
 }
 
-private enum MetricsTestConfiguration {
+private enum MetricsTestConfiguration: Equatable, Sendable {
     case connected
     case missingContext
     case missingSession
     case missingContextAndSession
-    case reconnectRequired
 }
 
 private struct KeywordSpec: Sendable {
@@ -1317,15 +1297,17 @@ private let metricsDay: TimeInterval = 60 * 60 * 24
 private let metricsTestDate = Date(timeIntervalSince1970: 1_800_000_000)
 private let metricsProjectCreatedAt = Date(timeIntervalSince1970: 1_790_000_000)
 private let metricsContextAppStoreID: Int64 = 6_608_976_383
+private let metricsAPICredentials = AppleAdsCredentials(
+    clientID: "SEARCHADS.fixture-client",
+    teamID: "fixture-team",
+    keyID: "fixture-key",
+    privateKey: "fixture-private-key",
+    orgID: "fixture-org",
+    adAccountID: String(metricsContextAppStoreID)
+)
 private let metricsSession = AppleAdsWebSession(
     cookieHeader: "metrics-cookie=private-value; XSRF-TOKEN-CM=private-token",
     xsrfToken: "private-token",
     updatedAt: Date(timeIntervalSince1970: 1_780_000_000),
     accountName: "Private test account"
-)
-private let replacementMetricsSession = AppleAdsWebSession(
-    cookieHeader: "replacement-cookie=private-value; XSRF-TOKEN-CM=replacement-token",
-    xsrfToken: "replacement-token",
-    updatedAt: Date(timeIntervalSince1970: 1_780_000_001),
-    accountName: "Replacement test account"
 )

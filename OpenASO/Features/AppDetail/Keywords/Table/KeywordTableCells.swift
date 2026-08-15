@@ -110,7 +110,7 @@ struct KeywordPopularityCell: View {
     var body: some View {
         HStack(spacing: 4) {
             MetricBarView(
-                value: row.metrics?.popularityScore,
+                value: row.displayedPopularityScore,
                 maxValue: 100,
                 colorScale: .lowRedHighGreen,
                 placeholder: "-"

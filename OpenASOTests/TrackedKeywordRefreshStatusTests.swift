@@ -470,8 +470,6 @@ struct TrackedKeywordRefreshStatusTests {
 
         _ = try await services.keywordMetricsService.refreshMetrics(
             for: identityKeys,
-            popularityContextAppStoreID: nil,
-            webSession: nil,
             using: backgroundStore
         )
 
@@ -527,8 +525,6 @@ struct TrackedKeywordRefreshStatusTests {
 
         _ = try await services.keywordMetricsService.refreshMetrics(
             for: identityKeys,
-            popularityContextAppStoreID: 123_456_789,
-            webSession: nil,
             using: backgroundStore
         )
 
@@ -540,7 +536,10 @@ struct TrackedKeywordRefreshStatusTests {
         }
         for identityKey in identityKeys {
             #expect(snapshots[identityKey]?.rankingMessage == "Ranking failed to refresh. Preserve this failure.")
-            #expect(snapshots[identityKey]?.popularityMessage?.contains("Connect an Apple Ads") == true)
+            #expect(
+                snapshots[identityKey]?.popularityMessage
+                    == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+            )
         }
     }
 

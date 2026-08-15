@@ -2,6 +2,7 @@ import SwiftUI
 
 enum AppleAdsSettingsFocusSection {
     case dailyRefresh
+    case platformAPI
     case webSession
     case appStoreConnect
     case analytics
@@ -10,6 +11,8 @@ enum AppleAdsSettingsFocusSection {
         switch self {
         case .dailyRefresh:
             return "daily_refresh"
+        case .platformAPI:
+            return "apple_ads_platform_api"
         case .webSession:
             return "apple_ads"
         case .appStoreConnect:

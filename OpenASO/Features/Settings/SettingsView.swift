@@ -16,6 +16,9 @@ struct SettingsView: View {
     @State private var keyID = ""
     @State private var privateKey = ""
     @State private var orgID = ""
+    @State private var adAccountID = ""
+    @State private var appleAdsPlatformStatus: VerificationStatus?
+    @State private var isVerifyingAppleAdsPlatform = false
     @State private var dailyRefreshTime = Date()
     @State private var webLoginUsername = ""
     @State private var webLoginPassword = ""
@@ -88,8 +91,8 @@ struct SettingsView: View {
 
                 mcpSection
 
-                appleAdsSection
-                .id(AppleAdsSettingsFocusSection.webSession)
+                appleAdsPlatformSection
+                    .id(AppleAdsSettingsFocusSection.platformAPI)
 
                 appStoreConnectSection
                     .id(AppleAdsSettingsFocusSection.appStoreConnect)
@@ -116,12 +119,10 @@ struct SettingsView: View {
                         isEnabled: services.settingsStore.isAutomaticRefreshEnabled
                     )
                 }
-                _ = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
                 loadCredentials()
                 loadAppStoreConnectCredentials()
                 loadDailyRefreshTime()
                 loadWebLoginCredentials()
-                services.appleAdsWebSessionManager.purgeLegacyBrowserHelperArtifacts()
                 if initialConnectionState == nil {
                     connectionState = inferredConnectionState()
                 }
@@ -131,8 +132,8 @@ struct SettingsView: View {
                     proxy.scrollTo(targetFocusSection, anchor: .top)
                     services.settingsStore.clearSettingsFocusRequest()
                 }
-                if validatesOnAppear {
-                    validateAppleAdsAccess()
+                if validatesOnAppear, enteredCredentials.canVerify {
+                    verifyAndSaveAppleAdsPlatformCredentials()
                 }
                 services.analyticsService.capture(.settingsOpened(focusSection: targetFocusSection?.analyticsValue ?? "none"))
             }
@@ -140,10 +141,6 @@ struct SettingsView: View {
                 guard let requestedSection else { return }
                 proxy.scrollTo(requestedSection, anchor: .top)
                 services.settingsStore.clearSettingsFocusRequest()
-            }
-            .onChange(of: services.appleAdsWebSessionStore.requiresReconnect) { _, _ in
-                guard !connectionState.isBusy else { return }
-                connectionState = inferredConnectionState()
             }
         }
     }
@@ -308,6 +305,23 @@ struct SettingsView: View {
         } footer: {
             Text("Connect Apple Ads to show keyword popularity in OpenASO. OpenASO requires a specific Apple Account and does not reuse the Mac's default account. Optional saved login details are filled automatically and stay in your macOS Keychain. Your Apple Ads account needs access to at least one of your App Store apps.")
         }
+    }
+
+    private var appleAdsPlatformSection: some View {
+        AppleAdsPlatformCredentialsSection(
+            clientID: $clientID,
+            teamID: $teamID,
+            keyID: $keyID,
+            privateKey: $privateKey,
+            adAccountID: $adAccountID,
+            privateKeyValidationIssue: enteredCredentials.privateKeyValidationIssue,
+            canVerify: enteredCredentials.canVerify,
+            hasStoredCredentials: services.appleAdsCredentialStore.hasCompleteAPICredentials,
+            isVerifying: isVerifyingAppleAdsPlatform,
+            status: appleAdsPlatformStatus,
+            verifyAction: verifyAndSaveAppleAdsPlatformCredentials,
+            clearAction: clearAppleAdsPlatformCredentials
+        )
     }
 
     private var savedLoginControls: some View {
@@ -601,7 +615,8 @@ struct SettingsView: View {
             teamID: teamID,
             keyID: keyID,
             privateKey: privateKey,
-            orgID: orgID
+            orgID: orgID,
+            adAccountID: adAccountID
         )
     }
 
@@ -687,6 +702,49 @@ struct SettingsView: View {
         keyID = credentials.keyID
         privateKey = credentials.privateKey
         orgID = credentials.orgID
+        adAccountID = credentials.adAccountID
+        if credentials.isComplete, appleAdsPlatformStatus == nil {
+            appleAdsPlatformStatus = .success("Credentials are stored. Verify again to confirm live access.")
+        }
+    }
+
+    private func verifyAndSaveAppleAdsPlatformCredentials() {
+        if let validationIssue = enteredCredentials.privateKeyValidationIssue {
+            appleAdsPlatformStatus = .failure(validationIssue)
+            return
+        }
+
+        isVerifyingAppleAdsPlatform = true
+        appleAdsPlatformStatus = nil
+
+        Task { @MainActor in
+            defer { isVerifyingAppleAdsPlatform = false }
+            do {
+                let connection = try await services.appleAdsPlatformAPI.verify(
+                    credentials: enteredCredentials
+                )
+                let verifiedCredentials = connection.applying(to: enteredCredentials)
+                try services.appleAdsCredentialStore.saveAPICredentials(verifiedCredentials)
+                loadCredentials()
+                let account = connection.accounts.first {
+                    $0.id == connection.selectedAdAccountID
+                }
+                appleAdsPlatformStatus = .success(
+                    "Connected to \(account?.name ?? "ad account \(connection.selectedAdAccountID)")."
+                )
+                services.refreshStaleKeywordPopularityAfterAppleAdsConnection()
+            } catch {
+                appleAdsPlatformStatus = .failure(
+                    OpenASOError.map(error).localizedDescription
+                )
+            }
+        }
+    }
+
+    private func clearAppleAdsPlatformCredentials() {
+        services.appleAdsCredentialStore.clearAPICredentials()
+        loadCredentials()
+        appleAdsPlatformStatus = .success("Apple Ads Platform API credentials cleared.")
     }
 
     private func loadAppStoreConnectCredentials() {

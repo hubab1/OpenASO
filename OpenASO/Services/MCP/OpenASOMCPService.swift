@@ -402,6 +402,12 @@ actor OpenASOMCPRankingRefreshScheduler {
   }
 }
 
+struct OpenASOMCPAppleAdsPlatformStatus: Codable, Equatable, Sendable {
+  let isConfigured: Bool
+  let connection: AppleAdsPlatformConnection?
+  let nextStep: String
+}
+
 final class OpenASOMCPService: Sendable {
   typealias RankingRefreshAttemptsPersistence = @Sendable (
     _ requests: [RankingRefreshRequest],
@@ -482,8 +488,9 @@ final class OpenASOMCPService: Sendable {
   private let keywordMetricsService: KeywordMetricsService?
   private let rankedAppPricingService: RankedAppPricingService
   private let visibleProductPricingService: VisibleProductPricingService
-  private let popularityContextAppStoreIDProvider: @MainActor @Sendable () -> Int64?
-  private let appleAdsWebSessionProvider: @MainActor @Sendable () -> AppleAdsWebSession?
+  private let appleAdsPlatformAPI: (any AppleAdsPlatformAPI)?
+  private let appleAdsCredentialsProvider:
+    @MainActor @Sendable () -> AppleAdsCredentials?
   private let now: @Sendable () -> Date
 
   init(
@@ -501,8 +508,9 @@ final class OpenASOMCPService: Sendable {
     keywordMetricsService: KeywordMetricsService? = nil,
     rankedAppPricingService: RankedAppPricingService? = nil,
     visibleProductPricingService: VisibleProductPricingService? = nil,
-    popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
-    appleAdsWebSessionProvider: @escaping @MainActor @Sendable () -> AppleAdsWebSession? = { nil },
+    appleAdsPlatformAPI: (any AppleAdsPlatformAPI)? = nil,
+    appleAdsCredentialsProvider:
+      @escaping @MainActor @Sendable () -> AppleAdsCredentials? = { nil },
     now: @escaping @Sendable () -> Date = { Date() }
   ) {
     self.backgroundModelStore = backgroundModelStore
@@ -533,9 +541,101 @@ final class OpenASOMCPService: Sendable {
       ?? RankedAppPricingService(httpClient: httpClient, now: now)
     self.visibleProductPricingService = visibleProductPricingService
       ?? VisibleProductPricingService(httpClient: httpClient, now: now)
-    self.popularityContextAppStoreIDProvider = popularityContextAppStoreIDProvider
-    self.appleAdsWebSessionProvider = appleAdsWebSessionProvider
+    self.appleAdsPlatformAPI = appleAdsPlatformAPI
+    self.appleAdsCredentialsProvider = appleAdsCredentialsProvider
     self.now = now
+  }
+
+  func appleAdsPlatformCapabilities() throws -> AppleAdsPlatformCoverage {
+    try requireAppleAdsPlatformAPI().coverage
+  }
+
+  func appleAdsPlatformStatus() async throws -> OpenASOMCPAppleAdsPlatformStatus {
+    guard let credentials = await appleAdsCredentialsProvider() else {
+      return OpenASOMCPAppleAdsPlatformStatus(
+        isConfigured: false,
+        connection: nil,
+        nextStep: "Add Apple Ads Platform API credentials in OpenASO Settings."
+      )
+    }
+    guard credentials.canVerify else {
+      return OpenASOMCPAppleAdsPlatformStatus(
+        isConfigured: false,
+        connection: nil,
+        nextStep: "Complete the client ID, team ID, key ID, and private key in OpenASO Settings."
+      )
+    }
+
+    let connection = try await requireAppleAdsPlatformAPI().verify(credentials: credentials)
+    return OpenASOMCPAppleAdsPlatformStatus(
+      isConfigured: true,
+      connection: connection,
+      nextStep: "Apple Ads Platform API is ready."
+    )
+  }
+
+  func searchAppleAdsPlatformApps(
+    query: String?,
+    limit: Int
+  ) async throws -> [AppleAdsPromotedApp] {
+    try await requireAppleAdsPlatformAPI().searchOwnedApps(
+      named: query,
+      using: try await requireAppleAdsCredentials(),
+      limit: max(1, min(limit, 1_000))
+    )
+  }
+
+  func listAppleAdsPlatformCampaigns(
+    limit: Int
+  ) async throws -> [AppleAdsPlatformCampaignSummary] {
+    try await requireAppleAdsPlatformAPI().listCampaigns(
+      using: try await requireAppleAdsCredentials(),
+      limit: max(1, min(limit, 1_000))
+    )
+  }
+
+  func searchAppleAdsTermPopularity(
+    searchTerms: [String],
+    countryOrRegion: String,
+    recentWeekCount: Int
+  ) async throws -> [AppleAdsSearchTermPopularity] {
+    let searchTerms = searchTerms
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    guard !searchTerms.isEmpty else {
+      throw OpenASOError.providerUnavailable("Provide at least one search term.")
+    }
+    guard searchTerms.count <= 1_000 else {
+      throw OpenASOError.providerUnavailable("Search at most 1,000 terms per request.")
+    }
+
+    return try await requireAppleAdsPlatformAPI().searchTermPopularity(
+      for: searchTerms,
+      countryOrRegion: countryOrRegion,
+      window: .recentCompletedWeeks(
+        asOf: now(),
+        weekCount: max(1, min(recentWeekCount, 65))
+      ),
+      using: try await requireAppleAdsCredentials()
+    )
+  }
+
+  private func requireAppleAdsPlatformAPI() throws -> any AppleAdsPlatformAPI {
+    guard let appleAdsPlatformAPI else {
+      throw OpenASOError.providerUnavailable(
+        "Apple Ads Platform API is unavailable in this runtime."
+      )
+    }
+    return appleAdsPlatformAPI
+  }
+
+  private func requireAppleAdsCredentials() async throws -> AppleAdsCredentials {
+    guard let credentials = await appleAdsCredentialsProvider(), credentials.isComplete else {
+      throw OpenASOError.providerUnavailable(
+        "Configure and verify Apple Ads Platform API credentials in OpenASO Settings first."
+      )
+    }
+    return credentials
   }
 
   private static func historyPageFromLookahead<Row>(
@@ -2285,12 +2385,8 @@ final class OpenASOMCPService: Sendable {
     var skippedIdentityKeys: Set<String> = []
     var batchSummary: OpenASOMCPKeywordRefreshBatchSummary?
     if let keywordMetricsService {
-      let popularityContextAppStoreID = await popularityContextAppStoreIDProvider()
-      let webSession = await appleAdsWebSessionProvider()
       let refreshResult = try await keywordMetricsService.refreshMetricsBatch(
         for: trackIdentityKeys,
-        popularityContextAppStoreID: popularityContextAppStoreID,
-        webSession: webSession,
         using: backgroundModelStore
       )
       let refreshState = try await backgroundModelStore.read { modelContext in
@@ -2320,7 +2416,7 @@ final class OpenASOMCPService: Sendable {
         )
       }
     } else {
-      let message = "Popularity failed to fetch. Connect an Apple Ads web session in Settings."
+      let message = "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
       try await backgroundModelStore.write { modelContext in
         for identityKey in trackIdentityKeys {
           guard let track = try Self.fetchTrackedKeyword(identityKey: identityKey, in: modelContext)
@@ -2369,7 +2465,7 @@ final class OpenASOMCPService: Sendable {
           rankingProvenance: nil,
           error: error.map {
             OpenASOMCPErrorDTO(
-              code: $0.localizedCaseInsensitiveContains("Connect an Apple Ads")
+              code: $0.localizedCaseInsensitiveContains("Apple Ads Platform API credentials")
                 ? "apple_ads_not_configured"
                 : "keyword_popularity_unavailable",
               message: $0
@@ -4321,7 +4417,9 @@ extension OpenASOMCPService {
       previousRank: previous?.rank,
       rankDelta: rankDelta,
       resultCount: latest?.resultCount ?? track.rankingAppCount,
-      popularityScore: metrics?.popularityScore,
+      popularityScore: resolvedStatus.popularityMessage?.hasPrefix("Popularity unavailable.") == true
+        ? nil
+        : metrics?.popularityScore,
       difficultyScore: metrics?.difficultyScore,
       notes: track.notes,
       rankingStatusMessage: resolvedStatus.rankingMessage,

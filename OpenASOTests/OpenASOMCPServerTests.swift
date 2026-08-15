@@ -541,15 +541,29 @@ struct OpenASOMCPServerTests {
     @Test
     func appServicesMCPProviderUsesConfiguredAppleAdsPopularity() async throws {
         var requestCount = 0
+        let platformAPI = StaticAppleAdsPlatformAPI(
+            apps: [],
+            popularityRows: [
+                AppleAdsSearchTermPopularity(
+                    searchTerm: "focus timer",
+                    countryOrRegion: "US",
+                    genre: "Productivity",
+                    week: "2026-08-08",
+                    month: nil,
+                    rankInGenre: 12,
+                    popularityInGenre: 73,
+                    popularity1to100: 73,
+                    popularity1to5: 4
+                )
+            ]
+        )
         let context = try AppServicesMCPTestContext(
             httpClient: MockHTTPClient { request in
                 requestCount += 1
-                #expect(request.url?.host == "app-ads.apple.com")
-                return (
-                    appleAdsPopularityPayload(keyword: "focus timer", popularity: 73),
-                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
-                )
-            }
+                Issue.record("Official Apple Ads API should not use the legacy HTTP client: \(request)")
+                throw OpenASOError.providerUnavailable("Unexpected legacy request")
+            },
+            appleAdsPlatformAPI: platformAPI
         )
         try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
         try context.configureAppleAds(contextAppStoreID: 987)
@@ -559,7 +573,7 @@ struct OpenASOMCPServerTests {
             appStoreID: 123
         )
 
-        #expect(requestCount == 1)
+        #expect(requestCount == 0)
         #expect(result.summary.refreshed == 1)
         #expect(result.summary.failed == 0)
         #expect(result.outcomes.first?.track.popularityScore == 73)
@@ -588,11 +602,11 @@ struct OpenASOMCPServerTests {
         #expect(result.summary.refreshed == 0)
         #expect(result.summary.failed == 1)
         #expect(result.outcomes.first?.track.popularityScore == nil)
-        #expect(result.outcomes.first?.error?.code == "keyword_popularity_unavailable")
+        #expect(result.outcomes.first?.error?.code == "apple_ads_not_configured")
     }
 
     @Test
-    func appServicesMCPProviderUsesRequestGateRetryPipeline() async throws {
+    func appServicesMCPProviderKeepsOfficialClientOutsideLegacyHTTPRetryPipeline() async throws {
         var requestCount = 0
         let retryPolicy = ProviderRequestPolicy(
             minimumIntervalNanoseconds: 0,
@@ -602,23 +616,32 @@ struct OpenASOMCPServerTests {
             maximumElapsedNanoseconds: 1_000_000_000,
             jitterFraction: 0
         )
+        let platformAPI = StaticAppleAdsPlatformAPI(
+            apps: [],
+            popularityRows: [
+                AppleAdsSearchTermPopularity(
+                    searchTerm: "focus timer",
+                    countryOrRegion: "US",
+                    genre: "Productivity",
+                    week: "2026-08-08",
+                    month: nil,
+                    rankInGenre: nil,
+                    popularityInGenre: 61,
+                    popularity1to100: 61,
+                    popularity1to5: 3
+                )
+            ]
+        )
         let context = try AppServicesMCPTestContext(
             httpClient: MockHTTPClient { request in
                 requestCount += 1
-                if requestCount == 1 {
-                    return (
-                        Data(),
-                        makeHTTPURLResponse(url: try #require(request.url), statusCode: 503)
-                    )
-                }
-                return (
-                    appleAdsPopularityPayload(keyword: "focus timer", popularity: 61),
-                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
-                )
+                Issue.record("Official Apple Ads API should not enter the legacy retry pipeline: \(request)")
+                throw OpenASOError.providerUnavailable("Unexpected legacy request")
             },
             providerRequestGateMode: .enabled(
                 ProviderRequestPolicies(default: retryPolicy)
-            )
+            ),
+            appleAdsPlatformAPI: platformAPI
         )
         try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
         try context.configureAppleAds(contextAppStoreID: 987)
@@ -628,7 +651,7 @@ struct OpenASOMCPServerTests {
             appStoreID: 123
         )
 
-        #expect(requestCount == 2)
+        #expect(requestCount == 0)
         #expect(result.summary.refreshed == 1)
         #expect(result.summary.failed == 0)
         #expect(result.outcomes.first?.track.popularityScore == 61)
@@ -959,7 +982,8 @@ private struct AppServicesMCPTestContext {
 
     init(
         httpClient: any HTTPClient,
-        providerRequestGateMode: ProviderRequestGateMode = .disabled
+        providerRequestGateMode: ProviderRequestGateMode = .disabled,
+        appleAdsPlatformAPI: (any AppleAdsPlatformAPI)? = nil
     ) throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let defaultsSuiteName = "com.thirdtech.openaso.mcp-tests.\(UUID().uuidString)"
@@ -971,6 +995,7 @@ private struct AppServicesMCPTestContext {
             httpClient: httpClient,
             defaults: defaults,
             keychain: InMemoryKeychainService(),
+            appleAdsPlatformAPI: appleAdsPlatformAPI,
             loadsEnvironmentCredentials: false,
             allowsIconNetworkFetches: false,
             backgroundModelStore: BackgroundModelStore(modelContainer: container),
@@ -1005,12 +1030,14 @@ private struct AppServicesMCPTestContext {
     }
 
     func configureAppleAds(contextAppStoreID: Int64) throws {
-        services.settingsStore.savePopularityContextAppStoreID(contextAppStoreID)
-        try services.appleAdsWebSessionStore.save(
-            AppleAdsWebSession(
-                cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
-                xsrfToken: "token",
-                updatedAt: .now
+        try services.appleAdsCredentialStore.saveAPICredentials(
+            AppleAdsCredentials(
+                clientID: "SEARCHADS.mcp-server-fixture",
+                teamID: "fixture-team",
+                keyID: "fixture-key",
+                privateKey: "fixture-private-key",
+                orgID: "fixture-org",
+                adAccountID: String(contextAppStoreID)
             )
         )
     }
