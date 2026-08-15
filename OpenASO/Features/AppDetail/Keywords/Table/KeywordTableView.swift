@@ -105,10 +105,9 @@ struct KeywordTableView: View, Equatable {
                     setChartSelection: setChartSelection,
                     openAppleAdsSettings: openAppleAdsSettings
                 )
-                // Rebuilding the virtualized table is substantially cheaper than
-                // asking NSTableView to diff hundreds of moved rows after a sort.
-                // Refresh deltas keep this identity stable and still update cells
-                // in place.
+                // Deliberate user sorts rebuild the virtualized table once.
+                // Refresh deltas keep this identity stable while the presentation
+                // model maintains the selected order as values change.
                 .id(presentationModel.tableIdentity)
                 .contextMenu(forSelectionType: String.self) { selectedIDs in
                     let contextRows = selectedRows(for: selectedIDs)
@@ -142,11 +141,6 @@ struct KeywordTableView: View, Equatable {
             updatePresentationRows(forceSort: true)
         }
         .onChange(of: sortOrder) {
-            // Keep the header selection responsive while a refresh is emitting
-            // row deltas. The final workspace materialization increments
-            // sortRevision and applies this selected order once, instead of
-            // rebuilding the ten-column table in the middle of the refresh.
-            guard !isTrackedAppRefreshRunning else { return }
             updatePresentationRows(forceSort: true)
         }
         .onChange(of: chartSelections) {
@@ -237,25 +231,6 @@ struct KeywordTableView: View, Equatable {
             sortOrder: sortOrder,
             forceSort: forceSort
         )
-    }
-
-    private var isTrackedAppRefreshRunning: Bool {
-        guard let refresh = services.refreshProgressStore.activeRefresh,
-              refresh.appStoreID == trackedAppStoreID else {
-            return false
-        }
-
-        switch refresh.phase {
-        case .completed, .failed:
-            return false
-        case .preparing,
-             .refreshingKeywords,
-             .refreshingMetrics,
-             .refreshingRatings,
-             .refreshingReviews,
-             .finishing:
-            return true
-        }
     }
 
     private func openAppleAdsSettings() {
@@ -643,9 +618,12 @@ final class KeywordTablePresentationModel {
             sortCount &+= 1
             tableIdentity &+= 1
         } else {
-            // Preserve the current visual order while refresh deltas arrive.
-            // This lets SwiftUI diff stable row IDs and update only changed cells.
-            rows = rowIDs.compactMap { incomingRowsByID[$0] }
+            // Keep the active table sort correct as refresh deltas change values,
+            // but retain the table's identity so SwiftUI only moves affected rows.
+            rows = rowIDs
+                .compactMap { incomingRowsByID[$0] }
+                .sorted(using: sortOrder)
+            sortCount &+= 1
         }
         rowIDs = rows.map(\.id)
     }

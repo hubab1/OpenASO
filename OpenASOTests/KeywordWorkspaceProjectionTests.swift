@@ -717,7 +717,7 @@ struct KeywordWorkspaceProjectionTests {
     }
 
     @Test
-    func refreshDeltasPreserveVisualOrderUntilExplicitResort() throws {
+    func refreshDeltasMaintainSelectedSortWithoutRebuildingTable() throws {
         let sourceRows = (0..<338).map { index in
             makeRow(
                 term: "Keyword \(index.formatted(.number.precision(.integerLength(3))))",
@@ -766,11 +766,11 @@ struct KeywordWorkspaceProjectionTests {
             )
         }
 
-        #expect(model.rowIDs == initialIDs)
-        #expect(model.sortCount == 1)
+        #expect(model.rowIDs != initialIDs)
+        #expect(model.sortCount == 26)
         #expect(model.tableIdentity == 1)
-        #expect(model.rows.last?.id == updatedFirstRow.id)
-        #expect(model.rows.last?.popularitySortValue == 1_000)
+        #expect(model.rows.first?.id == updatedFirstRow.id)
+        #expect(model.rows.first?.popularitySortValue == 1_000)
 
         model.update(
             sourceRows: updatedSourceRows,
@@ -779,7 +779,7 @@ struct KeywordWorkspaceProjectionTests {
             forceSort: true
         )
 
-        #expect(model.sortCount == 2)
+        #expect(model.sortCount == 27)
         #expect(model.tableIdentity == 2)
         #expect(model.rows.first?.id == updatedFirstRow.id)
     }
