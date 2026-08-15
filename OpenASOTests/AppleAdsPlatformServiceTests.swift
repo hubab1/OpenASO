@@ -96,6 +96,37 @@ struct AppleAdsPlatformServiceTests {
     }
 
     @Test
+    func campaignSummariesDecodeAppleFractionalSecondDates() throws {
+        let data = Data(
+            #"""
+            [
+              {
+                "displayStatus": "ON_HOLD",
+                "id": 1899370629,
+                "modificationTime": "2026-08-06T17:28:28.018",
+                "name": "China Search Results",
+                "promotedObjectId": "6608976383",
+                "status": "PAUSED"
+              }
+            ]
+            """#.utf8
+        )
+
+        let campaign = try #require(
+            OfficialAppleAdsPlatformAPI.campaignSummaries(
+                fromEncodedObjects: data
+            ).first
+        )
+
+        #expect(campaign.id == 1_899_370_629)
+        #expect(campaign.name == "China Search Results")
+        #expect(campaign.status == "PAUSED")
+        #expect(campaign.displayStatus == "ON_HOLD")
+        #expect(campaign.promotedObjectID == "6608976383")
+        #expect(campaign.modifiedAt != nil)
+    }
+
+    @Test
     func credentialValidationRejectsPublicKeyBeforeVerification() {
         let credentials = AppleAdsCredentials(
             clientID: "client",

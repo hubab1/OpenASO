@@ -252,21 +252,45 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
             )
             let payload = try output.ok.body.json
             let encodedObjects = try JSONEncoder().encode(payload.value1.result ?? [])
-            let campaigns = try JSONDecoder().decode(
-                [Components.Schemas.Campaign].self,
-                from: encodedObjects
+            return try Self.campaignSummaries(fromEncodedObjects: encodedObjects)
+        }
+    }
+
+    static func campaignSummaries(
+        fromEncodedObjects data: Data
+    ) throws -> [AppleAdsPlatformCampaignSummary] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let fractionalSeconds = Date.ParseStrategy(
+                format: "\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits)T\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits):\(second: .twoDigits).\(secondFraction: .fractional(3))",
+                timeZone: .gmt
             )
-            return campaigns.compactMap { campaign in
-                guard let id = campaign.id else { return nil }
-                return AppleAdsPlatformCampaignSummary(
-                    id: id,
-                    name: campaign.name?.nilIfEmpty ?? "Campaign \(id)",
-                    status: campaign.status?.value1.rawValue,
-                    displayStatus: campaign.displayStatus?.value1.rawValue,
-                    promotedObjectID: campaign.promotedObjectId,
-                    modifiedAt: campaign.modificationTime
-                )
+
+            if let date = try? Date(value, strategy: fractionalSeconds) {
+                return date
             }
+            if let date = try? Date(value, strategy: .iso8601) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid Apple Ads date: \(value)"
+            )
+        }
+
+        let campaigns = try decoder.decode([Components.Schemas.Campaign].self, from: data)
+        return campaigns.compactMap { campaign in
+            guard let id = campaign.id else { return nil }
+            return AppleAdsPlatformCampaignSummary(
+                id: id,
+                name: campaign.name?.nilIfEmpty ?? "Campaign \(id)",
+                status: campaign.status?.value1.rawValue,
+                displayStatus: campaign.displayStatus?.value1.rawValue,
+                promotedObjectID: campaign.promotedObjectId,
+                modifiedAt: campaign.modificationTime
+            )
         }
     }
 

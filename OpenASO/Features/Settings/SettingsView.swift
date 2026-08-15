@@ -314,8 +314,6 @@ struct SettingsView: View {
             keyID: $keyID,
             privateKey: $privateKey,
             adAccountID: $adAccountID,
-            clientVersion: services.appleAdsPlatformAPI.coverage.clientVersion,
-            operationCount: services.appleAdsPlatformAPI.coverage.operationCount,
             privateKeyValidationIssue: enteredCredentials.privateKeyValidationIssue,
             canVerify: enteredCredentials.canVerify,
             hasStoredCredentials: services.appleAdsCredentialStore.hasCompleteAPICredentials,

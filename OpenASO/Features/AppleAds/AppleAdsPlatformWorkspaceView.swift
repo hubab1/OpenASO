@@ -33,7 +33,6 @@ final class AppleAdsPlatformWorkspaceModel {
         self.credentialStore = credentialStore
     }
 
-    var coverage: AppleAdsPlatformCoverage { api.coverage }
     var isConfigured: Bool { credentialStore.apiCredentials.canVerify }
 
     func load() async {
@@ -188,8 +187,6 @@ private struct AppleAdsPlatformWorkspaceContent: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                coverageHeader
-                Divider()
                 controls
                 Divider()
                 pageContent
@@ -211,20 +208,6 @@ private struct AppleAdsPlatformWorkspaceContent: View {
                 }
             }
         }
-    }
-
-    private var coverageHeader: some View {
-        HStack(spacing: 24) {
-            Label("Official Apple Swift client", systemImage: "checkmark.seal.fill")
-                .foregroundStyle(.green)
-            LabeledContent("Client", value: model.coverage.clientVersion)
-            LabeledContent("Generated operations", value: String(model.coverage.operationCount))
-            Spacer()
-            Text(model.coverage.baseURL)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
-        .padding(16)
     }
 
     private var controls: some View {

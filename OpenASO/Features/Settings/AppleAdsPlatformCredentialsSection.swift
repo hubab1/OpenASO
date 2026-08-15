@@ -7,8 +7,6 @@ struct AppleAdsPlatformCredentialsSection: View {
     @Binding var privateKey: String
     @Binding var adAccountID: String
 
-    let clientVersion: String
-    let operationCount: Int
     let privateKeyValidationIssue: String?
     let canVerify: Bool
     let hasStoredCredentials: Bool
@@ -118,13 +116,7 @@ struct AppleAdsPlatformCredentialsSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
-            HStack {
-                Text("Apple Ads Platform API")
-                Spacer()
-                Text("Apple client \(clientVersion) · \(operationCount) operations")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Apple Ads Platform API")
         } footer: {
             Text("The private key is stored in macOS Keychain. Search Term Popularity and other Apple Ads requests use this API connection.")
         }
