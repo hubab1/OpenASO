@@ -966,7 +966,10 @@ struct OpenASOMCPServiceTests {
         #expect(metricsRefresh.summary.failed == 1)
         #expect(metricsRefresh.outcomes.first?.rankingProvenance == nil)
         #expect(metricsRefresh.outcomes.first?.error?.code == "apple_ads_not_configured")
-        #expect(metricsRefresh.outcomes.first?.track.statusMessage?.contains("Connect an Apple Ads") == true)
+        #expect(
+            metricsRefresh.outcomes.first?.track.statusMessage
+                == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+        )
     }
 
     @Test
@@ -1920,30 +1923,26 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
-    func refreshKeywordMetricsReportsExpiredSessionOnceAtBatchLevel() async throws {
+    func refreshKeywordMetricsReportsOfficialAuthorizationFailurePerTrack() async throws {
         let resolver = StubMCPAppResolver(resolvedApps: [
             123: makeResolvedApp(appStoreID: 123, name: "Cal AI")
         ])
-        let requestCount = Mutex(0)
-        let session = AppleAdsWebSession(
-            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
-            xsrfToken: "token",
-            updatedAt: .now
+        let credentials = AppleAdsCredentials(
+            clientID: "SEARCHADS.mcp-service-fixture",
+            teamID: "fixture-team",
+            keyID: "fixture-key",
+            privateKey: "fixture-private-key",
+            orgID: "fixture-org",
+            adAccountID: "123"
         )
         let context = try MCPTestContext(
             resolver: resolver,
             includeKeywordMetricsService: true,
-            popularityContextAppStoreIDProvider: { 123 },
-            appleAdsWebSessionProvider: { session },
-            httpHandler: { request in
-                requestCount.withLock { $0 += 1 }
-                return (
-                    Data(),
-                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 403)
-                )
-            }
+            appleAdsPlatformAPI: FailingSearchPopularityAPI(
+                error: .providerUnavailable("Apple Ads Platform API authorization failed.")
+            ),
+            appleAdsCredentials: credentials
         )
-        try context.appleAdsWebSessionStore.save(session)
         _ = try await context.service.addTrackedApp(appStoreID: 123, storefront: "us")
         _ = try await context.service.addKeywords(
             appStoreID: 123,
@@ -1958,42 +1957,33 @@ struct OpenASOMCPServiceTests {
             platform: "iphone"
         )
 
-        #expect(requestCount.withLock { $0 } == 1)
-        #expect(metricsRefresh.summary.updated == 0)
-        #expect(metricsRefresh.summary.skipped == 2)
+        #expect(metricsRefresh.summary.updated == 2)
+        #expect(metricsRefresh.summary.skipped == 0)
         #expect(metricsRefresh.summary.refreshed == 0)
-        #expect(metricsRefresh.summary.failed == 1)
+        #expect(metricsRefresh.summary.failed == 2)
         #expect(metricsRefresh.outcomes.count == 2)
-        #expect(metricsRefresh.outcomes.allSatisfy { $0.error == nil })
-        #expect(metricsRefresh.batchSummary?.skipped == 2)
-        #expect(metricsRefresh.batchSummary?.errors.count == 1)
-        #expect(metricsRefresh.batchSummary?.errors.first?.code == "apple_ads_session_expired")
-        #expect(context.appleAdsWebSessionStore.requiresReconnect)
+        #expect(metricsRefresh.outcomes.allSatisfy {
+            $0.error?.message
+                == "Popularity failed to fetch. Apple Ads Platform API authorization failed."
+        })
+        #expect(metricsRefresh.batchSummary == nil)
     }
 
     @Test
-    func refreshKeywordMetricsSurfacesReconnectMarkerBesideFreshCachedPopularity() async throws {
+    func refreshKeywordMetricsUsesFreshCachedPopularityWithoutPlatformCredentials() async throws {
         let resolver = StubMCPAppResolver(resolvedApps: [
             123: makeResolvedApp(appStoreID: 123, name: "Cal AI")
         ])
         let requestCount = Mutex(0)
-        let session = AppleAdsWebSession(
-            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
-            xsrfToken: "token",
-            updatedAt: .now
-        )
         let context = try MCPTestContext(
             resolver: resolver,
             includeKeywordMetricsService: true,
-            popularityContextAppStoreIDProvider: { 123 },
-            appleAdsWebSessionProvider: { session },
             httpHandler: { request in
                 requestCount.withLock { $0 += 1 }
                 Issue.record("Unexpected Apple Ads request to \(request.url?.absoluteString ?? "unknown URL")")
                 throw OpenASOError.providerUnavailable("Unexpected request")
             }
         )
-        try context.appleAdsWebSessionStore.save(session)
         _ = try await context.service.addTrackedApp(appStoreID: 123, storefront: "us")
         _ = try await context.service.addKeywords(
             appStoreID: 123,
@@ -2018,8 +2008,6 @@ struct OpenASOMCPServiceTests {
             )
         )
         try context.modelContext.save()
-        context.appleAdsWebSessionStore.markReconnectRequired(for: session)
-
         let metricsRefresh = try await context.service.refreshKeywordMetrics(
             appStoreID: 123,
             storefronts: ["us"],
@@ -2030,11 +2018,10 @@ struct OpenASOMCPServiceTests {
         #expect(metricsRefresh.summary.updated == 1)
         #expect(metricsRefresh.summary.skipped == 0)
         #expect(metricsRefresh.summary.refreshed == 1)
-        #expect(metricsRefresh.summary.failed == 1)
+        #expect(metricsRefresh.summary.failed == 0)
         #expect(metricsRefresh.outcomes.first?.track.popularityScore == 42)
         #expect(metricsRefresh.outcomes.first?.error == nil)
-        #expect(metricsRefresh.batchSummary?.skipped == 0)
-        #expect(metricsRefresh.batchSummary?.errors.map(\.code) == ["apple_ads_session_expired"])
+        #expect(metricsRefresh.batchSummary == nil)
     }
 
     @Test
@@ -2045,8 +2032,6 @@ struct OpenASOMCPServiceTests {
         let context = try MCPTestContext(
             resolver: resolver,
             includeKeywordMetricsService: true,
-            popularityContextAppStoreIDProvider: { nil },
-            appleAdsWebSessionProvider: { nil },
             httpHandler: { request in
                 Issue.record("Unexpected Apple Ads request to \(request.url?.absoluteString ?? "unknown URL")")
                 throw OpenASOError.providerUnavailable("Unexpected request")
@@ -2069,8 +2054,11 @@ struct OpenASOMCPServiceTests {
         #expect(metricsRefresh.summary.failed == 1)
         #expect(metricsRefresh.summary.refreshed == 0)
         #expect(metricsRefresh.outcomes.first?.track.popularityScore == nil)
-        #expect(metricsRefresh.outcomes.first?.error?.code == "keyword_popularity_unavailable")
-        #expect(metricsRefresh.outcomes.first?.error?.message.contains("Reconnect Apple Ads") == true)
+        #expect(metricsRefresh.outcomes.first?.error?.code == "apple_ads_not_configured")
+        #expect(
+            metricsRefresh.outcomes.first?.error?.message
+                == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+        )
     }
 
     @Test
@@ -3323,8 +3311,8 @@ private struct MCPTestContext {
         persistRankingRefreshAttempts: OpenASOMCPService.RankingRefreshAttemptsPersistence? = nil,
         includeReviewService: Bool = false,
         includeKeywordMetricsService: Bool = false,
-        popularityContextAppStoreIDProvider: @escaping @MainActor @Sendable () -> Int64? = { nil },
-        appleAdsWebSessionProvider: @escaping @MainActor @Sendable () -> AppleAdsWebSession? = { nil },
+        appleAdsPlatformAPI: (any AppleAdsPlatformAPI)? = nil,
+        appleAdsCredentials: AppleAdsCredentials? = nil,
         screenshotDataProvider: ScreenshotDownloadService.DataProvider? = nil,
         now: @escaping @Sendable () -> Date = { isoDate("2026-05-07T12:00:00Z") },
         httpHandler: @escaping (URLRequest) throws -> (Data, URLResponse) = { request in
@@ -3345,6 +3333,14 @@ private struct MCPTestContext {
             defaults: testDefaults,
             keychain: InMemoryKeychainService()
         )
+        let appleAdsCredentialStore = AppleAdsCredentialStore(
+            defaults: testDefaults,
+            keychain: InMemoryKeychainService(),
+            loadsEnvironmentCredentials: false
+        )
+        if let appleAdsCredentials {
+            try appleAdsCredentialStore.saveAPICredentials(appleAdsCredentials)
+        }
         let rankingRefreshCoordinator = rankingProvider.flatMap { provider in
             useRankingRefreshCoordinator
                 ? RankingRefreshCoordinator(
@@ -3368,13 +3364,14 @@ private struct MCPTestContext {
             keywordMetricsService: includeKeywordMetricsService
                 ? KeywordMetricsService(
                     httpClient: httpClient,
-                    credentialStore: AppleAdsCredentialStore(keychain: InMemoryKeychainService()),
+                    credentialStore: appleAdsCredentialStore,
                     settingsStore: AppSettingsStore(defaults: testDefaults),
-                    webSessionStore: appleAdsWebSessionStore
+                    webSessionStore: appleAdsWebSessionStore,
+                    apiClient: appleAdsPlatformAPI ?? StaticAppleAdsPlatformAPI(apps: [])
                 )
                 : nil,
-            popularityContextAppStoreIDProvider: popularityContextAppStoreIDProvider,
-            appleAdsWebSessionProvider: appleAdsWebSessionProvider,
+            appleAdsPlatformAPI: appleAdsPlatformAPI,
+            appleAdsCredentialsProvider: { appleAdsCredentialStore.apiCredentials },
             now: now
         )
     }

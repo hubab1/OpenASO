@@ -97,7 +97,8 @@ struct KeywordTableView: View, Equatable {
                     modelContext: modelContext,
                     appCatalogService: appCatalogService,
                     appIconStore: appIconStore,
-                    requiresAppleAdsReconnect: services.appleAdsWebSessionStore.requiresReconnect,
+                    requiresAppleAdsReconnect: !services.appleAdsCredentialStore
+                        .hasCompleteAPICredentials,
                     presentRanking: presentRanking,
                     presentRankingHistory: { presentedRankingHistoryRow = $0 },
                     presentNotes: { presentedNotesRow = $0 },
@@ -258,7 +259,7 @@ struct KeywordTableView: View, Equatable {
     }
 
     private func openAppleAdsSettings() {
-        services.settingsStore.requestSettingsFocus(.webSession)
+        services.settingsStore.requestSettingsFocus(.platformAPI)
         openSettings()
     }
 

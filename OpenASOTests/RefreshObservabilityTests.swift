@@ -511,7 +511,7 @@ struct RefreshObservabilityTests {
     }
 
     @Test
-    func appDetailMetricsExpiryRecordsOneFailureWithoutRewritingRankingOutcomes() async throws {
+    func appDetailMissingPlatformCredentialsRecordsPerTrackFailuresWithoutRewritingRankingOutcomes() async throws {
         let httpClient = RankingAndExpiredAppleAdsHTTPClient()
         let session = AppleAdsWebSession(
             cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
@@ -541,16 +541,19 @@ struct RefreshObservabilityTests {
 
         #expect(result.keywordOutcomes.count == 3)
         #expect(result.keywordOutcomes.allSatisfy { $0.error == nil })
-        #expect(result.firstError?.localizedDescription.contains(AppleAdsWebSessionExpiredError.message) == true)
+        #expect(
+            result.firstError?.localizedDescription
+                == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+        )
         #expect(rankings.attemptedCount == 3)
         #expect(rankings.failureCount == 0)
         #expect(metrics.attemptedCount == 3)
-        #expect(metrics.failureCount == 1)
+        #expect(metrics.failureCount == 3)
         #expect(summary.result == .partialFailure)
         // The fixture returns iTunes JSON for both ranking hosts, so every
         // web parse fails safely and falls back to the iTunes provider.
         #expect(await httpClient.rankingRequestCount() == 6)
-        #expect(await httpClient.popularityRequestCount() == 1)
+        #expect(await httpClient.popularityRequestCount() == 0)
     }
 
     @Test

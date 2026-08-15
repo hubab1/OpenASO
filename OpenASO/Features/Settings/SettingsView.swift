@@ -16,6 +16,9 @@ struct SettingsView: View {
     @State private var keyID = ""
     @State private var privateKey = ""
     @State private var orgID = ""
+    @State private var adAccountID = ""
+    @State private var appleAdsPlatformStatus: VerificationStatus?
+    @State private var isVerifyingAppleAdsPlatform = false
     @State private var dailyRefreshTime = Date()
     @State private var webLoginUsername = ""
     @State private var webLoginPassword = ""
@@ -88,8 +91,8 @@ struct SettingsView: View {
 
                 mcpSection
 
-                appleAdsSection
-                .id(AppleAdsSettingsFocusSection.webSession)
+                appleAdsPlatformSection
+                    .id(AppleAdsSettingsFocusSection.platformAPI)
 
                 appStoreConnectSection
                     .id(AppleAdsSettingsFocusSection.appStoreConnect)
@@ -116,12 +119,10 @@ struct SettingsView: View {
                         isEnabled: services.settingsStore.isAutomaticRefreshEnabled
                     )
                 }
-                _ = services.appleAdsWebSessionStore.recoverSessionIfNeeded()
                 loadCredentials()
                 loadAppStoreConnectCredentials()
                 loadDailyRefreshTime()
                 loadWebLoginCredentials()
-                services.appleAdsWebSessionManager.purgeLegacyBrowserHelperArtifacts()
                 if initialConnectionState == nil {
                     connectionState = inferredConnectionState()
                 }
@@ -131,8 +132,8 @@ struct SettingsView: View {
                     proxy.scrollTo(targetFocusSection, anchor: .top)
                     services.settingsStore.clearSettingsFocusRequest()
                 }
-                if validatesOnAppear {
-                    validateAppleAdsAccess()
+                if validatesOnAppear, enteredCredentials.canVerify {
+                    verifyAndSaveAppleAdsPlatformCredentials()
                 }
                 services.analyticsService.capture(.settingsOpened(focusSection: targetFocusSection?.analyticsValue ?? "none"))
             }
@@ -140,10 +141,6 @@ struct SettingsView: View {
                 guard let requestedSection else { return }
                 proxy.scrollTo(requestedSection, anchor: .top)
                 services.settingsStore.clearSettingsFocusRequest()
-            }
-            .onChange(of: services.appleAdsWebSessionStore.requiresReconnect) { _, _ in
-                guard !connectionState.isBusy else { return }
-                connectionState = inferredConnectionState()
             }
         }
     }
@@ -307,6 +304,88 @@ struct SettingsView: View {
             Text("Apple Ads")
         } footer: {
             Text("Connect Apple Ads to show keyword popularity in OpenASO. OpenASO requires a specific Apple Account and does not reuse the Mac's default account. Optional saved login details are filled automatically and stay in your macOS Keychain. Your Apple Ads account needs access to at least one of your App Store apps.")
+        }
+    }
+
+    private var appleAdsPlatformSection: some View {
+        Section {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "apple.logo")
+                    .imageScale(.large)
+                    .frame(width: 20)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Official Swift client")
+                        .font(.headline)
+                    Text("Version \(services.appleAdsPlatformAPI.coverage.clientVersion) · \(services.appleAdsPlatformAPI.coverage.operationCount) generated operations")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+
+            Text("1. Enter the OAuth client identifier Apple issued for Apple Ads.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Client ID", text: $clientID)
+                .textContentType(.username)
+
+            Text("2. Add the team and key identifiers for the matching private key.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Team ID", text: $teamID)
+            TextField("Key ID", text: $keyID)
+
+            Text("3. Paste the complete .p8 private key. It is stored only in macOS Keychain.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Private Key (.p8 PEM)", text: $privateKey, axis: .vertical)
+                .lineLimit(3...8)
+                .font(.system(.caption, design: .monospaced))
+                .privacySensitive()
+
+            Text("4. Verify to discover your accessible ad accounts. Leave Ad Account ID empty to select the first available account.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Ad Account ID (optional before verification)", text: $adAccountID)
+
+            HStack(spacing: 10) {
+                Button("Verify & Save", action: verifyAndSaveAppleAdsPlatformCredentials)
+                    .disabled(isVerifyingAppleAdsPlatform || !enteredCredentials.canVerify)
+
+                if isVerifyingAppleAdsPlatform {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Spacer()
+
+                Button(
+                    "Clear API Credentials",
+                    role: .destructive,
+                    action: clearAppleAdsPlatformCredentials
+                )
+                .disabled(
+                    isVerifyingAppleAdsPlatform
+                        || !services.appleAdsCredentialStore.hasCompleteAPICredentials
+                )
+            }
+
+            if let appleAdsPlatformStatus {
+                Label(appleAdsPlatformStatus.message, systemImage: appleAdsPlatformStatus.systemImage)
+                    .foregroundStyle(appleAdsPlatformStatus.tint)
+                    .font(.caption)
+            }
+
+            Link(
+                "Apple Ads Platform API setup documentation",
+                destination: URL(string: "https://developer.apple.com/documentation/apple-ads-platform-api")!
+            )
+            .font(.caption)
+        } header: {
+            Text("Apple Ads Platform API")
+        } footer: {
+            Text("This connection powers campaign and owned-app management plus public Search Term Popularity data through the UI and MCP. Browser cookies are no longer required for popularity refreshes.")
         }
     }
 
@@ -601,7 +680,8 @@ struct SettingsView: View {
             teamID: teamID,
             keyID: keyID,
             privateKey: privateKey,
-            orgID: orgID
+            orgID: orgID,
+            adAccountID: adAccountID
         )
     }
 
@@ -687,6 +767,44 @@ struct SettingsView: View {
         keyID = credentials.keyID
         privateKey = credentials.privateKey
         orgID = credentials.orgID
+        adAccountID = credentials.adAccountID
+        if credentials.isComplete, appleAdsPlatformStatus == nil {
+            appleAdsPlatformStatus = .success("Credentials are stored. Verify again to confirm live access.")
+        }
+    }
+
+    private func verifyAndSaveAppleAdsPlatformCredentials() {
+        isVerifyingAppleAdsPlatform = true
+        appleAdsPlatformStatus = nil
+
+        Task { @MainActor in
+            defer { isVerifyingAppleAdsPlatform = false }
+            do {
+                let connection = try await services.appleAdsPlatformAPI.verify(
+                    credentials: enteredCredentials
+                )
+                let verifiedCredentials = connection.applying(to: enteredCredentials)
+                try services.appleAdsCredentialStore.saveAPICredentials(verifiedCredentials)
+                loadCredentials()
+                let account = connection.accounts.first {
+                    $0.id == connection.selectedAdAccountID
+                }
+                appleAdsPlatformStatus = .success(
+                    "Connected to \(account?.name ?? "ad account \(connection.selectedAdAccountID)")."
+                )
+                services.refreshStaleKeywordPopularityAfterAppleAdsConnection()
+            } catch {
+                appleAdsPlatformStatus = .failure(
+                    OpenASOError.map(error).localizedDescription
+                )
+            }
+        }
+    }
+
+    private func clearAppleAdsPlatformCredentials() {
+        services.appleAdsCredentialStore.clearAPICredentials()
+        loadCredentials()
+        appleAdsPlatformStatus = .success("Apple Ads Platform API credentials cleared.")
     }
 
     private func loadAppStoreConnectCredentials() {

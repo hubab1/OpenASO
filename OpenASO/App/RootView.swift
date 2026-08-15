@@ -5,6 +5,7 @@ struct RootView: View {
 
     @State private var selectedApp: TrackedApp?
     @State private var isPresentingKeywordResearch = false
+    @State private var isPresentingAppleAds = false
     @State private var keywordResearchDetailModelCache =
         KeywordResearchProjectDetailModelCache()
 
@@ -17,7 +18,14 @@ struct RootView: View {
         }
         .navigationTitle("OpenASO")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    isPresentingAppleAds = true
+                } label: {
+                    Label("Apple Ads", systemImage: "megaphone")
+                }
+                .help("Open the Apple Ads Platform API workspace")
+
                 Button {
                     isPresentingKeywordResearch = true
                 } label: {
@@ -30,6 +38,9 @@ struct RootView: View {
             KeywordResearchWorkspaceLauncher(
                 detailModelCache: keywordResearchDetailModelCache
             )
+        }
+        .sheet(isPresented: $isPresentingAppleAds) {
+            AppleAdsPlatformWorkspaceView()
         }
         .task {
             guard !Self.isRunningUnderTests else {

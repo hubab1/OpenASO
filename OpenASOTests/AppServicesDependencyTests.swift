@@ -184,42 +184,13 @@ struct AppServicesDependencyTests {
     }
 
     @Test
-    func automaticResearchMetricsWorkflowUsesCurrentAppleAdsStateAndExactSessionMarker() async throws {
+    func automaticResearchMetricsWorkflowUsesCurrentAppleAdsPlatformCredentials() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
-        let contextAppStoreID: Int64 = 6_608_976_383
-        let initialSession = AppleAdsWebSession(
-            cookieHeader: "cookie=initial; XSRF-TOKEN-CM=initial-token",
-            xsrfToken: "initial-token",
-            updatedAt: Date(timeIntervalSince1970: 100)
-        )
-        let replacementSession = AppleAdsWebSession(
-            cookieHeader: "cookie=replacement; XSRF-TOKEN-CM=replacement-token",
-            xsrfToken: "replacement-token",
-            updatedAt: Date(timeIntervalSince1970: 200)
-        )
-        var sessionStore: AppleAdsWebSessionStore?
-        var expiresAndReplacesSession = false
+        let adAccountID: Int64 = 6_608_976_383
         var requestCount = 0
         let client = MockHTTPClient { request in
             requestCount += 1
             let url = try #require(request.url)
-            #expect(
-                URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                    .queryItems?.first(where: { $0.name == "adamId" })?.value
-                    == String(contextAppStoreID)
-            )
-            #expect(request.value(forHTTPHeaderField: "Cookie") == initialSession.cookieHeader)
-            #expect(
-                request.value(forHTTPHeaderField: "X-XSRF-TOKEN-CM")
-                    == initialSession.xsrfToken
-            )
-            if expiresAndReplacesSession {
-                try #require(sessionStore).save(replacementSession)
-                return (
-                    Data(),
-                    makeHTTPURLResponse(url: url, statusCode: 401)
-                )
-            }
             return (
                 Data(
                     #"{"status":"success","data":[{"name":"app services wiring","popularity":64}]}"#.utf8
@@ -227,8 +198,11 @@ struct AppServicesDependencyTests {
                 makeHTTPURLResponse(url: url, statusCode: 200)
             )
         }
-        let services = AppServices.mocked(httpClient: client, modelContainer: container)
-        sessionStore = services.appleAdsWebSessionStore
+        let services = AppServices.mocked(
+            httpClient: client,
+            modelContainer: container,
+            appleAdsPlatformAPI: HTTPBackedSearchPopularityAPI(httpClient: client)
+        )
         let projectStore = try #require(services.keywordResearchProjectStore)
         let workflow = try #require(services.keywordResearchMetricsWorkflow)
         let project = try await projectStore.createProject(
@@ -243,47 +217,49 @@ struct AppServicesDependencyTests {
             platform: .iphone
         )
 
-        let missingContext = try await workflow.refresh(
+        let missingCredentials = try await workflow.refresh(
             projectGeneration: addition.project.generation,
             keywordGeneration: addition.keyword.generation,
             policy: .requireNetwork
         )
-        #expect(missingContext.issue?.code == .missingContextApp)
+        #expect(missingCredentials.issue?.code == .missingSession)
         #expect(requestCount == 0)
 
-        services.settingsStore.savePopularityContextAppStoreID(contextAppStoreID)
-        try services.appleAdsWebSessionStore.save(initialSession)
-        services.appleAdsWebSessionStore.markReconnectRequired(for: initialSession)
-        let reconnectRequired = try await workflow.refresh(
-            projectGeneration: addition.project.generation,
-            keywordGeneration: addition.keyword.generation,
-            policy: .requireNetwork
+        let credentials = AppleAdsCredentials(
+            clientID: "SEARCHADS.app-services-fixture",
+            teamID: "fixture-team",
+            keyID: "fixture-key",
+            privateKey: "fixture-private-key",
+            orgID: "fixture-org",
+            adAccountID: String(adAccountID)
         )
-        #expect(reconnectRequired.issue?.code == .reconnectRequired)
-        #expect(requestCount == 0)
+        try services.appleAdsCredentialStore.saveAPICredentials(credentials)
 
-        services.appleAdsWebSessionStore.clearReconnectRequirement(for: initialSession)
         let refreshed = try await workflow.refresh(
             projectGeneration: addition.project.generation,
             keywordGeneration: addition.keyword.generation,
             policy: .requireNetwork
         )
         #expect(refreshed.popularityScore == 64)
-        #expect(refreshed.provenance == .requestedContext(appStoreID: contextAppStoreID))
+        #expect(refreshed.provenance == .requestedContext(appStoreID: adAccountID))
         #expect(refreshed.disposition == .refreshed)
         #expect(refreshed.issue == nil)
         #expect(requestCount == 1)
 
-        expiresAndReplacesSession = true
-        let expired = try await workflow.refresh(
+        var replacementCredentials = credentials
+        replacementCredentials.adAccountID = String(adAccountID + 1)
+        try services.appleAdsCredentialStore.saveAPICredentials(replacementCredentials)
+        let refreshedWithReplacementAccount = try await workflow.refresh(
             projectGeneration: addition.project.generation,
             keywordGeneration: addition.keyword.generation,
             policy: .requireNetwork
         )
-        #expect(expired.issue?.code == .sessionExpired)
+        #expect(
+            refreshedWithReplacementAccount.provenance
+                == .requestedContext(appStoreID: adAccountID + 1)
+        )
+        #expect(refreshedWithReplacementAccount.popularityScore == 64)
         #expect(requestCount == 2)
-        #expect(services.appleAdsWebSessionStore.session == replacementSession)
-        #expect(!services.appleAdsWebSessionStore.requiresReconnect)
     }
 
     @Test
@@ -953,72 +929,6 @@ struct AppServicesDependencyTests {
     }
 
     @Test
-    func keywordMetricsRefreshAttemptsTransientRecoveryOnceAcrossStorefronts() async throws {
-        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
-        let modelContext = ModelContext(container)
-        let defaults = Self.makeDefaults()
-        let keychain = ScriptedKeychainService()
-        let session = AppleAdsWebSession(cookieHeader: "cookie=value", xsrfToken: "token", updatedAt: .now)
-        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
-        keychain.enqueueReadResults([
-            .failure(.status(errSecInteractionNotAllowed)),
-            .failure(.status(errSecNotAvailable)),
-        ])
-        let services = AppServices(
-            httpClient: MockHTTPClient { request in
-                throw OpenASOError.providerUnavailable(
-                    "Unexpected request to \(request.url?.absoluteString ?? "unknown URL")"
-                )
-            },
-            defaults: defaults,
-            keychain: keychain,
-            loadsEnvironmentCredentials: false,
-            allowsIconNetworkFetches: false
-        )
-        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
-
-        let trackedApp = TrackedApp(
-            appStoreID: 1,
-            bundleID: nil,
-            name: "App",
-            sellerName: nil,
-            defaultPlatform: .iphone
-        )
-        var tracks: [TrackedAppKeyword] = []
-        for storefront in ["us", "gb"] {
-            let query = try KeywordQuery.fetchOrInsert(
-                term: "focus app \(storefront)",
-                storefront: storefront,
-                platform: .iphone,
-                in: modelContext
-            )
-            let track = TrackedAppKeyword(
-                term: query.term,
-                storefront: storefront,
-                platform: .iphone,
-                trackedApp: trackedApp,
-                query: query
-            )
-            trackedApp.keywordTracks.append(track)
-            modelContext.insert(track)
-            tracks.append(track)
-        }
-        modelContext.insert(trackedApp)
-        try modelContext.save()
-
-        let outcomes = await services.keywordMetricsService.refreshMetrics(
-            for: trackedApp,
-            tracks: tracks,
-            in: modelContext
-        )
-
-        #expect(outcomes.count == 2)
-        #expect(outcomes.allSatisfy { $0.errorMessage != nil })
-        #expect(keychain.readCallCount == 2)
-        #expect(keychain.deleteCallCount == 0)
-    }
-
-    @Test
     func webSessionStoreDoesNotRetryPermanentReadFailure() throws {
         let defaults = Self.makeDefaults()
         let keychain = ScriptedKeychainService()
@@ -1062,74 +972,6 @@ struct AppServicesDependencyTests {
         #expect(malformedStore.session == nil)
         #expect(malformedKeychain.readCallCount == 1)
         #expect(malformedKeychain.deleteCallCount == 0)
-    }
-
-    @Test
-    func keywordMetricsRefreshRecoversAfterTransientStartupRead() async throws {
-        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
-        let modelContext = ModelContext(container)
-        let defaults = Self.makeDefaults()
-        let keychain = ScriptedKeychainService()
-        let session = AppleAdsWebSession(
-            cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
-            xsrfToken: "token",
-            updatedAt: .now
-        )
-        try AppleAdsWebSessionStore(defaults: defaults, keychain: keychain).save(session)
-        keychain.enqueueReadResults([.failure(.status(errSecNotAvailable))])
-        let services = AppServices(
-            httpClient: MockHTTPClient { request in
-                let payload = #"{"status":"success","data":[{"name":"focus app","popularity":41}]}"#
-                return (
-                    Data(payload.utf8),
-                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
-                )
-            },
-            defaults: defaults,
-            keychain: keychain,
-            loadsEnvironmentCredentials: false,
-            allowsIconNetworkFetches: false
-        )
-        services.settingsStore.savePopularityContextAppStoreID(123_456_789)
-
-        let trackedApp = TrackedApp(
-            appStoreID: 1,
-            bundleID: nil,
-            name: "App",
-            sellerName: nil,
-            defaultPlatform: .iphone
-        )
-        let query = try KeywordQuery.fetchOrInsert(
-            term: "focus app",
-            storefront: "us",
-            platform: .iphone,
-            in: modelContext
-        )
-        let track = TrackedAppKeyword(
-            term: "focus app",
-            storefront: "us",
-            platform: .iphone,
-            trackedApp: trackedApp,
-            query: query
-        )
-        trackedApp.keywordTracks.append(track)
-        modelContext.insert(trackedApp)
-        modelContext.insert(track)
-        try modelContext.save()
-
-        let outcomes = await services.keywordMetricsService.refreshMetrics(
-            for: trackedApp,
-            tracks: [track],
-            in: modelContext
-        )
-        let metrics = try #require(try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
-
-        #expect(outcomes.count == 1)
-        #expect(outcomes.first?.errorMessage == nil)
-        #expect(metrics.popularityScore == 41)
-        #expect(track.statusMessage == nil)
-        #expect(keychain.readCallCount == 2)
-        #expect(keychain.deleteCallCount == 0)
     }
 
     @Test

@@ -21,6 +21,8 @@ struct OpenASOMCPServerFactory: Sendable {
     let service: OpenASOMCPService
     let configuration: OpenASOMCPServerConfiguration
 
+    static var availableTools: [Tool] { tools }
+
     init(
         service: OpenASOMCPService,
         configuration: OpenASOMCPServerConfiguration = OpenASOMCPServerConfiguration()
@@ -137,6 +139,36 @@ struct OpenASOMCPServerFactory: Sendable {
     private func callTool(_ parameters: CallTool.Parameters) async throws -> CallTool.Result {
         let arguments = parameters.arguments ?? [:]
         switch parameters.name {
+        case "apple_ads_platform_capabilities":
+            return try Self.toolResult(try service.appleAdsPlatformCapabilities())
+
+        case "apple_ads_platform_status":
+            return try Self.toolResult(try await service.appleAdsPlatformStatus())
+
+        case "apple_ads_platform_search_apps":
+            return try Self.toolResult(
+                try await service.searchAppleAdsPlatformApps(
+                    query: try arguments.optionalString("query"),
+                    limit: try arguments.optionalInt("limit") ?? 50
+                )
+            )
+
+        case "apple_ads_platform_list_campaigns":
+            return try Self.toolResult(
+                try await service.listAppleAdsPlatformCampaigns(
+                    limit: try arguments.optionalInt("limit") ?? 100
+                )
+            )
+
+        case "apple_ads_search_term_popularity":
+            return try Self.toolResult(
+                try await service.searchAppleAdsTermPopularity(
+                    searchTerms: try arguments.requiredStringArray("search_terms"),
+                    countryOrRegion: try arguments.requiredString("country_or_region"),
+                    recentWeekCount: try arguments.optionalInt("recent_week_count") ?? 4
+                )
+            )
+
         case "list_apps":
             let result = try await service.listApps(
                 includeUntrackedCatalogApps: arguments.bool("include_untracked_catalog_apps") ?? false,
@@ -460,6 +492,47 @@ private extension OpenASOMCPServerFactory {
 
     static var tools: [Tool] {
         [
+            tool(
+                "apple_ads_platform_capabilities",
+                "Report the official pinned Apple Ads Swift client version, API base URL, generated operation count, and resource-family coverage.",
+                schema(optional: [:]),
+                readOnly: true
+            ),
+            tool(
+                "apple_ads_platform_status",
+                "Validate locally stored Apple Ads Platform API credentials and list accessible ad accounts. Secrets are never accepted or returned through MCP.",
+                schema(optional: [:]),
+                readOnly: true,
+                openWorld: true
+            ),
+            tool(
+                "apple_ads_platform_search_apps",
+                "Search apps owned by the configured Apple Ads account using Apple's official Swift client. Omit query to list owned apps.",
+                schema(optional: ["query": .string, "limit": .integer]),
+                readOnly: true,
+                openWorld: true
+            ),
+            tool(
+                "apple_ads_platform_list_campaigns",
+                "List a bounded campaign summary for the configured Apple Ads ad account using Apple's official Swift client.",
+                schema(optional: ["limit": .integer]),
+                readOnly: true,
+                openWorld: true
+            ),
+            tool(
+                "apple_ads_search_term_popularity",
+                "Query Apple's public Search Term Popularity API. Returns eligible weekly rows with global 1-100 and 1-5 popularity, genre popularity, and genre rank for a country or region.",
+                schema(
+                    required: ["search_terms", "country_or_region"],
+                    optional: [
+                        "search_terms": .stringArray,
+                        "country_or_region": .string,
+                        "recent_week_count": .integer,
+                    ]
+                ),
+                readOnly: true,
+                openWorld: true
+            ),
             tool("list_apps", "List tracked apps and optionally untracked catalog apps.", schema(
                 optional: [
                     "include_untracked_catalog_apps": .boolean,

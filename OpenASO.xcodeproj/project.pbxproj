@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AD5000000000000000000001 /* AppleAdsClient in Frameworks */ = {isa = PBXBuildFile; productRef = AD5000000000000000000004 /* AppleAdsClient */; };
+		AD5000000000000000000002 /* AppleAdsClient in Frameworks */ = {isa = PBXBuildFile; productRef = AD5000000000000000000004 /* AppleAdsClient */; };
+		AD5100000000000000000001 /* AppleAds/AppleAdsPlatformService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5100000000000000000003 /* AppleAds/AppleAdsPlatformService.swift */; };
+		AD5100000000000000000002 /* AppleAds/AppleAdsPlatformService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5100000000000000000003 /* AppleAds/AppleAdsPlatformService.swift */; };
+		AD5200000000000000000001 /* AppleAdsPlatformWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5200000000000000000002 /* AppleAdsPlatformWorkspaceView.swift */; };
+		AD5300000000000000000001 /* AppleAdsPlatformServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5300000000000000000002 /* AppleAdsPlatformServiceTests.swift */; };
 		F1A200000000000000000001 /* AppStoreIDInputParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A200000000000000000002 /* AppStoreIDInputParser.swift */; };
 		F1A200000000000000000003 /* AppStoreIDInputParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */; };
 		B9A0000000000000000005 /* AppleAdsPastedSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */; };
@@ -345,6 +351,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AD5100000000000000000003 /* AppleAds/AppleAdsPlatformService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsPlatformService.swift; sourceTree = "<group>"; };
+		AD5200000000000000000002 /* AppleAdsPlatformWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPlatformWorkspaceView.swift; sourceTree = "<group>"; };
+		AD5300000000000000000002 /* AppleAdsPlatformServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPlatformServiceTests.swift; sourceTree = "<group>"; };
 		F1A200000000000000000002 /* AppStoreIDInputParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreIDInputParser.swift; sourceTree = "<group>"; };
 		F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreIDInputParserTests.swift; sourceTree = "<group>"; };
 		B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAdsPastedSessionTests.swift; sourceTree = "<group>"; };
@@ -617,6 +626,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD5000000000000000000001 /* AppleAdsClient in Frameworks */,
 				A80000000000000000000005 /* PostHog in Frameworks */,
 				A90000000000000000000005 /* Sparkle in Frameworks */,
 				C0DEFACE000000000000010A /* MCP in Frameworks */,
@@ -635,6 +645,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD5000000000000000000002 /* AppleAdsClient in Frameworks */,
 				C15A00000000000000000009 /* MCP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -645,6 +656,7 @@
 		1027BC248FF4568E8523C3A8 /* OpenASOTests */ = {
 			isa = PBXGroup;
 			children = (
+				AD5300000000000000000002 /* AppleAdsPlatformServiceTests.swift */,
 				F1A200000000000000000004 /* AppStoreIDInputParserTests.swift */,
 				AA0000000000000000000001 /* AppleAdsConnectionStateTests.swift */,
 				B9A0000000000000000006 /* AppleAdsPastedSessionTests.swift */,
@@ -730,6 +742,7 @@
 		4F501415E1C5553BD5F1EE07 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				AD5200000000000000000003 /* AppleAds */,
 				C10000000000000000000001 /* AppDetail */,
 				C10000000000000000000005 /* AppManagement */,
 				C0DEC0DE0000000000000010 /* MCP */,
@@ -737,6 +750,14 @@
 				C10000000000000000000006 /* Settings */,
 			);
 			path = Features;
+			sourceTree = "<group>";
+		};
+		AD5200000000000000000003 /* AppleAds */ = {
+			isa = PBXGroup;
+			children = (
+				AD5200000000000000000002 /* AppleAdsPlatformWorkspaceView.swift */,
+			);
+			path = AppleAds;
 			sourceTree = "<group>";
 		};
 		D34B00000000000000000020 /* KeywordResearch */ = {
@@ -761,6 +782,7 @@
 		54FB5EDBECF218FCB9C40ADB /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				AD5100000000000000000003 /* AppleAds/AppleAdsPlatformService.swift */,
 				04E8C4E18F1A4D519C0A1130 /* AI/AIService.swift */,
 				04E8C4E18F1A4D519C0A1131 /* AI/AITranslationService.swift */,
 				A80000000000000000000002 /* AnalyticsService.swift */,
@@ -1075,6 +1097,7 @@
 			);
 			name = OpenASO;
 			packageProductDependencies = (
+				AD5000000000000000000004 /* AppleAdsClient */,
 				A80000000000000000000006 /* PostHog */,
 				A90000000000000000000006 /* Sparkle */,
 				C0DEFACE0000000000000109 /* MCP */,
@@ -1096,6 +1119,7 @@
 			);
 			name = OpenASOMCP;
 			packageProductDependencies = (
+				AD5000000000000000000004 /* AppleAdsClient */,
 				C0DEFACE0000000000000109 /* MCP */,
 			);
 			productName = OpenASOMCP;
@@ -1143,6 +1167,7 @@
 			mainGroup = 99308A2E9EE083E212B3325F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				AD5000000000000000000003 /* XCRemoteSwiftPackageReference "apple-ads-platform-api-swift" */,
 				A80000000000000000000007 /* XCRemoteSwiftPackageReference "posthog-ios" */,
 				A90000000000000000000007 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				C0DEFACE000000000000010B /* XCRemoteSwiftPackageReference "swift-sdk" */,
@@ -1209,6 +1234,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD5100000000000000000001 /* AppleAds/AppleAdsPlatformService.swift in Sources */,
+				AD5200000000000000000001 /* AppleAdsPlatformWorkspaceView.swift in Sources */,
 				EF3B2BA43807572789A250A7 /* AddAppSheet.swift in Sources */,
 				F1A200000000000000000001 /* AppStoreIDInputParser.swift in Sources */,
 				59E573ACDBBB76A905B92574 /* AddKeywordsSheet.swift in Sources */,
@@ -1409,6 +1436,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD5300000000000000000001 /* AppleAdsPlatformServiceTests.swift in Sources */,
 				F1A200000000000000000003 /* AppStoreIDInputParserTests.swift in Sources */,
 				AA0000000000000000000002 /* AppleAdsConnectionStateTests.swift in Sources */,
 				B9A0000000000000000005 /* AppleAdsPastedSessionTests.swift in Sources */,
@@ -1476,6 +1504,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD5100000000000000000002 /* AppleAds/AppleAdsPlatformService.swift in Sources */,
 				C15A0000000000000000000A /* MCP/OpenASOMCPMain.swift in Sources */,
 				C15A00000000000000000101 /* MCP/OpenASOMCPDTOs.swift in Sources */,
 				C15A00000000000000000102 /* MCP/OpenASOMCPService.swift in Sources */,
@@ -1881,6 +1910,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		AD5000000000000000000003 /* XCRemoteSwiftPackageReference "apple-ads-platform-api-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/apple-ads-platform-api-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.109.0;
+			};
+		};
 		A80000000000000000000007 /* XCRemoteSwiftPackageReference "posthog-ios" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/PostHog/posthog-ios.git";
@@ -1908,6 +1945,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		AD5000000000000000000004 /* AppleAdsClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AD5000000000000000000003 /* XCRemoteSwiftPackageReference "apple-ads-platform-api-swift" */;
+			productName = AppleAdsClient;
+		};
 		A80000000000000000000006 /* PostHog */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A80000000000000000000007 /* XCRemoteSwiftPackageReference "posthog-ios" */;
