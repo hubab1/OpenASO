@@ -69,7 +69,13 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
         credentials: AppleAdsWebLoginCredentials? = nil,
         timeout: Duration = .seconds(300)
     ) async throws -> AppleAdsWebLoginCapture {
-        let webView = presentWindow(credentials: credentials)
+        let websiteDataStore = Self.makeWebsiteDataStore()
+        let reusesExplicitAccount = await Self.prepareForSignIn(using: websiteDataStore)
+        let webView = presentWindow(
+            credentials: credentials,
+            websiteDataStore: websiteDataStore,
+            reusesExplicitAccount: reusesExplicitAccount
+        )
         defer { dismissWindow() }
 
         webView.load(URLRequest(url: Self.signInURL))
@@ -84,8 +90,7 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
                 throw AppleAdsWebLoginError.closedBeforeCapture
             }
 
-            if Self.isAuthenticatedAppleAdsPage(webView.url),
-               let capture = await capturedSession(from: webView) {
+            if let capture = await capturedSession(from: webView) {
                 guard didUseExplicitAccount else {
                     throw AppleAdsWebLoginError.explicitAccountRequired
                 }
@@ -103,7 +108,8 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         let appleAdsCookies = cookies.filter(Self.appliesToAppleAds)
 
-        guard let xsrfCookie = appleAdsCookies.first(where: { $0.name == AppleAdsSessionCookies.xsrfToken }),
+        guard Self.isCaptureReady(url: webView.url, cookies: appleAdsCookies),
+              let xsrfCookie = appleAdsCookies.first(where: { $0.name == AppleAdsSessionCookies.xsrfToken }),
               appleAdsCookies.contains(where: { $0.name == AppleAdsSessionCookies.session })
         else {
             return nil
@@ -142,6 +148,35 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
             }
             .map { "\($0.name)=\($0.value)" }
             .joined(separator: "; ")
+    }
+
+    nonisolated static func isCaptureReady(url: URL?, cookies: [HTTPCookie]) -> Bool {
+        url != nil
+            && cookies.contains { $0.name == AppleAdsSessionCookies.xsrfToken }
+            && cookies.contains { $0.name == AppleAdsSessionCookies.session }
+    }
+
+    static func prepareForSignIn(using dataStore: WKWebsiteDataStore) async -> Bool {
+        let cookieStore = dataStore.httpCookieStore
+        let cookies = await cookieStore.allCookies()
+        let reusesExplicitAccount = cookies.contains(where: Self.isAppleIdentityCookie)
+
+        for cookie in cookies where Self.isCapturedAppleAdsSessionCookie(cookie) {
+            await cookieStore.deleteCookie(cookie)
+        }
+
+        return reusesExplicitAccount
+    }
+
+    nonisolated static func isAppleIdentityCookie(_ cookie: HTTPCookie) -> Bool {
+        let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return domain != AppleAdsSessionCookies.host
+            && (domain == "apple.com" || domain.hasSuffix(".apple.com"))
+    }
+
+    nonisolated static func isCapturedAppleAdsSessionCookie(_ cookie: HTTPCookie) -> Bool {
+        appliesToAppleAds(cookie)
+            && [AppleAdsSessionCookies.xsrfToken, AppleAdsSessionCookies.session].contains(cookie.name)
     }
 
     nonisolated static func isAuthenticatedAppleAdsPage(_ url: URL?) -> Bool {
@@ -192,15 +227,17 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func presentWindow(credentials: AppleAdsWebLoginCredentials?) -> WKWebView {
+    private func presentWindow(
+        credentials: AppleAdsWebLoginCredentials?,
+        websiteDataStore: WKWebsiteDataStore,
+        reusesExplicitAccount: Bool
+    ) -> WKWebView {
         if let webView, window != nil {
             return webView
         }
 
         let configuration = WKWebViewConfiguration()
-        // A fresh cookie jar prevents an earlier account's cookies from satisfying capture before
-        // the current sign-in finishes. The captured session itself is persisted in Keychain.
-        configuration.websiteDataStore = .nonPersistent()
+        configuration.websiteDataStore = websiteDataStore
         configuration.userContentController.add(
             self,
             name: Self.explicitAccountMessageHandler
@@ -250,8 +287,14 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
         self.webView = webView
         self.window = window
         didCloseWindow = false
-        didUseExplicitAccount = false
+        // The persistent WebKit store is private to OpenASO. Apple identity cookies in it can only
+        // come from an account the user previously selected in this sign-in window.
+        didUseExplicitAccount = reusesExplicitAccount
         return webView
+    }
+
+    static func makeWebsiteDataStore() -> WKWebsiteDataStore {
+        .default()
     }
 
     private func dismissWindow() {
@@ -295,7 +338,7 @@ enum AppleAdsWebLoginWindowLayout {
 }
 
 /// Generates a document-local helper that fills the optional saved login on Apple-owned sign-in
-/// pages. The script is installed only in the ephemeral WebKit view used for this capture attempt.
+/// pages. The script is installed only in the OpenASO WebKit view used for this capture attempt.
 enum AppleAdsWebLoginAutomation {
     /// Prevents Apple-owned sign-in pages from silently requesting the Mac's platform credential.
     /// The Apple ID field also marks that a specific account was explicitly selected without
