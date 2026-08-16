@@ -4,7 +4,10 @@ import SwiftData
 
 final class KeywordMetricsService: Sendable {
     private let apiClient: any AppleAdsPlatformAPI
+    private let campaignManagementClient: AppleAdsCMPopularityClient
     @MainActor private let credentialStore: AppleAdsCredentialStore
+    @MainActor private let settingsStore: AppSettingsStore
+    @MainActor private let webSessionStore: AppleAdsWebSessionStore
     private let freshnessFetchObserver: @Sendable (_ queryKeyCount: Int) -> Void
     private let bulkFreshnessFetchHook: @Sendable () throws -> Void
     private let metricsTTL: TimeInterval = 60 * 60 * 24 * 7
@@ -20,12 +23,12 @@ final class KeywordMetricsService: Sendable {
         bulkFreshnessFetchHook: @escaping @Sendable () throws -> Void = {}
     ) {
         self.apiClient = apiClient
+        self.campaignManagementClient = AppleAdsCMPopularityClient(httpClient: httpClient)
         self.credentialStore = credentialStore
+        self.settingsStore = settingsStore
+        self.webSessionStore = webSessionStore
         self.freshnessFetchObserver = freshnessFetchObserver
         self.bulkFreshnessFetchHook = bulkFreshnessFetchHook
-        _ = httpClient
-        _ = settingsStore
-        _ = webSessionStore
     }
 
     func verifyAppleAdsCredentials(_ credentials: AppleAdsCredentials) async throws -> AppleAdsCredentials {
@@ -73,7 +76,7 @@ final class KeywordMetricsService: Sendable {
         for targets: [KeywordResearchTarget],
         now: @Sendable () -> Date = { Date() }
     ) async throws -> [KeywordPopularityMetricEvidence] {
-        try await fetchOfficialPopularityMetrics(for: targets, now: now)
+        try await fetchResolvedPopularityMetrics(for: targets, now: now)
     }
 
     /// Compatibility entry point for callers that still carry the retired
@@ -86,10 +89,10 @@ final class KeywordMetricsService: Sendable {
     ) async throws -> [KeywordPopularityMetricEvidence] {
         _ = contextAppStoreID
         _ = webSession
-        return try await fetchOfficialPopularityMetrics(for: targets, now: now)
+        return try await fetchResolvedPopularityMetrics(for: targets, now: now)
     }
 
-    private func fetchOfficialPopularityMetrics(
+    private func fetchResolvedPopularityMetrics(
         for targets: [KeywordResearchTarget],
         now: @Sendable () -> Date
     ) async throws -> [KeywordPopularityMetricEvidence] {
@@ -106,7 +109,7 @@ final class KeywordMetricsService: Sendable {
             for storefront in targetsByStorefront.keys.sorted() {
                 guard let storefrontTargets = targetsByStorefront[storefront] else { continue }
                 try Task.checkCancellation()
-                let popularities = try await fetchOfficialPopularityScores(
+                let resolution = try await fetchPopularityScoresWithFallback(
                     for: storefrontTargets.map(\.term),
                     countryOrRegion: storefront,
                     credentials: credentials,
@@ -116,7 +119,7 @@ final class KeywordMetricsService: Sendable {
 
                 for target in storefrontTargets {
                     let normalizedTerm = AppleAdsSearchTermPopularity.normalized(target.term)
-                    guard let popularity = popularities[normalizedTerm] else { continue }
+                    guard let popularity = resolution.scores[normalizedTerm] else { continue }
                     popularityByQueryKey[target.queryKey] = min(100, max(1, popularity))
                 }
             }
@@ -177,6 +180,89 @@ final class KeywordMetricsService: Sendable {
         }
 
         return latestRows.compactMapValues(\.popularity1to100)
+    }
+
+    private func fetchPopularityScoresWithFallback(
+        for searchTerms: [String],
+        countryOrRegion: String,
+        credentials: AppleAdsCredentials,
+        asOf date: Date
+    ) async throws -> AppleAdsPopularityResolution {
+        let officialScores = try await fetchOfficialPopularityScores(
+            for: searchTerms,
+            countryOrRegion: countryOrRegion,
+            credentials: credentials,
+            asOf: date
+        )
+        try Task.checkCancellation()
+
+        let missingTerms = Self.orderedUniqueTerms(searchTerms).filter { term in
+            officialScores[AppleAdsSearchTermPopularity.normalized(term)] == nil
+        }
+        guard !missingTerms.isEmpty else {
+            return AppleAdsPopularityResolution(scores: officialScores)
+        }
+
+        let fallbackAccess = await campaignManagementFallbackAccess()
+        let context: CampaignManagementPopularityContext
+        switch fallbackAccess {
+        case .available(let availableContext):
+            context = availableContext
+        case .requiresReconnect:
+            return AppleAdsPopularityResolution(
+                scores: officialScores,
+                missingTermErrorMessage: AppleAdsWebSessionExpiredError.message
+            )
+        case .unconfigured:
+            return AppleAdsPopularityResolution(scores: officialScores)
+        }
+
+        do {
+            let fallbackScores = try await campaignManagementClient.keywordPopularities(
+                for: missingTerms,
+                storefrontCode: countryOrRegion,
+                adamId: context.appStoreID,
+                session: context.webSession
+            )
+            try Task.checkCancellation()
+            await webSessionStore.clearReconnectRequirement(for: context.webSession)
+
+            var scores = officialScores
+            for (term, score) in fallbackScores where scores[term] == nil {
+                scores[term] = score
+            }
+            return AppleAdsPopularityResolution(scores: scores)
+        } catch {
+            if Self.isCancellation(error) {
+                throw error
+            }
+            if error is AppleAdsWebSessionExpiredError {
+                await webSessionStore.markReconnectRequired(for: context.webSession)
+            }
+            return AppleAdsPopularityResolution(
+                scores: officialScores,
+                missingTermErrorMessage: OpenASOError.map(error).localizedDescription
+            )
+        }
+    }
+
+    @MainActor
+    private func campaignManagementFallbackAccess() -> CampaignManagementFallbackAccess {
+        guard let appStoreID = settingsStore.popularityContextAppStoreID,
+              let webSession = webSessionStore.recoverSessionIfNeeded(),
+              webSession.isComplete
+        else {
+            return .unconfigured
+        }
+        guard !webSessionStore.requiresReconnect(for: webSession) else {
+            return .requiresReconnect
+        }
+        return .available(
+            CampaignManagementPopularityContext(
+                appStoreID: appStoreID,
+                webSession: webSession
+            )
+        )
     }
 
     /// Applies fetched evidence to shared query metrics without touching
@@ -328,7 +414,7 @@ final class KeywordMetricsService: Sendable {
             let storefrontCode = storefrontTracks.first?.storefront ?? "US"
 
             do {
-                let popularities = try await fetchOfficialPopularityScores(
+                let resolution = try await fetchPopularityScoresWithFallback(
                     for: storefrontTracks.map(\.term),
                     countryOrRegion: storefrontCode,
                     credentials: credentials,
@@ -338,8 +424,10 @@ final class KeywordMetricsService: Sendable {
                 for track in storefrontTracks {
                     guard !Task.isCancelled else { return outcomes }
                     let key = AppleAdsSearchTermPopularity.normalized(track.term)
-                    let result = popularities[key].map(AppleAdsPopularityResult.success)
-                        ?? .notFound
+                    let result = Self.popularityResult(
+                        forNormalizedTerm: key,
+                        resolution: resolution
+                    )
                     Self.applyMetricsPayloadSafely(
                         Self.makeAppleAdsMetrics(popularityResult: result),
                         for: track,
@@ -513,9 +601,9 @@ final class KeywordMetricsService: Sendable {
             try Task.checkCancellation()
             let storefrontTracks = group.tracks
             let storefrontCode = storefrontTracks.first?.storefront ?? "US"
-            let popularities: [String: Int]
+            let resolution: AppleAdsPopularityResolution
             do {
-                popularities = try await fetchOfficialPopularityScores(
+                resolution = try await fetchPopularityScoresWithFallback(
                     for: storefrontTracks.map(\.term),
                     countryOrRegion: storefrontCode,
                     credentials: credentials,
@@ -545,14 +633,10 @@ final class KeywordMetricsService: Sendable {
 
             for candidate in storefrontTracks {
                 try Task.checkCancellation()
-                let result: AppleAdsPopularityResult
-                if let popularity = popularities[
-                    AppleAdsSearchTermPopularity.normalized(candidate.term)
-                ] {
-                    result = .success(popularity)
-                } else {
-                    result = .notFound
-                }
+                let result = Self.popularityResult(
+                    forNormalizedTerm: AppleAdsSearchTermPopularity.normalized(candidate.term),
+                    resolution: resolution
+                )
                 let outcome = try await persistMetricsPayload(
                     Self.makeAppleAdsMetrics(popularityResult: result),
                     for: candidate,
@@ -862,6 +946,26 @@ final class KeywordMetricsService: Sendable {
         }
         var seenQueryKeys: Set<String> = []
         return ordered.filter { seenQueryKeys.insert($0.queryKey).inserted }
+    }
+
+    private static func orderedUniqueTerms(_ terms: [String]) -> [String] {
+        var seenKeys: Set<String> = []
+        return terms.filter { term in
+            seenKeys.insert(AppleAdsSearchTermPopularity.normalized(term)).inserted
+        }
+    }
+
+    private static func popularityResult(
+        forNormalizedTerm term: String,
+        resolution: AppleAdsPopularityResolution
+    ) -> AppleAdsPopularityResult {
+        if let score = resolution.scores[term] {
+            return .success(score)
+        }
+        if let message = resolution.missingTermErrorMessage {
+            return .failure(message)
+        }
+        return .notFound
     }
 
     private static func upsertPopularityMetrics(
@@ -1229,6 +1333,22 @@ private struct KeywordMetricsTrackGroup {
 
 private struct KeywordMetricsCandidateGroup: Sendable {
     let tracks: [KeywordMetricsRefreshCandidate]
+}
+
+private struct CampaignManagementPopularityContext: Sendable {
+    let appStoreID: Int64
+    let webSession: AppleAdsWebSession
+}
+
+private enum CampaignManagementFallbackAccess: Sendable {
+    case available(CampaignManagementPopularityContext)
+    case requiresReconnect
+    case unconfigured
+}
+
+private struct AppleAdsPopularityResolution: Sendable {
+    let scores: [String: Int]
+    var missingTermErrorMessage: String? = nil
 }
 
 private struct KeywordMetricsPayload: Sendable {
