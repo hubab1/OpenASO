@@ -8,6 +8,7 @@ enum AppleAdsSessionCookies {
     static let host = "app-ads.apple.com"
     static let xsrfToken = "XSRF-TOKEN-CM"
     static let session = "searchads.soid"
+    static let authenticatedSession = "app-ads.sid"
 }
 
 struct AppleAdsWebLoginCapture: Equatable, Sendable {
@@ -108,16 +109,15 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         let appleAdsCookies = cookies.filter(Self.appliesToAppleAds)
 
-        guard Self.isCaptureReady(url: webView.url, cookies: appleAdsCookies),
-              let xsrfCookie = appleAdsCookies.first(where: { $0.name == AppleAdsSessionCookies.xsrfToken }),
-              appleAdsCookies.contains(where: { $0.name == AppleAdsSessionCookies.session })
-        else {
+        guard Self.isCaptureReady(url: webView.url, cookies: appleAdsCookies) else {
             return nil
         }
 
         return AppleAdsWebLoginCapture(
             cookieHeader: Self.cookieHeader(from: appleAdsCookies),
-            xsrfToken: xsrfCookie.value,
+            xsrfToken: appleAdsCookies.first {
+                $0.name == AppleAdsSessionCookies.xsrfToken
+            }?.value ?? "",
             accountName: await accountName(from: webView)
         )
     }
@@ -151,9 +151,15 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
     }
 
     nonisolated static func isCaptureReady(url: URL?, cookies: [HTTPCookie]) -> Bool {
-        url != nil
-            && cookies.contains { $0.name == AppleAdsSessionCookies.xsrfToken }
-            && cookies.contains { $0.name == AppleAdsSessionCookies.session }
+        guard url != nil,
+              cookies.contains(where: { $0.name == AppleAdsSessionCookies.session }) else {
+            return false
+        }
+
+        return cookies.contains { cookie in
+            [AppleAdsSessionCookies.xsrfToken, AppleAdsSessionCookies.authenticatedSession]
+                .contains(cookie.name)
+        }
     }
 
     static func prepareForSignIn(using dataStore: WKWebsiteDataStore) async -> Bool {
@@ -176,7 +182,11 @@ final class AppleAdsWebLoginController: NSObject, AppleAdsWebLoginCapturing {
 
     nonisolated static func isCapturedAppleAdsSessionCookie(_ cookie: HTTPCookie) -> Bool {
         appliesToAppleAds(cookie)
-            && [AppleAdsSessionCookies.xsrfToken, AppleAdsSessionCookies.session].contains(cookie.name)
+            && [
+                AppleAdsSessionCookies.xsrfToken,
+                AppleAdsSessionCookies.session,
+                AppleAdsSessionCookies.authenticatedSession
+            ].contains(cookie.name)
     }
 
     nonisolated static func isAuthenticatedAppleAdsPage(_ url: URL?) -> Bool {

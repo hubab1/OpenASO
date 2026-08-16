@@ -1093,6 +1093,35 @@ struct AppServicesDependencyTests {
     }
 
     @Test
+    func cmPopularityClientSupportsModernSessionWithoutLegacyXSRFHeader() async throws {
+        var xsrfHeader: String?
+        let client = MockHTTPClient { request in
+            xsrfHeader = request.value(forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+            return (
+                Data(#"{"status":"success","data":[{"name":"focus","popularity":74}]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let session = AppleAdsWebSession(
+            cookieHeader: "app-ads.sid=authenticated-session; searchads.soid=account",
+            xsrfToken: "",
+            updatedAt: .now
+        )
+
+        let popularities = try await AppleAdsCMPopularityClient(httpClient: client)
+            .keywordPopularities(
+                for: ["focus"],
+                storefrontCode: "us",
+                adamId: 123_456_789,
+                session: session
+            )
+
+        #expect(session.isComplete)
+        #expect(xsrfHeader == nil)
+        #expect(popularities["focus"] == 74)
+    }
+
+    @Test
     func cmPopularityClientClassifiesUnauthorizedAsExpiredSession() async {
         await #expect(throws: AppleAdsWebSessionExpiredError()) {
             _ = try await cmPopularities(statusCode: 401)
