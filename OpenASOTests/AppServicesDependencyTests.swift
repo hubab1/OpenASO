@@ -818,12 +818,60 @@ struct AppServicesDependencyTests {
     }
 
     @Test
-    func debugBuildFallsBackToLoginKeychainOnlyForMissingEntitlement() {
-        #if DEBUG
+    func systemKeychainFallsBackToLoginKeychainOnlyForMissingEntitlement() {
         #expect(SystemKeychainService.shouldUseLegacyWriteFallback(for: errSecMissingEntitlement))
-        #endif
         #expect(!SystemKeychainService.shouldUseLegacyWriteFallback(for: errSecAuthFailed))
         #expect(!SystemKeychainService.shouldUseLegacyWriteFallback(for: errSecInteractionNotAllowed))
+    }
+
+    @Test
+    func systemKeychainUsesLoginKeychainWhenDataProtectionEntitlementIsMissing() throws {
+        var updatedQueries: [[String: Any]] = []
+        var addedQueries: [[String: Any]] = []
+        let keychain = SystemKeychainService(
+            update: { query, _ in
+                let query = query as NSDictionary as! [String: Any]
+                updatedQueries.append(query)
+                return query[kSecUseDataProtectionKeychain as String] as? Bool == true
+                    ? errSecMissingEntitlement
+                    : errSecItemNotFound
+            },
+            add: { query, _ in
+                addedQueries.append(query as NSDictionary as! [String: Any])
+                return errSecSuccess
+            }
+        )
+
+        try keychain.save(Data("secret".utf8), service: "service", account: "account")
+
+        #expect(updatedQueries.count == 2)
+        #expect(updatedQueries.first?[kSecUseDataProtectionKeychain as String] as? Bool == true)
+        #expect(updatedQueries.last?[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(addedQueries.count == 1)
+        #expect(addedQueries.first?[kSecUseDataProtectionKeychain as String] == nil)
+    }
+
+    @Test
+    func systemKeychainPreservesLegacyItemWhenProtectedMigrationLacksEntitlement() {
+        let data = Data("secret".utf8)
+        var readCount = 0
+        var deletedQueries: [[String: Any]] = []
+        let keychain = SystemKeychainService(
+            copyMatching: { _, result in
+                readCount += 1
+                guard readCount == 2 else { return errSecItemNotFound }
+                result?.pointee = data as CFData
+                return errSecSuccess
+            },
+            update: { _, _ in errSecMissingEntitlement },
+            delete: { query in
+                deletedQueries.append(query as NSDictionary as! [String: Any])
+                return errSecSuccess
+            }
+        )
+
+        #expect(keychain.readData(service: "service", account: "account") == .success(data))
+        #expect(deletedQueries.isEmpty)
     }
 
     @Test

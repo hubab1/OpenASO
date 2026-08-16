@@ -41,22 +41,40 @@ extension KeychainService {
 
 struct SystemKeychainService: KeychainService {
     typealias CopyMatching = (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
+    typealias Update = (CFDictionary, CFDictionary) -> OSStatus
+    typealias Add = (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
+    typealias Delete = (CFDictionary) -> OSStatus
     typealias ReadFailureReporter = (KeychainReadFailure) -> Void
 
     private static let logger = Logger(subsystem: OpenASOLog.subsystem, category: "keychain")
 
     private let copyMatching: CopyMatching
+    private let update: Update
+    private let add: Add
+    private let delete: Delete
     private let reportReadFailure: ReadFailureReporter
 
     init(
         copyMatching: @escaping CopyMatching = { query, result in
             SecItemCopyMatching(query, result)
         },
+        update: @escaping Update = { query, attributes in
+            SecItemUpdate(query, attributes)
+        },
+        add: @escaping Add = { query, result in
+            SecItemAdd(query, result)
+        },
+        delete: @escaping Delete = { query in
+            SecItemDelete(query)
+        },
         reportReadFailure: @escaping ReadFailureReporter = { failure in
             SystemKeychainService.logReadFailure(failure)
         }
     ) {
         self.copyMatching = copyMatching
+        self.update = update
+        self.add = add
+        self.delete = delete
         self.reportReadFailure = reportReadFailure
     }
 
@@ -80,17 +98,10 @@ struct SystemKeychainService: KeychainService {
                 usesDataProtectionKeychain: false
             )
         )
-        #if DEBUG
-        // A debug build that had to use the legacy writer cannot prove that `save` migrated the
-        // item to the protected store, because `save` may itself have taken the debug fallback.
-        // Keep the source item so credentials and sessions survive the next development launch.
-        reportFailureIfNeeded(legacyResult)
-        return legacyResult
-        #else
         if case .success(let data) = legacyResult,
-           (try? save(data, service: service, account: account)) != nil
+           (try? saveToDataProtectionKeychain(data, service: service, account: account)) == true
         {
-            SecItemDelete(keychainQuery(
+            _ = delete(keychainQuery(
                 service: service,
                 account: account,
                 usesDataProtectionKeychain: false
@@ -98,7 +109,6 @@ struct SystemKeychainService: KeychainService {
         }
         reportFailureIfNeeded(legacyResult)
         return legacyResult
-        #endif
     }
 
     private func readData(query baseQuery: [String: Any]) -> KeychainReadResult {
@@ -133,21 +143,33 @@ struct SystemKeychainService: KeychainService {
     }
 
     func save(_ data: Data, service: String, account: String) throws {
+        guard try saveToDataProtectionKeychain(data, service: service, account: account) else {
+            try saveToLegacyKeychain(data, service: service, account: account)
+            return
+        }
+    }
+
+    /// Returns `false` when this signed process cannot use the Data Protection Keychain and the
+    /// caller should use the encrypted login Keychain instead.
+    private func saveToDataProtectionKeychain(
+        _ data: Data,
+        service: String,
+        account: String
+    ) throws -> Bool {
         let query = keychainQuery(
             service: service,
             account: account,
             usesDataProtectionKeychain: true
         )
         let attributes: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let status = update(query as CFDictionary, attributes as CFDictionary)
 
         if status == errSecSuccess {
-            return
+            return true
         }
 
         if Self.shouldUseLegacyWriteFallback(for: status) {
-            try saveToLegacyKeychain(data, service: service, account: account)
-            return
+            return false
         }
 
         guard status == errSecItemNotFound else {
@@ -158,25 +180,21 @@ struct SystemKeychainService: KeychainService {
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
 
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        let addStatus = add(addQuery as CFDictionary, nil)
         if Self.shouldUseLegacyWriteFallback(for: addStatus) {
-            try saveToLegacyKeychain(data, service: service, account: account)
-            return
+            return false
         }
         guard addStatus == errSecSuccess else {
             throw OpenASOError.providerUnavailable("Could not save item to Keychain.")
         }
+        return true
     }
 
-    /// Local ad-hoc/debug builds can lack the application identifier entitlement required by the
-    /// Data Protection Keychain. Keep Release on the protected store while allowing development
-    /// builds to use the encrypted macOS login Keychain that `readData` already migrates from.
+    /// Directly distributed and local builds can lack the application identifier entitlement
+    /// required by the Data Protection Keychain. In that case, use the encrypted macOS login
+    /// Keychain that `readData` already supports.
     nonisolated static func shouldUseLegacyWriteFallback(for status: OSStatus) -> Bool {
-        #if DEBUG
         status == errSecMissingEntitlement
-        #else
-        false
-        #endif
     }
 
     private func saveToLegacyKeychain(_ data: Data, service: String, account: String) throws {
@@ -186,7 +204,7 @@ struct SystemKeychainService: KeychainService {
             usesDataProtectionKeychain: false
         )
         let attributes: [String: Any] = [kSecValueData as String: data]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let updateStatus = update(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess {
             return
         }
@@ -198,18 +216,18 @@ struct SystemKeychainService: KeychainService {
         var addQuery = query
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        guard SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess else {
+        guard add(addQuery as CFDictionary, nil) == errSecSuccess else {
             throw OpenASOError.providerUnavailable("Could not save item to Keychain.")
         }
     }
 
     func delete(service: String, account: String) {
-        SecItemDelete(keychainQuery(
+        _ = delete(keychainQuery(
             service: service,
             account: account,
             usesDataProtectionKeychain: true
         ) as CFDictionary)
-        SecItemDelete(keychainQuery(
+        _ = delete(keychainQuery(
             service: service,
             account: account,
             usesDataProtectionKeychain: false
