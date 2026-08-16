@@ -222,7 +222,7 @@ struct AppServicesDependencyTests {
             keywordGeneration: addition.keyword.generation,
             policy: .requireNetwork
         )
-        #expect(missingCredentials.issue?.code == .missingSession)
+        #expect(missingCredentials.issue?.code == .missingContextApp)
         #expect(requestCount == 0)
 
         let credentials = AppleAdsCredentials(
@@ -260,6 +260,75 @@ struct AppServicesDependencyTests {
         )
         #expect(refreshedWithReplacementAccount.popularityScore == 64)
         #expect(requestCount == 2)
+    }
+
+    @Test
+    func automaticResearchMetricsWorkflowUsesWebAccessWithoutPlatformCredentials() async throws {
+        struct RequestBody: Decodable {
+            let terms: [String]
+        }
+
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let contextAppStoreID: Int64 = 6_608_976_383
+        var requestedTerms: [String] = []
+        let client = MockHTTPClient { request in
+            #expect(request.url?.path == "/cm/api/v2/keywords/popularities")
+            let body = try JSONDecoder().decode(
+                RequestBody.self,
+                from: try #require(request.httpBody)
+            )
+            requestedTerms = body.terms
+            return (
+                Data(
+                    #"{"status":"success","data":[{"name":"web workflow","popularity":65}]}"#.utf8
+                ),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let services = AppServices.mocked(
+            httpClient: client,
+            modelContainer: container,
+            appleAdsPlatformAPI: FailingSearchPopularityAPI(
+                error: .providerUnavailable("Platform API should not run")
+            )
+        )
+        try services.appleAdsWebSessionStore.save(
+            AppleAdsWebSession(
+                cookieHeader: "cookie=value; XSRF-TOKEN-CM=token",
+                xsrfToken: "token",
+                updatedAt: .now
+            )
+        )
+        services.settingsStore.savePopularityContext(
+            appStoreID: contextAppStoreID,
+            storefrontCode: "US"
+        )
+        let projectStore = try #require(services.keywordResearchProjectStore)
+        let workflow = try #require(services.keywordResearchMetricsWorkflow)
+        let project = try await projectStore.createProject(
+            name: "Web metrics wiring",
+            defaultStorefront: "us",
+            defaultPlatform: .iphone
+        )
+        let addition = try await projectStore.addKeyword(
+            to: project.revision,
+            term: "web workflow",
+            storefront: "us",
+            platform: .iphone
+        )
+
+        let refreshed = try await workflow.refresh(
+            projectGeneration: addition.project.generation,
+            keywordGeneration: addition.keyword.generation,
+            policy: .requireNetwork
+        )
+
+        #expect(!services.appleAdsCredentialStore.hasCompleteAPICredentials)
+        #expect(requestedTerms == ["web workflow"])
+        #expect(refreshed.popularityScore == 65)
+        #expect(refreshed.provenance == .requestedContext(appStoreID: contextAppStoreID))
+        #expect(refreshed.disposition == .refreshed)
+        #expect(refreshed.issue == nil)
     }
 
     @Test
@@ -1090,6 +1159,35 @@ struct AppServicesDependencyTests {
         #expect(popularities["term 1"] == 1)
         #expect(popularities["term 100"] == 100)
         #expect(popularities["term 101"] == 1)
+    }
+
+    @Test
+    func cmPopularityClientSupportsModernSessionWithoutLegacyXSRFHeader() async throws {
+        var xsrfHeader: String?
+        let client = MockHTTPClient { request in
+            xsrfHeader = request.value(forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+            return (
+                Data(#"{"status":"success","data":[{"name":"focus","popularity":74}]}"#.utf8),
+                makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+            )
+        }
+        let session = AppleAdsWebSession(
+            cookieHeader: "app-ads.sid=authenticated-session; searchads.soid=account",
+            xsrfToken: "",
+            updatedAt: .now
+        )
+
+        let popularities = try await AppleAdsCMPopularityClient(httpClient: client)
+            .keywordPopularities(
+                for: ["focus"],
+                storefrontCode: "us",
+                adamId: 123_456_789,
+                session: session
+            )
+
+        #expect(session.isComplete)
+        #expect(xsrfHeader == nil)
+        #expect(popularities["focus"] == 74)
     }
 
     @Test

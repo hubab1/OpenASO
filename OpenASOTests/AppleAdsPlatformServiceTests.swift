@@ -200,6 +200,31 @@ struct AppleAdsPlatformServiceTests {
         #expect(credentials.adAccountID == "30")
     }
 
+    @Test
+    func environmentCredentialsDecodeEscapedPrivateKeyNewlines() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let environmentURL = temporaryDirectory.appendingPathComponent(".env")
+        try #"APPLE_SEARCH_ADS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\ncHJpdmF0ZQ==\n-----END PRIVATE KEY-----""#
+            .write(to: environmentURL, atomically: true, encoding: .utf8)
+
+        let credentials = EnvironmentAppleAdsCredentials.load(environment: [
+            "OPENASO_ENV_FILE": environmentURL.path,
+        ])
+
+        #expect(credentials.privateKey == """
+        -----BEGIN PRIVATE KEY-----
+        cHJpdmF0ZQ==
+        -----END PRIVATE KEY-----
+        """)
+    }
+
     @MainActor
     @Test
     func credentialStorePersistsAdAccountAndKeepsPrivateKeyInKeychain() throws {

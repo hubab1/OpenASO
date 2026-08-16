@@ -313,8 +313,15 @@ final class AppServices {
                     metricsService: keywordMetricsService,
                     rankingCoordinator: refreshCoordinator,
                     configurationProvider: {
+                        let storedCredentials = appleAdsCredentialStore.apiCredentials
+                        let webSession = appleAdsWebSessionStore.recoverSessionIfNeeded()
                         return KeywordResearchMetricsConfiguration(
-                            credentials: appleAdsCredentialStore.apiCredentials
+                            contextAppStoreID: settingsStore.popularityContextAppStoreID,
+                            webSession: webSession,
+                            requiresReconnect: webSession.map {
+                                appleAdsWebSessionStore.requiresReconnect(for: $0)
+                            } ?? false,
+                            credentials: storedCredentials.canVerify ? storedCredentials : nil
                         )
                     },
                     reconnectMarker: { attemptedSession in
@@ -583,7 +590,7 @@ final class AppServices {
 
     func refreshStaleKeywordPopularityAfterAppleAdsConnection() {
         guard let backgroundModelStore,
-              appleAdsCredentialStore.hasCompleteAPICredentials
+              hasAppleAdsPopularityConnection
         else {
             return
         }
@@ -650,6 +657,11 @@ final class AppServices {
                 )
             }
         }
+    }
+
+    var hasAppleAdsPopularityConnection: Bool {
+        appleAdsCredentialStore.hasCompleteAPICredentials
+            || (appleAdsWebSessionStore.hasSession && !appleAdsWebSessionStore.requiresReconnect)
     }
 
     static func preview(httpClient: HTTPClient, modelContainer: ModelContainer? = nil) -> AppServices {

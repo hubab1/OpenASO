@@ -63,7 +63,7 @@ enum AppleAdsConnectionState: Equatable {
     var message: String {
         switch self {
         case .notConnected:
-            return "Connect Apple Ads to fetch keyword popularity."
+            return "Connect your Apple Ads account in the browser to fetch popularity scores missing from Apple's primary service."
         case .accountSelectionRequired:
             return AppleAdsWebLoginError.explicitAccountRequired.localizedDescription
         case .openingBrowser:

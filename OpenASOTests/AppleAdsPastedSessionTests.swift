@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WebKit
 @testable import OpenASO
 
 struct AppleAdsPastedSessionTests {
@@ -81,6 +82,119 @@ struct AppleAdsPastedSessionTests {
             URL(string: "https://account.apple.com/sign-in")
         ))
         #expect(!AppleAdsWebLoginController.isAuthenticatedAppleAdsPage(nil))
+    }
+
+    @MainActor
+    @Test
+    func webLoginUsesPersistentBrowserStorage() {
+        #expect(AppleAdsWebLoginController.makeWebsiteDataStore().isPersistent)
+    }
+
+    @Test
+    func webLoginCapturesUsableCookiesDuringAppleAdsAuthRedirect() throws {
+        let sessionCookie = try #require(HTTPCookie(properties: [
+            .domain: ".app-ads.apple.com",
+            .path: "/",
+            .name: AppleAdsSessionCookies.session,
+            .value: "session",
+            .secure: "TRUE"
+        ]))
+        let xsrfCookie = try #require(HTTPCookie(properties: [
+            .domain: "app-ads.apple.com",
+            .path: "/",
+            .name: AppleAdsSessionCookies.xsrfToken,
+            .value: "token",
+            .secure: "TRUE"
+        ]))
+
+        #expect(AppleAdsWebLoginController.isCaptureReady(
+            url: URL(string: "https://app-ads.apple.com/auth/callback"),
+            cookies: [sessionCookie, xsrfCookie]
+        ))
+    }
+
+    @Test
+    func webLoginCapturesModernSessionWithoutLegacyXSRFCookie() throws {
+        let authenticatedSessionCookie = try #require(HTTPCookie(properties: [
+            .domain: ".apple.com",
+            .path: "/",
+            .name: AppleAdsSessionCookies.authenticatedSession,
+            .value: "authenticated-session",
+            .secure: "TRUE"
+        ]))
+        let accountCookie = try #require(HTTPCookie(properties: [
+            .domain: ".apple.com",
+            .path: "/",
+            .name: AppleAdsSessionCookies.session,
+            .value: "account",
+            .secure: "TRUE"
+        ]))
+
+        #expect(AppleAdsWebLoginController.isCaptureReady(
+            url: URL(string: "https://app-ads.apple.com/cm/app/report"),
+            cookies: [authenticatedSessionCookie, accountCookie]
+        ))
+    }
+
+    @Test
+    func modernCookieSessionIsCompleteWithoutLegacyXSRFToken() {
+        let session = AppleAdsWebSession(
+            cookieHeader: "app-ads.sid=authenticated-session; searchads.soid=account",
+            xsrfToken: "",
+            updatedAt: updatedAt
+        )
+
+        #expect(session.isComplete)
+    }
+
+    @MainActor
+    @Test
+    func webLoginPreparationPreservesTrustedBrowserCookiesAndRemovesStaleSession() async throws {
+        let dataStore = WKWebsiteDataStore.nonPersistent()
+        let cookieStore = dataStore.httpCookieStore
+        let identityCookie = try #require(HTTPCookie(properties: [
+            .domain: "idmsa.apple.com",
+            .path: "/",
+            .name: "trusted-browser",
+            .value: "trusted",
+            .secure: "TRUE"
+        ]))
+        let sessionCookie = try #require(HTTPCookie(properties: [
+            .domain: ".app-ads.apple.com",
+            .path: "/",
+            .name: AppleAdsSessionCookies.session,
+            .value: "stale-session",
+            .secure: "TRUE"
+        ]))
+        let xsrfCookie = try #require(HTTPCookie(properties: [
+            .domain: "app-ads.apple.com",
+            .path: "/",
+            .name: AppleAdsSessionCookies.xsrfToken,
+            .value: "stale-token",
+            .secure: "TRUE"
+        ]))
+        let authenticatedSessionCookie = try #require(HTTPCookie(properties: [
+            .domain: ".apple.com",
+            .path: "/",
+            .name: AppleAdsSessionCookies.authenticatedSession,
+            .value: "stale-authenticated-session",
+            .secure: "TRUE"
+        ]))
+        await cookieStore.setCookie(identityCookie)
+        await cookieStore.setCookie(sessionCookie)
+        await cookieStore.setCookie(xsrfCookie)
+        await cookieStore.setCookie(authenticatedSessionCookie)
+
+        let reusesExplicitAccount = await AppleAdsWebLoginController.prepareForSignIn(
+            using: dataStore
+        )
+        let retainedCookies = await cookieStore.allCookies()
+
+        #expect(reusesExplicitAccount)
+        #expect(retainedCookies.contains { $0.name == identityCookie.name })
+        #expect(!retainedCookies.contains { $0.name == sessionCookie.name })
+        #expect(!retainedCookies.contains { $0.name == xsrfCookie.name })
+        #expect(!retainedCookies.contains { $0.name == authenticatedSessionCookie.name })
     }
 
     @Test

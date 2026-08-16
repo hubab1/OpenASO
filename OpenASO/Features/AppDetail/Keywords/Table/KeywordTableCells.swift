@@ -421,9 +421,11 @@ private struct KeywordPopularityIndicatorPopover: View {
             }
 
             if showsSettingsButton {
-                Button(action: openAppleAdsSettings) {
-                    Label("Open Apple Ads Settings", systemImage: "gearshape")
-                }
+                Button(
+                    settingsButtonTitle,
+                    systemImage: "gearshape",
+                    action: openAppleAdsSettings
+                )
                 .controlSize(.regular)
             }
         }
@@ -446,6 +448,14 @@ private struct KeywordPopularityIndicatorPopover: View {
             return true
         case .none, .unavailable:
             return false
+        }
+    }
+
+    private var settingsButtonTitle: String {
+        if case .needsSetup = state {
+            "Connect Apple Ads"
+        } else {
+            "Open Apple Ads Settings"
         }
     }
 
@@ -473,7 +483,7 @@ private struct KeywordPopularityIndicatorPopover: View {
         case .reconnectRequired:
             return "Refresh your Apple Ads session before requesting new popularity data. Existing cached values remain available."
         case .needsSetup:
-            return "Popularity could not be fetched for this keyword. Connect or refresh Apple Ads so OpenASO can detect a linked app automatically."
+            return "Apple's primary service did not return a score for this keyword. Connect your Apple Ads account so OpenASO can check Apple's web service too."
         case .unavailable:
             return "Apple Ads keyword popularity is not available for this keyword's storefront."
         }

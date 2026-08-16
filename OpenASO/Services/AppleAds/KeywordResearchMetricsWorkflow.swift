@@ -595,7 +595,7 @@ private extension KeywordResearchMetricsWorkflow {
         _ configuration: KeywordResearchMetricsConfiguration
     ) -> KeywordResearchMetricsIssue? {
         if let credentials = configuration.credentials {
-            guard credentials.isComplete else {
+            guard credentials.canVerify else {
                 return issue(.missingSession)
             }
             return nil
@@ -636,11 +636,11 @@ private extension KeywordResearchMetricsWorkflow {
         case .missingContextApp:
             message = "Connect Apple Ads and choose a linked context app before refreshing popularity."
         case .missingSession:
-            message = "Configure and verify Apple Ads Platform API credentials before refreshing popularity."
+            message = "Connect Apple Ads using either the Platform API or Web Access before refreshing popularity."
         case .reconnectRequired:
-            message = "Verify the current Apple Ads Platform API credentials before refreshing popularity."
+            message = "Refresh Apple Ads Web Access or connect the Platform API before refreshing popularity."
         case .sessionExpired:
-            message = "Apple Ads Platform API authorization expired. Verify the credentials in Settings."
+            message = "Apple Ads authorization expired. Refresh Web Access or verify the Platform API in Settings."
         case .configurationChanged:
             message = "Apple Ads settings changed during refresh. Run it again with the current configuration."
         case .unsupportedStorefront:

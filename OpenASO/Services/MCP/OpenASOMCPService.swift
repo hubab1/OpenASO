@@ -2416,7 +2416,7 @@ final class OpenASOMCPService: Sendable {
         )
       }
     } else {
-      let message = "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+      let message = "Popularity failed to fetch. Connect Apple Ads using either the Platform API or Web Access in Settings."
       try await backgroundModelStore.write { modelContext in
         for identityKey in trackIdentityKeys {
           guard let track = try Self.fetchTrackedKeyword(identityKey: identityKey, in: modelContext)
@@ -2465,7 +2465,7 @@ final class OpenASOMCPService: Sendable {
           rankingProvenance: nil,
           error: error.map {
             OpenASOMCPErrorDTO(
-              code: $0.localizedCaseInsensitiveContains("Apple Ads Platform API credentials")
+              code: $0.localizedCaseInsensitiveContains("Connect Apple Ads")
                 ? "apple_ads_not_configured"
                 : "keyword_popularity_unavailable",
               message: $0

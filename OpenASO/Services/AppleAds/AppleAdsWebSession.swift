@@ -24,8 +24,15 @@ struct AppleAdsWebSession: Codable, Equatable, Sendable {
     }
 
     var isComplete: Bool {
-        !cookieHeader.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !xsrfToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasCookies = !cookieHeader.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasLegacyAuthentication = !xsrfToken
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+        let cookieNames = Set(AppleAdsPastedSession.cookiePairs(in: cookieHeader).map(\.name))
+        let hasModernAuthentication = cookieNames.contains(AppleAdsSessionCookies.session)
+            && cookieNames.contains(AppleAdsSessionCookies.authenticatedSession)
+
+        return hasCookies && (hasLegacyAuthentication || hasModernAuthentication)
     }
 }
 
@@ -447,7 +454,9 @@ final class AppleAdsWebSessionManager {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(session.cookieHeader, forHTTPHeaderField: "Cookie")
-        request.setValue(session.xsrfToken, forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+        if !session.xsrfToken.isEmpty {
+            request.setValue(session.xsrfToken, forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+        }
         request.setValue("https://app-ads.apple.com", forHTTPHeaderField: "Origin")
         request.setValue("https://app-ads.apple.com/cm/app", forHTTPHeaderField: "Referer")
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
@@ -470,7 +479,9 @@ final class AppleAdsWebSessionManager {
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(session.cookieHeader, forHTTPHeaderField: "Cookie")
-        request.setValue(session.xsrfToken, forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+        if !session.xsrfToken.isEmpty {
+            request.setValue(session.xsrfToken, forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+        }
         request.setValue("https://app-ads.apple.com", forHTTPHeaderField: "Origin")
         request.setValue("https://app-ads.apple.com/", forHTTPHeaderField: "Referer")
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
@@ -849,7 +860,9 @@ struct AppleAdsCMPopularityClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(session.cookieHeader, forHTTPHeaderField: "Cookie")
-        request.setValue(session.xsrfToken, forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+        if !session.xsrfToken.isEmpty {
+            request.setValue(session.xsrfToken, forHTTPHeaderField: "X-XSRF-TOKEN-CM")
+        }
         request.setValue("https://app-ads.apple.com", forHTTPHeaderField: "Origin")
         request.setValue("https://app-ads.apple.com/", forHTTPHeaderField: "Referer")
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")

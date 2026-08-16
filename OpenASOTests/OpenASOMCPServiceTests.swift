@@ -968,7 +968,7 @@ struct OpenASOMCPServiceTests {
         #expect(metricsRefresh.outcomes.first?.error?.code == "apple_ads_not_configured")
         #expect(
             metricsRefresh.outcomes.first?.track.statusMessage
-                == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+                == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.anyConnectionRequired)"
         )
     }
 
@@ -2057,7 +2057,7 @@ struct OpenASOMCPServiceTests {
         #expect(metricsRefresh.outcomes.first?.error?.code == "apple_ads_not_configured")
         #expect(
             metricsRefresh.outcomes.first?.error?.message
-                == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+                == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.anyConnectionRequired)"
         )
     }
 
