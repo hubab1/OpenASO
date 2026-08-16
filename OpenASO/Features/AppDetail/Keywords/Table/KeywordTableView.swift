@@ -234,7 +234,7 @@ struct KeywordTableView: View, Equatable {
     }
 
     private func openAppleAdsSettings() {
-        services.settingsStore.requestSettingsFocus(.platformAPI)
+        services.settingsStore.requestSettingsFocus(.webSession)
         openSettings()
     }
 

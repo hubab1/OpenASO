@@ -395,6 +395,38 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
+    func apiCredentialsWithoutSelectedAdAccountCanRefreshPopularity() async throws {
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                Issue.record("Unexpected request to \(request.url?.absoluteString ?? "unknown URL")")
+                throw OpenASOError.providerUnavailable("Unexpected request")
+            },
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(
+                apps: [],
+                popularityRows: [officialFlightTrackerPopularity]
+            )
+        )
+        try services.appleAdsCredentialStore.saveAPICredentials(
+            AppleAdsCredentials(
+                clientID: "test-client",
+                teamID: "test-team",
+                keyID: "test-key",
+                privateKey: Self.privateKey
+            )
+        )
+        let target = try makePopularityTarget(term: "flight tracker", storefront: "us")
+
+        let evidence = try await services.keywordMetricsService.fetchPopularityMetrics(
+            for: [target],
+            now: { Date(timeIntervalSince1970: 500) }
+        )
+
+        #expect(services.appleAdsCredentialStore.apiCredentials.adAccountID.isEmpty)
+        #expect(services.appleAdsCredentialStore.hasCompleteAPICredentials)
+        #expect(evidence.first?.popularityScore == 60)
+    }
+
+    @Test
     func foregroundOfficialPopularityFallsBackPerMissingKeywordWithoutChangingPresentedSource() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
@@ -613,7 +645,7 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
-    func unavailableOfficialPopularityClearsLegacyScoreWithoutReportingFailure() async throws {
+    func unavailableOfficialPopularityPromptsForWebFallbackAndPreservesLegacyScore() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
         let services = AppServices.mocked(
@@ -682,22 +714,22 @@ struct KeywordMetricsServiceTests {
         let progressUpdates = await progressRecorder.snapshot()
 
         #expect(result.outcomes.count == 1)
-        #expect(result.outcomes.first?.disposition == .skipped)
-        #expect(result.skippedCount == 1)
-        #expect(result.failureCount == 0)
-        #expect(result.firstErrorMessage == nil)
-        #expect(stored.popularityScore == nil)
-        #expect(stored.statusMessage?.contains("at least 500 searches and 10 impressions") == true)
+        #expect(result.outcomes.first?.disposition == .failed)
+        #expect(result.skippedCount == 0)
+        #expect(result.failureCount == 1)
+        #expect(result.firstErrorMessage?.contains("Connect your Apple Ads account") == true)
+        #expect(stored.popularityScore == 74)
+        #expect(stored.statusMessage == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.connectionRequired)")
         #expect(progressUpdates == [
             .init(completed: 0, total: 1, failureCount: 0),
-            .init(completed: 1, total: 1, failureCount: 0),
+            .init(completed: 1, total: 1, failureCount: 1),
         ])
 
         let secondResult = try await services.keywordMetricsService.refreshMetricsBatch(
             for: [track.identityKey],
             using: BackgroundModelStore(modelContainer: container)
         )
-        let retainedUnavailableStatus = try await BackgroundModelStore(
+        let retainedFallbackPrompt = try await BackgroundModelStore(
             modelContainer: container
         ).read { context in
             let storedTrack = try #require(context.model(for: trackID) as? TrackedAppKeyword)
@@ -707,9 +739,9 @@ struct KeywordMetricsServiceTests {
             ).popularityMessage
         }
 
-        #expect(secondResult.outcomes.first?.disposition == .upToDate)
-        #expect(secondResult.failureCount == 0)
-        #expect(retainedUnavailableStatus?.contains("at least 500 searches and 10 impressions") == true)
+        #expect(secondResult.outcomes.first?.disposition == .failed)
+        #expect(secondResult.failureCount == 1)
+        #expect(retainedFallbackPrompt?.contains("Connect your Apple Ads account") == true)
     }
 
     @Test
@@ -2227,7 +2259,7 @@ struct KeywordMetricsServiceTests {
             modelContext: modelContext,
             popularityScore: nil,
             updatedAt: now,
-            statusMessage: "Popularity failed to fetch. Connect an Apple Ads web session in Settings."
+            statusMessage: "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.connectionRequired)"
         )
         let unavailableMessage = "Popularity unavailable. Apple Ads returned no eligible row."
         let unavailableRow = makeRow(
@@ -2241,7 +2273,11 @@ struct KeywordMetricsServiceTests {
 
         #expect(freshRow.popularityIndicatorState(now: now) == .none)
         #expect(staleRow.popularityIndicatorState(now: now) == .stale(lastUpdatedAt: staleUpdatedAt))
-        #expect(needsSetupRow.popularityIndicatorState(now: now) == .needsSetup(message: "Popularity failed to fetch. Connect an Apple Ads web session in Settings."))
+        #expect(
+            needsSetupRow.popularityIndicatorState(now: now) == .needsSetup(
+                message: "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.connectionRequired)"
+            )
+        )
         #expect(unavailableRow.displayedPopularityScore == nil)
         #expect(unavailableRow.popularitySortValue == -1)
         #expect(unavailableRow.popularityIndicatorState(now: now) == .unavailable(message: unavailableMessage))

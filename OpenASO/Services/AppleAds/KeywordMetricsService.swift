@@ -142,7 +142,7 @@ final class KeywordMetricsService: Sendable {
 
     private func requireAppleAdsCredentials() async throws -> AppleAdsCredentials {
         let credentials = await credentialStore.apiCredentials
-        guard credentials.isComplete else {
+        guard credentials.canVerify else {
             throw OpenASOError.providerUnavailable(
                 "Configure and verify Apple Ads Platform API credentials in Settings."
             )
@@ -214,7 +214,10 @@ final class KeywordMetricsService: Sendable {
                 missingTermErrorMessage: AppleAdsWebSessionExpiredError.message
             )
         case .unconfigured:
-            return AppleAdsPopularityResolution(scores: officialScores)
+            return AppleAdsPopularityResolution(
+                scores: officialScores,
+                missingTermErrorMessage: AppleAdsPopularityFallbackMessaging.connectionRequired
+            )
         }
 
         do {
@@ -396,7 +399,7 @@ final class KeywordMetricsService: Sendable {
         }
 
         let credentials = credentialStore.apiCredentials
-        guard credentials.isComplete else {
+        guard credentials.canVerify else {
             _ = Self.applyPopularityResult(
                 .missingCredentials,
                 to: tracksNeedingPopularity,
@@ -573,7 +576,7 @@ final class KeywordMetricsService: Sendable {
         }
 
         let credentials = await credentialStore.apiCredentials
-        guard credentials.isComplete else {
+        guard credentials.canVerify else {
             for candidate in tracksNeedingPopularity {
                 try Task.checkCancellation()
                 let outcome = try await persistMetricsPayload(

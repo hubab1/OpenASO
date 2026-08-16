@@ -769,7 +769,7 @@ private extension KeywordResearchMetricsWorkflowTests {
                     clientID: metricsAPICredentials.clientID,
                     teamID: metricsAPICredentials.teamID,
                     keyID: metricsAPICredentials.keyID,
-                    privateKey: metricsAPICredentials.privateKey
+                    privateKey: ""
                 )
             )
         case .missingContextAndSession:

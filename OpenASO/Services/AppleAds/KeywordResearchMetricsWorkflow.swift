@@ -595,7 +595,7 @@ private extension KeywordResearchMetricsWorkflow {
         _ configuration: KeywordResearchMetricsConfiguration
     ) -> KeywordResearchMetricsIssue? {
         if let credentials = configuration.credentials {
-            guard credentials.isComplete else {
+            guard credentials.canVerify else {
                 return issue(.missingSession)
             }
             return nil

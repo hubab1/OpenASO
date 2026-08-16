@@ -132,7 +132,7 @@ final class AppleAdsCredentialStore {
     }
 
     var hasCompleteAPICredentials: Bool {
-        apiCredentials.isComplete
+        apiCredentials.canVerify
     }
 
     var hasWebLoginCredentials: Bool {
@@ -234,6 +234,8 @@ struct EnvironmentAppleAdsCredentials {
             for: ["APPLE_SEARCH_ADS_PRIVATE_KEY", "privateKey"],
             environment: environment
         )
+            .replacingOccurrences(of: "\\r\\n", with: "\n")
+            .replacingOccurrences(of: "\\n", with: "\n")
         let privateKeyPath = value(
             for: ["APPLE_SEARCH_ADS_PRIVATE_KEY_PATH"],
             environment: environment

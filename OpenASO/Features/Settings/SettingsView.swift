@@ -94,6 +94,9 @@ struct SettingsView: View {
                 appleAdsPlatformSection
                     .id(AppleAdsSettingsFocusSection.platformAPI)
 
+                appleAdsSection
+                    .id(AppleAdsSettingsFocusSection.webSession)
+
                 appStoreConnectSection
                     .id(AppleAdsSettingsFocusSection.appStoreConnect)
 
@@ -301,9 +304,9 @@ struct SettingsView: View {
 
             pastedSessionFallback
         } header: {
-            Text("Apple Ads")
+            Text("Apple Ads Web Access")
         } footer: {
-            Text("Connect Apple Ads to show keyword popularity in OpenASO. OpenASO requires a specific Apple Account and does not reuse the Mac's default account. Optional saved login details are filled automatically and stay in your macOS Keychain. Your Apple Ads account needs access to at least one of your App Store apps.")
+            Text("OpenASO uses this web connection only when Apple's primary service does not return a keyword popularity score. Connect the Apple Ads account you want OpenASO to use; optional saved login details stay in your macOS Keychain. The account needs access to at least one of your App Store apps.")
         }
     }
 
