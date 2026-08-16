@@ -538,7 +538,7 @@ struct TrackedKeywordRefreshStatusTests {
             #expect(snapshots[identityKey]?.rankingMessage == "Ranking failed to refresh. Preserve this failure.")
             #expect(
                 snapshots[identityKey]?.popularityMessage
-                    == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+                    == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.anyConnectionRequired)"
             )
         }
     }

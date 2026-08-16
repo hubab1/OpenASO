@@ -192,11 +192,11 @@ struct KeywordResearchErrorPresentation: Equatable, Identifiable, Sendable {
             )
         case .missingSession:
             return authentication(
-                message: "Connect an Apple Ads web session before refreshing popularity."
+                message: "Connect Apple Ads using either the Platform API or Web Access before refreshing popularity."
             )
         case .reconnectRequired, .sessionExpired:
             return authentication(
-                message: "Reconnect the Apple Ads web session before refreshing popularity."
+                message: "Refresh Apple Ads Web Access or connect the Platform API before refreshing popularity."
             )
         case .configurationChanged:
             return Self(

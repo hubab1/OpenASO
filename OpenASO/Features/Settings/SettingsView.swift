@@ -306,7 +306,7 @@ struct SettingsView: View {
         } header: {
             Text("Apple Ads Web Access")
         } footer: {
-            Text("OpenASO uses this web connection only when Apple's primary service does not return a keyword popularity score. Connect the Apple Ads account you want OpenASO to use; optional saved login details stay in your macOS Keychain. The account needs access to at least one of your App Store apps.")
+            Text("OpenASO prefers the Platform API when it is connected. Web Access supplies missing scores, or all popularity scores when the Platform API is not connected. Optional saved login details stay in your macOS Keychain. The account needs access to at least one of your App Store apps.")
         }
     }
 

@@ -108,7 +108,7 @@ struct KeywordMetricsServiceTests {
         #expect(try TrackedKeywordRefreshStatusStore.snapshot(
             for: track,
             in: modelContext
-        ).popularityMessage == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings.")
+        ).popularityMessage == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.anyConnectionRequired)")
     }
 
     @Test
@@ -517,6 +517,57 @@ struct KeywordMetricsServiceTests {
     }
 
     @Test
+    func foregroundPopularityRefreshUsesWebAccessWithoutPlatformCredentials() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        var requestedTerms: [String] = []
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let body = try JSONDecoder().decode(
+                    KeywordPopularityRequestBody.self,
+                    from: try #require(request.httpBody)
+                )
+                requestedTerms = body.terms
+                return (
+                    Data(#"{"status":"success","data":[{"name":"focus timer","popularity":72}]}"#.utf8),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                )
+            },
+            modelContainer: container,
+            appleAdsPlatformAPI: FailingSearchPopularityAPI(
+                error: .providerUnavailable("Platform API should not run")
+            )
+        )
+        try configureCampaignManagementFallback(
+            in: services,
+            configuresPlatformCredentials: false
+        )
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let track = try makeTrack(term: "focus timer", trackedApp: trackedApp, in: modelContext)
+        try modelContext.save()
+
+        let outcomes = await services.keywordMetricsService.refreshMetrics(
+            for: trackedApp,
+            tracks: [track],
+            in: modelContext
+        )
+        let metric = try #require(modelContext.fetch(FetchDescriptor<KeywordDailyMetric>()).first)
+
+        #expect(!services.appleAdsCredentialStore.hasCompleteAPICredentials)
+        #expect(requestedTerms == ["focus timer"])
+        #expect(outcomes.first?.disposition == .refreshed)
+        #expect(metric.popularityScore == 72)
+        #expect(metric.source == .appleAdsPopularity)
+    }
+
+    @Test
     func appIndependentPopularityUsesCampaignManagementFallbackForOfficialOmission() async throws {
         var requestedTerms: [String] = []
         let services = AppServices.mocked(
@@ -547,6 +598,96 @@ struct KeywordMetricsServiceTests {
         #expect(evidence.count == 1)
         #expect(evidence.first?.target == target)
         #expect(evidence.first?.popularityScore == 54)
+    }
+
+    @Test
+    func appIndependentPopularityUsesWebAccessWithoutPlatformCredentials() async throws {
+        var requestedTerms: [String] = []
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let body = try JSONDecoder().decode(
+                    KeywordPopularityRequestBody.self,
+                    from: try #require(request.httpBody)
+                )
+                requestedTerms = body.terms
+                return (
+                    Data(#"{"status":"success","data":[{"name":"speech notes","popularity":55}]}"#.utf8),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                )
+            },
+            appleAdsPlatformAPI: FailingSearchPopularityAPI(
+                error: .providerUnavailable("Platform API should not run")
+            )
+        )
+        try configureCampaignManagementFallback(
+            in: services,
+            configuresPlatformCredentials: false
+        )
+        let target = try makePopularityTarget(term: "speech notes", storefront: "us")
+
+        let evidence = try await services.keywordMetricsService.fetchPopularityMetrics(
+            for: [target],
+            now: { Date(timeIntervalSince1970: 500) }
+        )
+
+        #expect(!services.appleAdsCredentialStore.hasCompleteAPICredentials)
+        #expect(requestedTerms == ["speech notes"])
+        #expect(evidence.first?.popularityScore == 55)
+    }
+
+    @Test
+    func backgroundPopularityRefreshUsesWebAccessWithoutPlatformCredentials() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let modelContext = ModelContext(container)
+        var requestedTerms: [String] = []
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let body = try JSONDecoder().decode(
+                    KeywordPopularityRequestBody.self,
+                    from: try #require(request.httpBody)
+                )
+                requestedTerms.append(contentsOf: body.terms)
+                let rows = body.terms.map { term in
+                    #"{"name":"\#(term)","popularity":73}"#
+                }.joined(separator: ",")
+                return (
+                    Data(#"{"status":"success","data":[\#(rows)]}"#.utf8),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                )
+            },
+            modelContainer: container,
+            appleAdsPlatformAPI: FailingSearchPopularityAPI(
+                error: .providerUnavailable("Platform API should not run")
+            )
+        )
+        try configureCampaignManagementFallback(
+            in: services,
+            configuresPlatformCredentials: false
+        )
+        let trackedApp = TrackedApp(
+            appStoreID: 1,
+            bundleID: nil,
+            name: "App",
+            sellerName: nil,
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(trackedApp)
+        let tracks = try ["focus timer", "deep work"].map {
+            try makeTrack(term: $0, trackedApp: trackedApp, in: modelContext)
+        }
+        try modelContext.save()
+
+        let outcomes = try await services.keywordMetricsService.refreshMetrics(
+            for: tracks.map(\.identityKey),
+            using: BackgroundModelStore(modelContainer: container)
+        )
+        let storedScores = try modelContext.fetch(FetchDescriptor<KeywordDailyMetric>())
+            .compactMap(\.popularityScore)
+
+        #expect(!services.appleAdsCredentialStore.hasCompleteAPICredentials)
+        #expect(Set(requestedTerms) == Set(tracks.map(\.term)))
+        #expect(outcomes.allSatisfy { $0.disposition == .refreshed })
+        #expect(storedScores == [73, 73])
     }
 
     @Test
@@ -719,7 +860,7 @@ struct KeywordMetricsServiceTests {
         #expect(result.failureCount == 1)
         #expect(result.firstErrorMessage?.contains("Connect your Apple Ads account") == true)
         #expect(stored.popularityScore == 74)
-        #expect(stored.statusMessage == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.connectionRequired)")
+        #expect(stored.statusMessage == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.webConnectionRequired)")
         #expect(progressUpdates == [
             .init(completed: 0, total: 1, failureCount: 0),
             .init(completed: 1, total: 1, failureCount: 1),
@@ -2132,7 +2273,7 @@ struct KeywordMetricsServiceTests {
 
         #expect(outcomes.count == tracks.count)
         #expect(outcomes.allSatisfy {
-            $0.errorMessage?.contains("Configure and verify Apple Ads Platform API credentials") == true
+            $0.errorMessage?.contains("Connect Apple Ads") == true
         })
         #expect(progressUpdates.count == tracks.count + 1)
         #expect(progressUpdates.last == .init(completed: tracks.count, total: tracks.count, failureCount: tracks.count))
@@ -2259,7 +2400,7 @@ struct KeywordMetricsServiceTests {
             modelContext: modelContext,
             popularityScore: nil,
             updatedAt: now,
-            statusMessage: "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.connectionRequired)"
+            statusMessage: "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.webConnectionRequired)"
         )
         let unavailableMessage = "Popularity unavailable. Apple Ads returned no eligible row."
         let unavailableRow = makeRow(
@@ -2275,7 +2416,7 @@ struct KeywordMetricsServiceTests {
         #expect(staleRow.popularityIndicatorState(now: now) == .stale(lastUpdatedAt: staleUpdatedAt))
         #expect(
             needsSetupRow.popularityIndicatorState(now: now) == .needsSetup(
-                message: "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.connectionRequired)"
+                message: "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.webConnectionRequired)"
             )
         )
         #expect(unavailableRow.displayedPopularityScore == nil)
@@ -2375,9 +2516,12 @@ struct KeywordMetricsServiceTests {
 
     private func configureCampaignManagementFallback(
         in services: AppServices,
-        appStoreID: Int64 = 6_608_976_383
+        appStoreID: Int64 = 6_608_976_383,
+        configuresPlatformCredentials: Bool = true
     ) throws {
-        try saveTestCredentials(in: services.appleAdsCredentialStore)
+        if configuresPlatformCredentials {
+            try saveTestCredentials(in: services.appleAdsCredentialStore)
+        }
         try services.appleAdsWebSessionStore.save(completeWebSession)
         services.settingsStore.savePopularityContext(
             appStoreID: appStoreID,

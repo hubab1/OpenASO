@@ -97,8 +97,7 @@ struct KeywordTableView: View, Equatable {
                     modelContext: modelContext,
                     appCatalogService: appCatalogService,
                     appIconStore: appIconStore,
-                    requiresAppleAdsReconnect: !services.appleAdsCredentialStore
-                        .hasCompleteAPICredentials,
+                    requiresAppleAdsReconnect: !services.hasAppleAdsPopularityConnection,
                     presentRanking: presentRanking,
                     presentRankingHistory: { presentedRankingHistoryRow = $0 },
                     presentNotes: { presentedNotesRow = $0 },

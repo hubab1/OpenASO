@@ -543,7 +543,7 @@ struct RefreshObservabilityTests {
         #expect(result.keywordOutcomes.allSatisfy { $0.error == nil })
         #expect(
             result.firstError?.localizedDescription
-                == "Popularity failed to fetch. Configure and verify Apple Ads Platform API credentials in Settings."
+                == "Popularity failed to fetch. \(AppleAdsPopularityFallbackMessaging.anyConnectionRequired)"
         )
         #expect(rankings.attemptedCount == 3)
         #expect(rankings.failureCount == 0)
