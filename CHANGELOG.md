@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5 - 2026-08-16
+
+OpenASO 0.4.5 restores keyword popularity when Apple’s official API omits a search term and improves Apple Ads web session reliability.
+
+- Prefer Apple Ads Platform API results and use Campaign Management web access only for missing terms.
+- Support popularity refreshes when only Apple Ads web access is connected.
+- Preserve trusted web login sessions and close the browser after successful authentication.
+- Guide users to connect Apple Ads when popularity cannot be retrieved.
+
 ## 0.4.4 - 2026-08-16
 
 OpenASO 0.4.4 fixes credential storage in directly distributed builds.
