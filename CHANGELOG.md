@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4 - 2026-08-16
+
+OpenASO 0.4.4 fixes credential storage in directly distributed builds.
+
+- Fix App Store Connect and Apple Ads private keys failing to save to Keychain in production builds.
+- Preserve existing login-Keychain credentials when Data Protection Keychain migration is unavailable.
+
 ## 0.4.3 - 2026-08-15
 
 OpenASO 0.4.3 moves keyword popularity to Apple’s supported Apple Ads Platform API and strengthens ranking storage and day-to-day app management.
