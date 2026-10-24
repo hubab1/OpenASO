@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct PersistenceMigrationTests {
     @Test
-    func migrationPlanAppendsThroughV6AndKeepsPriorSchemasFrozen() throws {
+    func migrationPlanAppendsThroughV7AndKeepsPriorSchemasFrozen() throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
 
         #expect(OpenASOSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -21,8 +21,9 @@ struct PersistenceMigrationTests {
         #expect(OpenASOSchemaV5.models.count == 23)
         #expect(OpenASOSchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
         #expect(OpenASOSchemaV6.models.count == 28)
-        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(6, 0, 0))
-        #expect(OpenASOMigrationPlan.schemas.count == 6)
+        #expect(OpenASOSchemaV7.models.count == 30)
+        #expect(OpenASOMigrationPlan.currentSchema.versionIdentifier == Schema.Version(7, 0, 0))
+        #expect(OpenASOMigrationPlan.schemas.count == 7)
         #expect(OpenASOMigrationPlan.schemas[0].versionIdentifier == OpenASOSchemaV1.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[1].versionIdentifier == OpenASOSchemaV2.versionIdentifier)
         #expect(OpenASOMigrationPlan.schemas[2].versionIdentifier == OpenASOSchemaV3.versionIdentifier)
@@ -33,7 +34,7 @@ struct PersistenceMigrationTests {
             OpenASOMigrationPlan.currentSchema.versionIdentifier
                 == OpenASOMigrationPlan.schemas.last?.versionIdentifier
         )
-        #expect(OpenASOMigrationPlan.stages.count == 5)
+        #expect(OpenASOMigrationPlan.stages.count == 6)
         #expect(container.migrationPlan != nil)
     }
 

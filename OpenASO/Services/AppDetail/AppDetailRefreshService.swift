@@ -1032,7 +1032,7 @@ final class AppDetailRefreshService: Sendable {
             try Task.checkCancellation()
             let storeApp = try storeApp(for: app, in: modelContext)
             for outcome in outcomes {
-                appStorefrontRatingService.persist(outcome, for: storeApp, in: modelContext)
+                try appStorefrontRatingService.persist(outcome, for: storeApp, in: modelContext)
             }
         }
         try Task.checkCancellation()

@@ -1207,14 +1207,7 @@ final class RankingRefreshCoordinator: Sendable {
     }
 
     private func fetchRatingSnapshot(identityKey: String, in modelContext: ModelContext) throws -> AppDailyRating? {
-        let targetIdentityKey = identityKey
-        var descriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.identityKey == targetIdentityKey
-            }
-        )
-        descriptor.fetchLimit = 1
-        return try modelContext.fetch(descriptor).first
+        try RatingHistoryStore.restore(identityKey: identityKey, in: modelContext)
     }
 
     private func fetchLatestRatings(identityKeys: [String], in modelContext: ModelContext) throws -> [String: LatestAppRating] {
@@ -1231,16 +1224,7 @@ final class RankingRefreshCoordinator: Sendable {
     }
 
     private func fetchRatingSnapshots(identityKeys: [String], in modelContext: ModelContext) throws -> [String: AppDailyRating] {
-        guard !identityKeys.isEmpty else { return [:] }
-
-        let targetIdentityKeys = identityKeys
-        let descriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                targetIdentityKeys.contains(snapshot.identityKey)
-            }
-        )
-
-        return Dictionary(uniqueKeysWithValues: try modelContext.fetch(descriptor).map { ($0.identityKey, $0) })
+        try RatingHistoryStore.restore(identityKeys: identityKeys, in: modelContext)
     }
 
     @MainActor

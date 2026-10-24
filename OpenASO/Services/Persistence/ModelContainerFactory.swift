@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import ObjectiveC
 import SwiftData
 
 enum PersistentStoreError: LocalizedError, Sendable {
@@ -95,9 +96,33 @@ enum ModelContainerFactory {
         let schema = Self.schema
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         do {
-            return try withExclusiveMigrationLock(for: storeURL) {
+            return try withMigrationAccess(for: storeURL) { canMigrate in
+                guard canMigrate else { return try opener(schema, configuration) }
+                let prepared: ModelContainer? = try autoreleasepool {
+                    let container = try opener(schema, configuration)
+                    try RankingSchemaV6Migrator.migrateIfNeeded(in: container)
+                    let context = ModelContext(container)
+                    let prior = try context.fetch(FetchDescriptor<StorageMigrationState>()).first
+                    let needsMaintenance = prior?.needsCompaction != false || (prior?.lastMaintenanceAt.map {
+                        Date.now.timeIntervalSince($0) >= 86_400
+                    } ?? true)
+                    guard needsMaintenance else { return container }
+                    // No app consumer persists SwiftData history tokens. Research
+                    // observations live in model entities, not this change log.
+                    try PersistentHistoryMaintenance.prune(in: context)
+                    return nil
+                }
+                if let prepared { return prepared }
+                try StorageSchemaV7Migrator.migrateIfNeeded(at: storeURL)
+                if try PersistentStoreCompactor.shouldCompact(at: storeURL) {
+                    try PersistentStoreCompactor.compact(at: storeURL)
+                }
                 let container = try opener(schema, configuration)
-                try RankingSchemaV6Migrator.migrateIfNeeded(in: container)
+                let context = ModelContext(container)
+                if let state = try context.fetch(FetchDescriptor<StorageMigrationState>()).first {
+                    state.needsCompaction = false
+                    try context.save()
+                }
                 return container
             }
         } catch {
@@ -126,10 +151,10 @@ enum ModelContainerFactory {
         )
     }
 
-    private static func withExclusiveMigrationLock<Value>(
+    private static func withMigrationAccess(
         for storeURL: URL,
-        _ operation: () throws -> Value
-    ) throws -> Value {
+        _ operation: (Bool) throws -> ModelContainer
+    ) throws -> ModelContainer {
         let lockDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenASO-Migrations", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -146,14 +171,33 @@ enum ModelContainerFactory {
         guard descriptor >= 0 else {
             throw CocoaError(.fileWriteUnknown)
         }
-        defer { Darwin.close(descriptor) }
-
-        while flock(descriptor, LOCK_EX) != 0 {
-            guard errno == EINTR else {
-                throw CocoaError(.fileLocking)
+        let lease = PersistentStoreLease(descriptor: descriptor)
+        let exclusive = flock(descriptor, LOCK_EX | LOCK_NB) == 0
+        if !exclusive {
+            guard errno == EWOULDBLOCK || errno == EAGAIN else { throw CocoaError(.fileLocking) }
+            while flock(descriptor, LOCK_SH) != 0 {
+                guard errno == EINTR else { throw CocoaError(.fileLocking) }
             }
+        } else if FileManager.default.fileExists(atPath: storeURL.path) {
+            try PersistentStoreCompactor.requireNoOlderClients(at: storeURL)
         }
-        defer { flock(descriptor, LOCK_UN) }
-        return try operation()
+        let container = try operation(exclusive)
+        if exclusive, flock(descriptor, LOCK_SH) != 0 { throw CocoaError(.fileLocking) }
+        // Hold shared access for the container's lifetime. Another app, MCP,
+        // or refresh process can read/write, but cannot compact a live store.
+        let key = UnsafeRawPointer(bitPattern: UInt(bitPattern: ObjectIdentifier(PersistentStoreLease.self)))!
+        objc_setAssociatedObject(container, key, lease, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return container
+    }
+}
+
+private final class PersistentStoreLease: Sendable {
+    let descriptor: Int32
+
+    init(descriptor: Int32) { self.descriptor = descriptor }
+
+    deinit {
+        flock(descriptor, LOCK_UN)
+        Darwin.close(descriptor)
     }
 }

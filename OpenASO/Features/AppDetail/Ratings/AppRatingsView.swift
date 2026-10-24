@@ -159,15 +159,9 @@ struct AppRatingsView: View {
             },
             sortBy: [SortDescriptor(\.storefront, order: .forward)]
         )
-        let snapshotDescriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.appStoreID == targetAppStoreID
-            },
-            sortBy: [SortDescriptor(\.observedAt, order: .reverse)]
-        )
-
         let latestRatings = try modelContext.fetch(latestDescriptor).map(RatingLatestValue.init)
-        let ratingSnapshots = try modelContext.fetch(snapshotDescriptor).map(RatingSnapshotValue.init)
+        let ratingSnapshots = try RatingHistoryStore.fetch(appStoreIDs: [appStoreID], in: modelContext)
+            .map(RatingSnapshotValue.init)
 
         return RatingsDashboardData(
             latestRatings: latestRatings,

@@ -29,10 +29,17 @@ final class AppStorefrontRatingService: Sendable {
             return []
         }
 
-        for outcome in outcomes {
-            persist(outcome, for: storeApp, in: modelContext)
+        do {
+            for outcome in outcomes {
+                try persist(outcome, for: storeApp, in: modelContext)
+            }
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            return outcomes.map {
+                AppStorefrontRatingRefreshOutcome(storefront: $0.storefront, result: nil, error: OpenASOError.map(error))
+            }
         }
-        try? modelContext.save()
         OpenASOLog.ratings.info(
             "Finished ratings refresh appStoreID=\(storeApp.appStoreID, privacy: .public) successes=\(outcomes.filter { $0.error == nil }.count, privacy: .public) failures=\(outcomes.filter { $0.error != nil }.count, privacy: .public)"
         )
@@ -167,9 +174,9 @@ final class AppStorefrontRatingService: Sendable {
         _ outcome: AppStorefrontRatingRefreshOutcome,
         for storeApp: StoreApp,
         in modelContext: ModelContext
-    ) {
+    ) throws {
         if let result = outcome.result {
-            upsert(
+            try upsert(
                 result,
                 ratingDate: nil,
                 submissionCount: 1,
@@ -181,7 +188,7 @@ final class AppStorefrontRatingService: Sendable {
         }
 
         if outcome.clearsStoredRatings {
-            clearRatings(appStoreID: storeApp.appStoreID, storefront: outcome.storefront, in: modelContext)
+            try clearRatings(appStoreID: storeApp.appStoreID, storefront: outcome.storefront, in: modelContext)
         }
     }
 
@@ -207,7 +214,7 @@ final class AppStorefrontRatingService: Sendable {
         confidence: String?,
         for storeApp: StoreApp,
         in modelContext: ModelContext
-    ) {
+    ) throws {
         let resolvedRatingDate = ratingDate ?? LatestAppRating.ratingDateString(for: result.observedAt)
         let snapshotKey = AppDailyRating.makeIdentityKey(
             appStoreID: result.appStoreID,
@@ -215,7 +222,7 @@ final class AppStorefrontRatingService: Sendable {
             ratingDate: resolvedRatingDate
         )
         let snapshot: AppDailyRating
-        if let existing = try? fetchSnapshot(identityKey: snapshotKey, in: modelContext) {
+        if let existing = try fetchSnapshot(identityKey: snapshotKey, in: modelContext) {
             snapshot = existing
             guard result.observedAt >= existing.observedAt else {
                 return
@@ -319,16 +326,10 @@ final class AppStorefrontRatingService: Sendable {
     }
 
     private func fetchSnapshot(identityKey: String, in modelContext: ModelContext) throws -> AppDailyRating? {
-        let targetIdentityKey = identityKey
-        let descriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.identityKey == targetIdentityKey
-            }
-        )
-        return try modelContext.fetch(descriptor).first
+        try RatingHistoryStore.restore(identityKey: identityKey, in: modelContext)
     }
 
-    private func clearRatings(appStoreID: Int64, storefront: String, in modelContext: ModelContext) {
+    private func clearRatings(appStoreID: Int64, storefront: String, in modelContext: ModelContext) throws {
         let targetAppStoreID = appStoreID
         let targetStorefront = storefront
         let latestDescriptor = FetchDescriptor<LatestAppRating>(
@@ -342,6 +343,7 @@ final class AppStorefrontRatingService: Sendable {
             }
         )
 
+        try RatingHistoryStore.remove(appStoreID: appStoreID, storefront: storefront, in: modelContext)
         let latest = (try? modelContext.fetch(latestDescriptor)) ?? []
         let snapshots = (try? modelContext.fetch(snapshotDescriptor)) ?? []
         for value in latest {

@@ -1,4 +1,5 @@
 import Dispatch
+import Foundation
 import SwiftData
 
 @ModelActor
@@ -56,6 +57,7 @@ private actor BackgroundModelContextWorker {
     )
     private let modelContainer: ModelContainer
     private var context: ModelContext?
+    private var lastHistoryPruneAt: Date?
 
     nonisolated var unownedExecutor: UnownedSerialExecutor {
         executor.asUnownedSerialExecutor()
@@ -91,6 +93,14 @@ private actor BackgroundModelContextWorker {
         do {
             let value = try operation(modelContext)
             try modelContext.save()
+            let now = Date.now
+            if now.timeIntervalSince(lastHistoryPruneAt ?? .distantPast) >= 3_600 {
+                lastHistoryPruneAt = now
+                do { try PersistentHistoryMaintenance.prune(in: modelContext) }
+                catch {
+                    OpenASOLog.rankingMigration.error("Internal history maintenance failed: \(String(reflecting: error), privacy: .public)")
+                }
+            }
             return value
         } catch {
             modelContext.rollback()
