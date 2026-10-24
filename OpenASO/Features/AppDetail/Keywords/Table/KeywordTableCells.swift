@@ -271,6 +271,7 @@ struct AppsInRankingCell: View {
                     AppIconImageView(
                         appStoreID: result.appStoreID,
                         storefrontCode: row.track.storefront,
+                        preferredIconURLString: result.iconURLString,
                         size: 24,
                         cornerRadius: 6,
                         modelContext: modelContext,

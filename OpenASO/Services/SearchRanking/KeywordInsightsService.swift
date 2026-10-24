@@ -481,7 +481,7 @@ final class KeywordInsightsService {
     ) throws -> [String: [KeywordRankingAppSummary]] {
         guard !observationIDs.isEmpty else { return [:] }
 
-        var resultsByCrawlKey: [String: [KeywordRankingAppSummary]] = [:]
+        var rankings: [RankingFact] = []
         for observationIDChunk in chunks(
             observationIDs,
             size: 500
@@ -496,11 +496,25 @@ final class KeywordInsightsService {
                 ]
             )
             descriptor.relationshipKeyPathsForPrefetching = [\.observation, \.revision]
-            for ranking in try modelContext.fetch(descriptor) {
-                resultsByCrawlKey[ranking.crawlKey, default: []].append(
-                    KeywordRankingAppSummary(ranking)
-                )
+            rankings.append(contentsOf: try modelContext.fetch(descriptor))
+        }
+        // Resolve icon URLs with the workspace, not one main-thread catalog
+        // fetch per visible competitor. Keep only scalar values across actors.
+        var iconURLsByAppID: [Int64: String] = [:]
+        for appIDs in chunks(Array(Set(rankings.map(\.appStoreID))), size: 500) {
+            var descriptor = FetchDescriptor<StoreApp>(predicate: #Predicate {
+                appIDs.contains($0.appStoreID)
+            })
+            descriptor.propertiesToFetch = [\.appStoreID, \.iconURLString]
+            for app in try modelContext.fetch(descriptor) {
+                iconURLsByAppID[app.appStoreID] = app.iconURLString
             }
+        }
+        var resultsByCrawlKey: [String: [KeywordRankingAppSummary]] = [:]
+        for ranking in rankings {
+            resultsByCrawlKey[ranking.crawlKey, default: []].append(
+                KeywordRankingAppSummary(ranking, iconURLString: iconURLsByAppID[ranking.appStoreID])
+            )
         }
         return resultsByCrawlKey
     }

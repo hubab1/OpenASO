@@ -328,6 +328,12 @@ struct KeywordWorkspaceProjectionTests {
             difficultyScore: 41,
             source: .appleAdsPopularity
         )
+        let competitor = StoreApp(
+            appStoreID: 202, bundleID: "com.example.competitor", name: "Competitor",
+            sellerName: "Example", iconURLString: "https://example.com/competitor.png",
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(competitor)
         let rankings = [
             makeRankingFact(
                 position: 8,
@@ -396,6 +402,8 @@ struct KeywordWorkspaceProjectionTests {
         #expect(row.latestSnapshot?.rank == 3)
         #expect(row.trendSnapshots.map(\.rank) == [8, 3])
         #expect(row.rankingApps.map(\.position) == [1, 3])
+        #expect(row.rankingApps.first?.iconURLString == competitor.iconURLString)
+        #expect(row.rankingApps.last?.iconURLString == nil)
         #expect(service.cachedWorkspace(for: materializationID) != nil)
     }
 
