@@ -32,6 +32,7 @@ final class KeywordInsightsService {
     }
 
     private struct CrawlRecord: Sendable {
+        let persistentID: PersistentIdentifier
         let queryKey: String
         let observationKey: String
         let observedAt: Date
@@ -231,7 +232,7 @@ final class KeywordInsightsService {
             in: modelContext
         )
         let topResultsByCrawlKey = try fetchTopResultsByCrawlKey(
-            crawlKeys: latestCrawlKeys,
+            observationIDs: latestCrawlsByQueryKey.values.map(\.persistentID),
             in: modelContext
         )
         let tracksByQueryKey = Dictionary(grouping: tracks, by: \.queryKey)
@@ -335,6 +336,7 @@ final class KeywordInsightsService {
         }
         return crawls.filter { !$0.isTrackedRecovery }.map {
             CrawlRecord(
+                persistentID: $0.persistentModelID,
                 queryKey: $0.queryKey,
                 observationKey: $0.observationKey,
                 observedAt: $0.observedAt,
@@ -351,19 +353,23 @@ final class KeywordInsightsService {
         var records: [CrawlRecord] = []
         records.reserveCapacity(queryKeys.count)
 
+        let recoveryPrefix = RankingCrawlRecord.trackedRecoveryObservationKeyPrefix
         for queryKey in queryKeys {
             let targetQueryKey = queryKey
-            let descriptor = FetchDescriptor<RankingCrawlRecord>(
+            var descriptor = FetchDescriptor<RankingCrawlRecord>(
                 predicate: #Predicate { crawl in
                     crawl.queryKey == targetQueryKey
+                        && !crawl.observationKey.starts(with: recoveryPrefix)
                 },
                 sortBy: [SortDescriptor(\RankingCrawlRecord.observedAt, order: .reverse)]
             )
-            guard let crawl = try modelContext.fetch(descriptor).first(where: {
-                !$0.isTrackedRecovery
-            }) else { continue }
+            // The fallback only needs the latest real observation. Materializing
+            // every historical crawl made stale, keyword-heavy apps slow to open.
+            descriptor.fetchLimit = 1
+            guard let crawl = try modelContext.fetch(descriptor).first else { continue }
             records.append(
                 CrawlRecord(
+                    persistentID: crawl.persistentModelID,
                     queryKey: crawl.queryKey,
                     observationKey: crawl.observationKey,
                     observedAt: crawl.observedAt,
@@ -419,21 +425,23 @@ final class KeywordInsightsService {
     ) throws -> [RankingRecord] {
         let rankings: [RankingFact]
         if let cutoffDate {
-            let descriptor = FetchDescriptor<RankingFact>(
+            var descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
                     queryKeys.contains(ranking.observation.queryKey)
                         && ranking.appStoreID == appStoreID
                         && ranking.observation.observedAt >= cutoffDate
                 }
             )
+            descriptor.relationshipKeyPathsForPrefetching = [\.observation]
             rankings = try modelContext.fetch(descriptor)
         } else {
-            let descriptor = FetchDescriptor<RankingFact>(
+            var descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
                     queryKeys.contains(ranking.observation.queryKey)
                         && ranking.appStoreID == appStoreID
                 }
             )
+            descriptor.relationshipKeyPathsForPrefetching = [\.observation]
             rankings = try modelContext.fetch(descriptor)
         }
         return rankings.map {
@@ -453,12 +461,13 @@ final class KeywordInsightsService {
             Array(crawlKeys),
             size: 500
         ) {
-            let descriptor = FetchDescriptor<RankingFact>(
+            var descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
                     crawlKeyChunk.contains(ranking.observation.observationKey)
                         && ranking.appStoreID == appStoreID
                 }
             )
+            descriptor.relationshipKeyPathsForPrefetching = [\.observation]
             records.append(contentsOf: try modelContext.fetch(descriptor).map {
                 RankingRecord(crawlKey: $0.crawlKey, position: $0.position)
             })
@@ -467,26 +476,26 @@ final class KeywordInsightsService {
     }
 
     private nonisolated static func fetchTopResultsByCrawlKey(
-        crawlKeys: Set<String>,
+        observationIDs: [PersistentIdentifier],
         in modelContext: ModelContext
     ) throws -> [String: [KeywordRankingAppSummary]] {
-        guard !crawlKeys.isEmpty else { return [:] }
+        guard !observationIDs.isEmpty else { return [:] }
 
         var resultsByCrawlKey: [String: [KeywordRankingAppSummary]] = [:]
-        for crawlKeyChunk in chunks(
-            Array(crawlKeys),
+        for observationIDChunk in chunks(
+            observationIDs,
             size: 500
         ) {
-            let descriptor = FetchDescriptor<RankingFact>(
+            var descriptor = FetchDescriptor<RankingFact>(
                 predicate: #Predicate { ranking in
-                    crawlKeyChunk.contains(ranking.observation.observationKey)
+                    observationIDChunk.contains(ranking.observation.persistentModelID)
                         && ranking.position <= 5
                 },
                 sortBy: [
-                    SortDescriptor(\RankingFact.observation.observedAt, order: .forward),
                     SortDescriptor(\RankingFact.position, order: .forward)
                 ]
             )
+            descriptor.relationshipKeyPathsForPrefetching = [\.observation, \.revision]
             for ranking in try modelContext.fetch(descriptor) {
                 resultsByCrawlKey[ranking.crawlKey, default: []].append(
                     KeywordRankingAppSummary(ranking)

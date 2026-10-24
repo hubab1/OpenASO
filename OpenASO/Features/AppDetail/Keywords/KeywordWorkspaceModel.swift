@@ -28,6 +28,7 @@ final class KeywordWorkspaceModel {
         contentRevision: 0,
         appliedFilterID: nil
     )
+    @ObservationIgnored private var loadedMaterializationID: KeywordWorkspaceProjection.MaterializationID?
     @ObservationIgnored private var desiredFilters: KeywordWorkspaceProjection.Filters?
     @ObservationIgnored private var materializationRequestGeneration = 0
     @ObservationIgnored private var pendingMaterializationRequestGeneration: Int?
@@ -40,6 +41,27 @@ final class KeywordWorkspaceModel {
 
     func isLoading(for materializationID: KeywordWorkspaceProjection.MaterializationID) -> Bool {
         publication.completedMaterializationID != materializationID
+    }
+
+    func reuseMaterialization(
+        for id: KeywordWorkspaceProjection.MaterializationID,
+        filters: KeywordWorkspaceProjection.Filters
+    ) -> Bool {
+        guard loadedMaterializationID == id,
+              publication.completedMaterializationID == id
+        else { return false }
+
+        materializationRequestGeneration &+= 1
+        pendingMaterializationRequestGeneration = nil
+        filterRequestGeneration &+= 1
+        desiredFilters = filters
+        publish(
+            materializedRows: publication.materializedRows,
+            rows: KeywordWorkspaceProjection.filteredRows(publication.materializedRows, filters: filters),
+            completedMaterializationID: id,
+            filters: filters
+        )
+        return true
     }
 
     func prime(
@@ -90,6 +112,7 @@ final class KeywordWorkspaceModel {
             guard requestGeneration == materializationRequestGeneration else { return nil }
 
             pendingMaterializationRequestGeneration = nil
+            loadedMaterializationID = id
             publish(
                 materializedRows: materializedRows,
                 rows: rows,
@@ -230,6 +253,14 @@ final class KeywordWorkspaceModel {
         completedMaterializationID: KeywordWorkspaceProjection.MaterializationID,
         filters: KeywordWorkspaceProjection.Filters
     ) {
+        // A cache hit on navigation can produce exactly the visible snapshot.
+        // Keep its generation and native table hierarchy intact in that case.
+        guard publication.completedMaterializationID != completedMaterializationID
+            || publication.appliedFilterID?.filters != filters
+            || publication.materializedRows != materializedRows
+            || publication.rows != rows
+        else { return }
+
         let nextGeneration = publication.materializationGeneration &+ 1
         publication = Publication(
             materializedRows: materializedRows,
