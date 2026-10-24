@@ -7,7 +7,8 @@ struct OpenASOApp: App {
     @State private var updaterController = SparkleUpdaterController()
     @State private var launchAlert: AppLaunchAlertContext?
 
-    private let startupState: OpenASOStartupState
+    @State private var startupState: OpenASOStartupState = .preparing
+    @State private var isPreparingStartup = false
 
     init() {
         let executionMode = OpenASOExecutionMode(
@@ -21,18 +22,40 @@ struct OpenASOApp: App {
             Self.runBackgroundRefreshAndExit()
         }
 
-        let startupState = Self.makeStartupState()
         if executionMode == .mcpStdio {
-            switch startupState {
+            switch Self.makeStartupState() {
             case .ready(_, let services):
                 Self.runMCPStdioAndExit(serverProvider: services.mcpServerProvider)
             case .storeUnavailable(let error):
                 Self.exitMCPStdio(with: error.diagnosticReport)
+            case .preparing:
+                preconditionFailure("Synchronous startup cannot return a preparing state.")
             }
         }
 
-        self.startupState = startupState
         _launchAlert = State(initialValue: nil)
+    }
+
+    private func prepareStartupIfNeeded() async {
+        guard case .preparing = startupState, !isPreparingStartup else { return }
+        isPreparingStartup = true
+        defer { isPreparingStartup = false }
+        let result = await Task.detached(priority: .userInitiated) {
+            () -> Result<ModelContainer, PersistentStoreError> in
+            do {
+                return .success(try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: false))
+            } catch let error as PersistentStoreError {
+                return .failure(error)
+            } catch {
+                return .failure(.unexpected(diagnosticDescription: String(reflecting: error)))
+            }
+        }.value
+        switch result {
+        case .success(let container):
+            startupState = .ready(modelContainer: container, services: AppServices.appLaunch(modelContainer: container))
+        case .failure(let error):
+            startupState = .storeUnavailable(error)
+        }
     }
 
     private static func makeStartupState() -> OpenASOStartupState {
@@ -84,6 +107,10 @@ struct OpenASOApp: App {
     var body: some Scene {
         WindowGroup("OpenASO") {
             switch startupState {
+            case .preparing:
+                ProgressView("Preparing your workspace…")
+                    .frame(idealWidth: 1000, idealHeight: 760)
+                    .task { await prepareStartupIfNeeded() }
             case .ready(let modelContainer, let services):
                 RootView()
                     .environment(services)
@@ -123,6 +150,10 @@ struct OpenASOApp: App {
 
         Settings {
             switch startupState {
+            case .preparing:
+                ProgressView("Preparing your workspace…")
+                    .frame(idealWidth: 680, idealHeight: 480)
+                    .task { await prepareStartupIfNeeded() }
             case .ready(let modelContainer, let services):
                 SettingsView()
                     .environment(services)
@@ -167,6 +198,7 @@ struct OpenASOApp: App {
 }
 
 private enum OpenASOStartupState {
+    case preparing
     case ready(modelContainer: ModelContainer, services: AppServices)
     case storeUnavailable(PersistentStoreError)
 }

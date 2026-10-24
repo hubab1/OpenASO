@@ -172,11 +172,12 @@ enum RatingHistoryStore {
     ) throws -> [RatingHistoryRecord] {
         guard !appStoreIDs.isEmpty else { return [] }
         let filtersStorefront = !storefronts.isEmpty
-        let legacy = try context.fetch(FetchDescriptor<AppDailyRating>(predicate: #Predicate {
+        var legacyDescriptor = FetchDescriptor<AppDailyRating>(predicate: #Predicate {
             appStoreIDs.contains($0.appStoreID)
                 && (!filtersStorefront || storefronts.contains($0.storefront))
-
-        }))
+        })
+        legacyDescriptor.relationshipKeyPathsForPrefetching = [\.storeApp]
+        let legacy = try context.fetch(legacyDescriptor)
         let chunks = try context.fetch(FetchDescriptor<RatingHistoryChunk>(predicate: #Predicate {
             appStoreIDs.contains($0.appStoreID)
                 && (!filtersStorefront || storefronts.contains($0.storefront))

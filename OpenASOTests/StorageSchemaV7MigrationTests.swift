@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import SwiftData
 import Testing
 @testable import OpenASO
@@ -228,6 +229,51 @@ struct StorageSchemaV7MigrationTests {
             #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: ModelContext(container)) == expected)
             #expect(try ModelContext(container).fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
         }
+    }
+
+    @Test
+    func compactedPageLayoutReopensWithUnchangedHistoryAndWAL() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-PageLayout-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        let expected = try autoreleasepool {
+            let schema = ModelContainerFactory.schema
+            let container = try ModelContainer(for: schema, migrationPlan: OpenASOMigrationPlan.self,
+                configurations: ModelConfiguration(schema: schema, url: url))
+            let context = ModelContext(container)
+            context.insert(makeRating(day: "2026-01-01", observedAt: .now, app: nil))
+            context.insert(makeRating(day: "2026-01-02", observedAt: .now, app: nil))
+            try context.save()
+            try PersistentHistoryMaintenance.prune(in: context)
+            return try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+        }
+        try PersistentStoreCompactor.compact(at: url)
+        #expect(try databasePragma("page_size", at: url) == "16384")
+        let actual = try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: url)
+            return try RatingHistoryStore.fetch(appStoreIDs: [42], in: ModelContext(container))
+        }
+        #expect(actual == expected)
+        #expect(try databasePragma("page_size", at: url) == "16384")
+        #expect(try databasePragma("journal_mode", at: url) == "wal")
+    }
+
+    private func databasePragma(_ name: String, at url: URL) throws -> String {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { sqlite3_close(database) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA " + name, -1, &statement, nil) == SQLITE_OK else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW, let value = sqlite3_column_text(statement, 0) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return String(cString: value)
     }
 
     private func withTestStore(_ body: (ModelContainer, URL) throws -> Void) throws {

@@ -22,9 +22,11 @@ enum PersistentStoreCompactor {
         }
         let freePages = try pragma("freelist_count")
         let pageCount = try pragma("page_count")
-        let freeBytes = try freePages * pragma("page_size")
+        let pageSize = try pragma("page_size")
+        let freeBytes = freePages * pageSize
         // Avoid a full-file rewrite on daily launches when pages can be reused.
-        return freeBytes >= 64 * 1_024 * 1_024
+        return (pageSize != 16_384 && pageCount * pageSize >= 256 * 1_024 * 1_024)
+            || freeBytes >= 64 * 1_024 * 1_024
             || (freeBytes >= 8 * 1_024 * 1_024 && freePages >= pageCount / 5)
     }
 
@@ -57,6 +59,22 @@ enum PersistentStoreCompactor {
     /// Use Core Data's supported SQLite maintenance option. Never edit its
     /// private history tables or replace a live SQLite file behind a container.
     static func compact(at storeURL: URL) throws {
+        // SQLite cannot change page size in WAL mode. All clients are closed
+        // under the migration lease; checkpoint before the framework rebuild.
+        // SwiftData restores WAL when the completed store is reopened.
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let database { sqlite3_close(database) }
+            throw CocoaError(.fileWriteUnknown)
+        }
+        do {
+            defer { sqlite3_close(database) }
+            sqlite3_busy_timeout(database, 5_000)
+            guard sqlite3_exec(database, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil) == SQLITE_OK,
+                  sqlite3_exec(database, "PRAGMA journal_mode=DELETE", nil, nil, nil) == SQLITE_OK else {
+                throw CocoaError(.fileLocking)
+            }
+        }
         try autoreleasepool {
             guard let model = NSManagedObjectModel.makeManagedObjectModel(
                 for: OpenASOMigrationPlan.currentSchema.models
@@ -64,8 +82,9 @@ enum PersistentStoreCompactor {
             let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
             let store = try coordinator.addPersistentStore(
                 type: .sqlite, at: storeURL,
-                options: [NSSQLiteManualVacuumOption: true, NSPersistentHistoryTrackingKey: true,
-                          NSPersistentStoreTimeoutOption: 5]
+                options: [NSSQLiteManualVacuumOption: true, NSPersistentHistoryTrackingKey: false,
+                          NSPersistentStoreTimeoutOption: 5,
+                          NSSQLitePragmasOption: ["journal_mode": "DELETE", "page_size": "16384"]]
             )
             try coordinator.remove(store)
         }
