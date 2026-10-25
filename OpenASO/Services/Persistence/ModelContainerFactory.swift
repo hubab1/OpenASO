@@ -103,10 +103,8 @@ enum ModelContainerFactory {
                     try RankingSchemaV6Migrator.migrateIfNeeded(in: container)
                     let context = ModelContext(container)
                     let prior = try context.fetch(FetchDescriptor<StorageMigrationState>()).first
-                    let needsMaintenance = prior?.needsCompaction != false || (prior?.lastMaintenanceAt.map {
-                        Date.now.timeIntervalSince($0) >= 86_400
-                    } ?? true)
-                    guard needsMaintenance else { return container }
+                    let needsUpgrade = prior?.completed != true || prior?.needsCompaction != false
+                    guard needsUpgrade else { return container }
                     // No app consumer persists SwiftData history tokens. Research
                     // observations live in model entities, not this change log.
                     try PersistentHistoryMaintenance.prune(in: context)
@@ -130,6 +128,39 @@ enum ModelContainerFactory {
                 storeURL: storeURL,
                 diagnosticDescription: String(reflecting: error)
             )
+        }
+    }
+
+    /// Serialize complete worker transactions across app, MCP, and refresh
+    /// processes. Fresh contexts prevent cached chunks from overwriting a
+    /// different writer's committed days. No network await occurs under this lock.
+    static func withWriteTransaction<Value>(
+        in container: ModelContainer, _ operation: (ModelContext) throws -> Value
+    ) throws -> Value {
+        let configuration = container.configurations.first!
+        let identity = configuration.isStoredInMemoryOnly
+            ? "memory:\(ObjectIdentifier(container))"
+            : configuration.url.standardizedFileURL.path
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-Writes", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(digest).lock")
+        let descriptor = url.path.withCString { Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR) }
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { Darwin.close(descriptor) }
+        while flock(descriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else { throw CocoaError(.fileLocking) }
+        }
+        defer { flock(descriptor, LOCK_UN) }
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        do {
+            let result = try operation(context)
+            if context.hasChanges { try context.save() }
+            return result
+        } catch {
+            context.rollback()
+            throw error
         }
     }
 

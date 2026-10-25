@@ -176,15 +176,8 @@ final class AppStorefrontRatingService: Sendable {
         in modelContext: ModelContext
     ) throws {
         if let result = outcome.result {
-            try upsert(
-                result,
-                ratingDate: nil,
-                submissionCount: 1,
-                winningCount: 1,
-                confidence: "single_source",
-                for: storeApp,
-                in: modelContext
-            )
+            try RatingHistoryStore.ingest([.init(result)],
+                storeApps: [storeApp.appStoreID: storeApp], in: modelContext)
         }
 
         if outcome.clearsStoredRatings {
@@ -204,129 +197,6 @@ final class AppStorefrontRatingService: Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
         return Array(Set(normalizedStorefronts)).sorted()
-    }
-
-    private func upsert(
-        _ result: AppStorefrontRatingResult,
-        ratingDate: String?,
-        submissionCount: Int,
-        winningCount: Int,
-        confidence: String?,
-        for storeApp: StoreApp,
-        in modelContext: ModelContext
-    ) throws {
-        let resolvedRatingDate = ratingDate ?? LatestAppRating.ratingDateString(for: result.observedAt)
-        let snapshotKey = AppDailyRating.makeIdentityKey(
-            appStoreID: result.appStoreID,
-            storefront: result.storefront,
-            ratingDate: resolvedRatingDate
-        )
-        let snapshot: AppDailyRating
-        if let existing = try fetchSnapshot(identityKey: snapshotKey, in: modelContext) {
-            snapshot = existing
-            guard result.observedAt >= existing.observedAt else {
-                return
-            }
-        } else {
-            snapshot = AppDailyRating(
-                appStoreID: result.appStoreID,
-                storefront: result.storefront,
-                ratingCount: result.ratingCount,
-                averageRating: result.averageRating,
-                oneStarRatingCount: result.ratingCounts?.oneStar,
-                twoStarRatingCount: result.ratingCounts?.twoStar,
-                threeStarRatingCount: result.ratingCounts?.threeStar,
-                fourStarRatingCount: result.ratingCounts?.fourStar,
-                fiveStarRatingCount: result.ratingCounts?.fiveStar,
-                ratingDate: resolvedRatingDate,
-                observedAt: result.observedAt,
-                submissionCount: submissionCount,
-                winningCount: winningCount,
-                confidence: confidence,
-                source: result.source,
-                storeApp: storeApp
-            )
-            modelContext.insert(snapshot)
-        }
-        snapshot.ratingCount = result.ratingCount
-        snapshot.averageRating = result.averageRating
-        if let ratingCounts = result.ratingCounts {
-            snapshot.oneStarRatingCount = ratingCounts.oneStar
-            snapshot.twoStarRatingCount = ratingCounts.twoStar
-            snapshot.threeStarRatingCount = ratingCounts.threeStar
-            snapshot.fourStarRatingCount = ratingCounts.fourStar
-            snapshot.fiveStarRatingCount = ratingCounts.fiveStar
-        }
-        snapshot.ratingDate = resolvedRatingDate
-        snapshot.observedAt = result.observedAt
-        snapshot.submissionCount = submissionCount
-        snapshot.winningCount = winningCount
-        snapshot.confidenceRaw = confidence
-        snapshot.source = result.source
-        snapshot.storeApp = storeApp
-
-        let identityKey = LatestAppRating.makeIdentityKey(
-            appStoreID: result.appStoreID,
-            storefront: result.storefront
-        )
-        let latest: LatestAppRating
-        if let existing = try? fetchLatest(identityKey: identityKey, in: modelContext) {
-            latest = existing
-            guard result.observedAt >= existing.observedAt else {
-                return
-            }
-        } else {
-            latest = LatestAppRating(
-                appStoreID: result.appStoreID,
-                storefront: result.storefront,
-                ratingCount: result.ratingCount,
-                averageRating: result.averageRating,
-                oneStarRatingCount: result.ratingCounts?.oneStar,
-                twoStarRatingCount: result.ratingCounts?.twoStar,
-                threeStarRatingCount: result.ratingCounts?.threeStar,
-                fourStarRatingCount: result.ratingCounts?.fourStar,
-                fiveStarRatingCount: result.ratingCounts?.fiveStar,
-                ratingDate: resolvedRatingDate,
-                observedAt: result.observedAt,
-                submissionCount: submissionCount,
-                winningCount: winningCount,
-                confidence: confidence,
-                source: result.source,
-                storeApp: storeApp
-            )
-            modelContext.insert(latest)
-        }
-
-        latest.ratingCount = result.ratingCount
-        latest.averageRating = result.averageRating
-        if let ratingCounts = result.ratingCounts {
-            latest.oneStarRatingCount = ratingCounts.oneStar
-            latest.twoStarRatingCount = ratingCounts.twoStar
-            latest.threeStarRatingCount = ratingCounts.threeStar
-            latest.fourStarRatingCount = ratingCounts.fourStar
-            latest.fiveStarRatingCount = ratingCounts.fiveStar
-        }
-        latest.ratingDate = resolvedRatingDate
-        latest.observedAt = result.observedAt
-        latest.submissionCount = submissionCount
-        latest.winningCount = winningCount
-        latest.confidenceRaw = confidence
-        latest.source = result.source
-        latest.storeApp = storeApp
-    }
-
-    private func fetchLatest(identityKey: String, in modelContext: ModelContext) throws -> LatestAppRating? {
-        let targetIdentityKey = identityKey
-        let descriptor = FetchDescriptor<LatestAppRating>(
-            predicate: #Predicate { latest in
-                latest.identityKey == targetIdentityKey
-            }
-        )
-        return try modelContext.fetch(descriptor).first
-    }
-
-    private func fetchSnapshot(identityKey: String, in modelContext: ModelContext) throws -> AppDailyRating? {
-        try RatingHistoryStore.restore(identityKey: identityKey, in: modelContext)
     }
 
     private func clearRatings(appStoreID: Int64, storefront: String, in modelContext: ModelContext) throws {

@@ -52,6 +52,7 @@ enum OpenASOSchemaV7: VersionedSchema {
         var archivedRecordCount: Int
         var completed: Bool
         var needsCompaction: Bool
+        // Completion timestamp retained by the one-time upgrade; never a scan trigger.
         var lastMaintenanceAt: Date?
 
         init() {

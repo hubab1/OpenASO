@@ -27,10 +27,14 @@ struct StorageSchemaV7MigrationTests {
             #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: migrated) == expected)
 
             let key = "42::gb::2026-01-01"
-            let restored = try #require(try RatingHistoryStore.restore(identityKey: key, in: migrated))
-            #expect(restored.storeApp?.appStoreID == 42)
-            #expect(restored.sourceRaw == "future-source")
-            restored.ratingCount = 999
+            let archived = try #require(expected.first { $0.identityKey == key })
+            #expect(archived.storeAppID == 42)
+            #expect(archived.sourceRaw == "future-source")
+            try RatingHistoryStore.ingest([.init(.init(
+                appStoreID: 42, storefront: "gb", ratingCount: 999, averageRating: archived.averageRating,
+                ratingCounts: nil, observedAt: archived.observedAt.addingTimeInterval(1), source: .iTunesSearch
+            ), ratingDate: archived.ratingDate, submissionCount: 7, winningCount: 6, confidence: "correction")],
+                storeApps: [42: try #require(migrated.fetch(FetchDescriptor<StoreApp>()).first)], in: migrated)
             try migrated.save()
             let reread = try RatingHistoryStore.fetch(appStoreIDs: [42], in: ModelContext(container))
             #expect(reread.count == 2)
@@ -191,8 +195,16 @@ struct StorageSchemaV7MigrationTests {
             context.insert(makeRating(day: "2026-01-01", observedAt: .now, app: nil))
             context.insert(makeRating(day: "2026-01-02", observedAt: .now, app: nil))
             try context.save()
-            // Run a later maintenance pass on this private test store.
-            try StorageSchemaV7Migrator.migrateIfNeeded(at: url, now: .now.addingTimeInterval(86_401))
+            // A completed upgrade never reruns. New observations archive on ingestion.
+            let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+            let app = StoreApp(appStoreID: 84, bundleID: nil, name: "New app", sellerName: nil,
+                               iconURLString: nil, defaultPlatform: .iphone)
+            context.insert(app)
+            let start = try Date("2026-02-01T15:00:00Z", strategy: .iso8601)
+            try ingestRating(service, app: app, observedAt: start, count: 100, in: context)
+            try ingestRating(service, app: app, observedAt: start.addingTimeInterval(86_400), count: 101, in: context)
+            try context.save()
+            #expect(try context.fetchCount(FetchDescriptor<RatingHistoryChunk>()) == 1)
         }
         #expect(throws: (any Error).self) {
             try autoreleasepool {
@@ -274,6 +286,277 @@ struct StorageSchemaV7MigrationTests {
             throw CocoaError(.fileReadUnknown)
         }
         return String(cString: value)
+    }
+
+    @Test
+    func ingestionKeepsOneLiveDayAndCorrectsArchivesWithoutMaintenance() throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let app = StoreApp(appStoreID: 42, bundleID: "example", name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        context.insert(app)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let start = try Date("2026-01-01T15:00:00Z", strategy: .iso8601)
+        for offset in 0..<3 {
+            try ingestRating(service, app: app, observedAt: start.addingTimeInterval(Double(offset) * 86_400),
+                             count: offset == 0 ? 100 : 200, in: context)
+            try context.save()
+        }
+        let expected = try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+        #expect(expected.count == 3) // Equal values on different days remain distinct history.
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+        let chunk = try #require(try context.fetch(FetchDescriptor<RatingHistoryChunk>()).first)
+        #expect(chunk.recordCount == 2)
+        #expect(expected.first { $0.ratingDate == "2026-01-01" }?.fiveStarRatingCount == 90)
+
+        try ingestRating(service, app: app, observedAt: start.addingTimeInterval(3_600), count: 150, in: context)
+        try context.save()
+        let corrected = try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+        #expect(corrected.count == 3)
+        #expect(corrected.first { $0.ratingDate == "2026-01-01" }?.ratingCount == 150)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+        #expect(chunk.recordCount == 2)
+        #expect(try context.fetch(FetchDescriptor<LatestAppRating>()).first?.ratingCount == 200)
+        let digest = chunk.digest
+        try ingestRating(service, app: app, observedAt: start, count: 99, in: context)
+        #expect(!context.hasChanges)
+        #expect(chunk.digest == digest)
+        try ingestRating(service, app: app, observedAt: start.addingTimeInterval(3_600), count: 150, in: context)
+        #expect(!context.hasChanges)
+        #expect(chunk.digest == digest)
+    }
+
+    @Test
+    func backfillAndYearRolloverStayCompactAndRollbackRetainsHistory() throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        context.insert(app)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let start = try Date("2026-12-31T15:00:00Z", strategy: .iso8601)
+        for offset in [0, -1, 1, 2] {
+            try ingestRating(service, app: app, observedAt: start.addingTimeInterval(Double(offset) * 86_400),
+                             count: 100 + offset, in: context)
+        }
+        try context.save()
+        let before = try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+        #expect(before.count == 4)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+        let chunks = try context.fetch(FetchDescriptor<RatingHistoryChunk>())
+        #expect(Set(chunks.map(\.year)) == ["2026", "2027"])
+        #expect(chunks.reduce(0) { $0 + $1.recordCount } == 3)
+        try ingestRating(service, app: app, observedAt: start.addingTimeInterval(3 * 86_400), count: 999, in: context)
+        context.rollback()
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context) == before)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+    }
+
+    @Test
+    func completedMigrationNeverRestartsAnArchivalScan() throws {
+        try withTestStore { container, url in
+            let context = ModelContext(container)
+            context.insert(makeRating(day: "2026-01-01", observedAt: .now, app: nil))
+            context.insert(makeRating(day: "2026-01-02", observedAt: .now, app: nil))
+            try context.save()
+            try StorageSchemaV7Migrator.migrateIfNeeded(at: url)
+            let migrated = ModelContext(container)
+            let state = try #require(try migrated.fetch(FetchDescriptor<StorageMigrationState>()).first)
+            let completion = state.lastMaintenanceAt
+            let cursor = state.lastIdentityKey
+            let count = state.archivedRecordCount
+            // A deliberately raw insert detects accidental rescanning, independently of ingestion.
+            migrated.insert(makeRating(day: "2026-01-03", observedAt: .now, app: nil))
+            try migrated.save()
+            try StorageSchemaV7Migrator.migrateIfNeeded(at: url, now: .now.addingTimeInterval(366 * 86_400))
+            let reread = ModelContext(container)
+            let completed = try #require(try reread.fetch(FetchDescriptor<StorageMigrationState>()).first)
+            #expect(completed.completed)
+            #expect(completed.lastMaintenanceAt == completion)
+            #expect(completed.lastIdentityKey == cursor)
+            #expect(completed.archivedRecordCount == count)
+            #expect(try reread.fetchCount(FetchDescriptor<AppDailyRating>()) == 2)
+        }
+    }
+
+    @Test
+    func ingestionPreservesLongHistoriesAndStorefrontIsolation() throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        context.insert(app)
+        let start = try Date("2024-01-01T15:00:00Z", strategy: .iso8601)
+        var observations: [RatingHistoryStore.Observation] = []
+        for day in 0..<800 {
+            for storefront in ["gb", "us"] {
+                observations.append(.init(.init(appStoreID: 42, storefront: storefront,
+                    ratingCount: day, averageRating: 4.5, ratingCounts: nil,
+                    observedAt: start.addingTimeInterval(Double(day) * 86_400), source: .iTunesSearch)))
+            }
+        }
+        try RatingHistoryStore.ingest(observations, storeApps: [42: app], in: context)
+        try context.save()
+        let records = try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+        #expect(records.count == 1_600)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 2)
+        #expect(try context.fetch(FetchDescriptor<RatingHistoryChunk>()).reduce(0) { $0 + $1.recordCount } == 1_598)
+        #expect(Set(records.filter { $0.storefront == "gb" }.compactMap(\.ratingCount)) == Set(0..<800))
+        #expect(records.allSatisfy { $0.storeAppID == 42 && $0.sourceRaw == AppStorefrontSource.iTunesSearch.rawValue })
+    }
+
+    @Test
+    func corruptArchiveRejectsRolloverBeforeReplacingLiveHistory() throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        context.insert(app)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let start = try Date("2026-01-01T15:00:00Z", strategy: .iso8601)
+        try ingestRating(service, app: app, observedAt: start, count: 100, in: context)
+        let corrupt = RatingHistoryChunk(appStoreID: 42, storefront: "gb", year: "2026")
+        corrupt.recordCount = 1
+        corrupt.payload = Data([1, 2, 3])
+        context.insert(corrupt)
+        try context.save()
+        #expect(throws: (any Error).self) {
+            try ingestRating(service, app: app, observedAt: start.addingTimeInterval(86_400), count: 200, in: context)
+        }
+        context.rollback()
+        let live = try #require(try context.fetch(FetchDescriptor<AppDailyRating>()).first)
+        #expect(live.ratingDate == "2026-01-01")
+        #expect(live.ratingCount == 100)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+        #expect(try context.fetch(FetchDescriptor<LatestAppRating>()).first?.observedAt == start)
+    }
+
+    @Test
+    func reopeningCompletedUpgradeDoesNotScanEvenWithAnOldCompletionDate() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-NoRescan-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: url)
+            let context = ModelContext(container)
+            let state = try #require(try context.fetch(FetchDescriptor<StorageMigrationState>()).first)
+            state.lastMaintenanceAt = .distantPast
+            for day in ["2026-01-01", "2026-01-02"] {
+                context.insert(makeRating(day: day, observedAt: .now, app: nil))
+            }
+            try context.save()
+        }
+        try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: url)
+            let context = ModelContext(container)
+            let state = try #require(try context.fetch(FetchDescriptor<StorageMigrationState>()).first)
+            #expect(state.lastMaintenanceAt == .distantPast)
+            #expect(state.completed && !state.needsCompaction)
+            #expect(try context.fetchCount(FetchDescriptor<RatingHistoryChunk>()) == 0)
+            #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 2)
+        }
+    }
+
+    @Test
+    func ingestionRejectsAnUnupgradedSchemaBeforeChangingRows() throws {
+        let schema = Schema(versionedSchema: OpenASOSchemaV6.self)
+        let container = try ModelContainer(for: schema,
+            configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        context.insert(app)
+        let original = makeRating(day: "2026-01-01", observedAt: .now, app: app)
+        context.insert(original)
+        try context.save()
+        let before = RatingHistoryRecord(original)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let nextDay = try Date("2026-01-02T15:00:00Z", strategy: .iso8601)
+        #expect(throws: RatingHistoryError.self) {
+            try ingestRating(service, app: app, observedAt: nextDay, count: 200, in: context)
+        }
+        #expect(!context.hasChanges)
+        #expect(RatingHistoryRecord(original) == before)
+    }
+
+    @Test
+    func independentWorkersPreserveOverlappingHistoricalCorrectionsAndRollover() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-WriterRace-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        let container = try ModelContainerFactory.makePersistentModelContainer(at: url)
+        let otherContainer = try ModelContainerFactory.makePersistentModelContainer(at: url)
+        let seed = ModelContext(container)
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        seed.insert(app)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let start = try Date("2026-01-01T15:00:00Z", strategy: .iso8601)
+        for day in 0..<3 {
+            try ingestRating(service, app: app, observedAt: start.addingTimeInterval(Double(day) * 86_400),
+                             count: 100 + day, in: seed)
+        }
+        try seed.save()
+        let first = BackgroundModelStore(modelContainer: container)
+        let second = BackgroundModelStore(modelContainer: otherContainer)
+        for _ in 0..<3 {
+            async let firstWrite: Void = first.write { context in
+                let app = try #require(try context.fetch(FetchDescriptor<StoreApp>()).first)
+                try RatingHistoryStore.ingest([.init(.init(appStoreID: 42, storefront: "gb",
+                    ratingCount: 111, averageRating: 4.5, ratingCounts: nil,
+                    observedAt: start.addingTimeInterval(3_600), source: .iTunesSearch))],
+                    storeApps: [42: app], in: context)
+            }
+            async let secondWrite: Void = second.write { context in
+                let app = try #require(try context.fetch(FetchDescriptor<StoreApp>()).first)
+                try RatingHistoryStore.ingest([
+                    .init(.init(appStoreID: 42, storefront: "gb", ratingCount: 222, averageRating: 4.5,
+                        ratingCounts: nil, observedAt: start.addingTimeInterval(86_400 + 3_600), source: .iTunesSearch)),
+                    .init(.init(appStoreID: 42, storefront: "gb", ratingCount: 104, averageRating: 4.5,
+                        ratingCounts: nil, observedAt: start.addingTimeInterval(3 * 86_400), source: .iTunesSearch))
+                ], storeApps: [42: app], in: context)
+            }
+            _ = try await (firstWrite, secondWrite)
+        }
+        let history = try RatingHistoryStore.fetch(appStoreIDs: [42], in: ModelContext(container))
+        #expect(history.count == 4)
+        #expect(history.first { $0.ratingDate == "2026-01-01" }?.ratingCount == 111)
+        #expect(history.first { $0.ratingDate == "2026-01-02" }?.ratingCount == 222)
+        #expect(history.first { $0.ratingDate == "2026-01-03" }?.ratingCount == 102)
+        #expect(try ModelContext(container).fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+    }
+
+    @Test
+    func explicitClearRemovesLiveAndArchivedRatingsTogether() throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        context.insert(app)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let start = try Date("2026-01-01T15:00:00Z", strategy: .iso8601)
+        for day in 0..<3 {
+            try ingestRating(service, app: app, observedAt: start.addingTimeInterval(Double(day) * 86_400),
+                             count: 100 + day, in: context)
+        }
+        try context.save()
+        try service.persist(.init(storefront: "gb", result: nil, error: nil, clearsStoredRatings: true),
+                            for: app, in: context)
+        try context.save()
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context).isEmpty)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 0)
+        #expect(try context.fetchCount(FetchDescriptor<LatestAppRating>()) == 0)
+        #expect(try context.fetchCount(FetchDescriptor<RatingHistoryChunk>()) == 0)
+    }
+
+    private func ingestRating(_ service: AppStorefrontRatingService, app: StoreApp, observedAt: Date,
+                              count: Int, in context: ModelContext) throws {
+        try service.persist(.init(storefront: "gb", result: .init(
+            appStoreID: app.appStoreID, storefront: "gb", ratingCount: count, averageRating: 4.5,
+            ratingCounts: .init(oneStar: 1, twoStar: 2, threeStar: 3, fourStar: 4, fiveStar: 90),
+            observedAt: observedAt, source: .iTunesSearch), error: nil), for: app, in: context)
     }
 
     private func withTestStore(_ body: (ModelContainer, URL) throws -> Void) throws {

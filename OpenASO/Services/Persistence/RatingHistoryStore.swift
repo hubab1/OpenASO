@@ -48,6 +48,74 @@ struct RatingHistoryRecord: Codable, Equatable, Sendable {
         storeAppID = value.storeApp?.appStoreID
     }
 
+    init(_ result: AppStorefrontRatingResult, ratingDate: String?, submissionCount: Int,
+         winningCount: Int, confidence: String?) {
+        appStoreID = result.appStoreID
+        storefront = result.storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.ratingDate = ratingDate ?? LatestAppRating.ratingDateString(for: result.observedAt)
+        identityKey = AppDailyRating.makeIdentityKey(appStoreID: appStoreID, storefront: storefront, ratingDate: self.ratingDate)
+        ratingCount = result.ratingCount
+        averageRating = result.averageRating
+        oneStarRatingCount = result.ratingCounts?.oneStar
+        twoStarRatingCount = result.ratingCounts?.twoStar
+        threeStarRatingCount = result.ratingCounts?.threeStar
+        fourStarRatingCount = result.ratingCounts?.fourStar
+        fiveStarRatingCount = result.ratingCounts?.fiveStar
+        observedAt = result.observedAt
+        self.submissionCount = submissionCount
+        self.winningCount = winningCount
+        confidenceRaw = confidence
+        sourceRaw = result.source.rawValue
+        storeAppID = result.appStoreID
+    }
+
+    var scopeKey: String { LatestAppRating.makeIdentityKey(appStoreID: appStoreID, storefront: storefront) }
+
+    mutating func retainStarCounts(from previous: RatingHistoryRecord) {
+        oneStarRatingCount = previous.oneStarRatingCount
+        twoStarRatingCount = previous.twoStarRatingCount
+        threeStarRatingCount = previous.threeStarRatingCount
+        fourStarRatingCount = previous.fourStarRatingCount
+        fiveStarRatingCount = previous.fiveStarRatingCount
+    }
+
+    func apply(to model: AppDailyRating, storeApp: StoreApp?) {
+        if model.identityKey != identityKey { model.identityKey = identityKey }
+        if model.appStoreID != appStoreID { model.appStoreID = appStoreID }
+        if model.storefront != storefront { model.storefront = storefront }
+        if model.ratingCount != ratingCount { model.ratingCount = ratingCount }
+        if model.averageRating != averageRating { model.averageRating = averageRating }
+        if model.oneStarRatingCount != oneStarRatingCount { model.oneStarRatingCount = oneStarRatingCount }
+        if model.twoStarRatingCount != twoStarRatingCount { model.twoStarRatingCount = twoStarRatingCount }
+        if model.threeStarRatingCount != threeStarRatingCount { model.threeStarRatingCount = threeStarRatingCount }
+        if model.fourStarRatingCount != fourStarRatingCount { model.fourStarRatingCount = fourStarRatingCount }
+        if model.fiveStarRatingCount != fiveStarRatingCount { model.fiveStarRatingCount = fiveStarRatingCount }
+        if model.ratingDate != ratingDate { model.ratingDate = ratingDate }
+        if model.observedAt != observedAt { model.observedAt = observedAt }
+        if model.submissionCount != submissionCount { model.submissionCount = submissionCount }
+        if model.winningCount != winningCount { model.winningCount = winningCount }
+        if model.confidenceRaw != confidenceRaw { model.confidenceRaw = confidenceRaw }
+        if model.sourceRaw != sourceRaw { model.sourceRaw = sourceRaw }
+        if model.storeApp !== storeApp { model.storeApp = storeApp }
+    }
+
+    func apply(to model: LatestAppRating, storeApp: StoreApp?) {
+        if model.ratingCount != ratingCount { model.ratingCount = ratingCount }
+        if model.averageRating != averageRating { model.averageRating = averageRating }
+        if model.oneStarRatingCount != oneStarRatingCount { model.oneStarRatingCount = oneStarRatingCount }
+        if model.twoStarRatingCount != twoStarRatingCount { model.twoStarRatingCount = twoStarRatingCount }
+        if model.threeStarRatingCount != threeStarRatingCount { model.threeStarRatingCount = threeStarRatingCount }
+        if model.fourStarRatingCount != fourStarRatingCount { model.fourStarRatingCount = fourStarRatingCount }
+        if model.fiveStarRatingCount != fiveStarRatingCount { model.fiveStarRatingCount = fiveStarRatingCount }
+        if model.ratingDate != ratingDate { model.ratingDate = ratingDate }
+        if model.observedAt != observedAt { model.observedAt = observedAt }
+        if model.submissionCount != submissionCount { model.submissionCount = submissionCount }
+        if model.winningCount != winningCount { model.winningCount = winningCount }
+        if model.confidenceRaw != confidenceRaw { model.confidenceRaw = confidenceRaw }
+        if model.sourceRaw != sourceRaw { model.sourceRaw = sourceRaw }
+        if model.storeApp !== storeApp { model.storeApp = storeApp }
+    }
+
     // A versioned positional payload avoids repeating property names and
     // binary-plist offset tables in each small archive. Nulls keep their slots.
     init(from decoder: any Decoder) throws {
@@ -114,9 +182,11 @@ struct RatingHistoryRecord: Codable, Equatable, Sendable {
 
 enum RatingHistoryError: LocalizedError {
     case invalidArchive(String)
+    case schemaUpgradeRequired
 
     var errorDescription: String? {
         switch self {
+        case .schemaUpgradeRequired: "Upgrade this database before writing compressed rating history."
         case .invalidArchive(let key): "Rating history failed validation: \(key). No unvalidated source rows were removed."
         }
     }
@@ -152,6 +222,9 @@ enum RatingHistoryStore {
             throw RatingHistoryError.invalidArchive(chunk.identityKey)
         }
         let data = try JSONEncoder().encode(sorted)
+        guard data.count <= 8 * 1_024 * 1_024 else {
+            throw RatingHistoryError.invalidArchive(chunk.identityKey)
+        }
         let compressed = try (data as NSData).compressed(using: .zlib) as Data
         guard try JSONDecoder().decode([RatingHistoryRecord].self,
             from: (compressed as NSData).decompressed(using: .zlib) as Data) == sorted else {
@@ -198,45 +271,161 @@ enum RatingHistoryStore {
         }
     }
 
-    /// Restore an archived day before an existing write path changes it. Both
-    /// removal from the chunk and the new row commit with the caller's save.
-    static func restore(identityKey: String, in context: ModelContext) throws -> AppDailyRating? {
-        try restore(identityKeys: [identityKey], in: context)[identityKey]
+    struct Observation: Sendable {
+        let record: RatingHistoryRecord
+        let replacesStarCounts: Bool
+
+        init(_ result: AppStorefrontRatingResult, ratingDate: String? = nil,
+             submissionCount: Int = 1, winningCount: Int = 1, confidence: String? = "single_source") {
+            record = RatingHistoryRecord(result, ratingDate: ratingDate, submissionCount: submissionCount,
+                                         winningCount: winningCount, confidence: confidence)
+            replacesStarCounts = result.ratingCounts != nil
+        }
     }
 
-    static func restore(identityKeys: [String], in context: ModelContext) throws -> [String: AppDailyRating] {
-        guard !identityKeys.isEmpty else { return [:] }
-        let existing = try context.fetch(FetchDescriptor<AppDailyRating>(predicate: #Predicate {
-            identityKeys.contains($0.identityKey)
-        }))
-        var models = Dictionary(uniqueKeysWithValues: existing.map { ($0.identityKey, $0) })
-        let missing = Set(identityKeys).subtracting(models.keys)
-        let keys = Array(Set(missing.compactMap { key -> String? in
-            let parts = key.components(separatedBy: "::")
-            guard parts.count == 3, let appID = Int64(parts[0]) else { return nil }
-            return RatingHistoryChunk.key(appStoreID: appID, storefront: parts[1], year: String(parts[2].prefix(4)))
-        }))
-        guard !keys.isEmpty else { return models }
-        let chunks = try context.fetch(FetchDescriptor<RatingHistoryChunk>(predicate: #Predicate {
-            keys.contains($0.identityKey)
-        }))
-        let decoded = try chunks.map { ($0, try records(in: $0)) }
-        let storeIDs = Array(Set(decoded.flatMap { $0.1 }.compactMap(\.storeAppID)))
-        let apps = try context.fetch(FetchDescriptor<StoreApp>(predicate: #Predicate { storeIDs.contains($0.appStoreID) }))
-        let appsByID = Dictionary(uniqueKeysWithValues: apps.map { ($0.appStoreID, $0) })
-        for (chunk, values) in decoded {
-            let restored = values.filter { missing.contains($0.identityKey) }
-            guard !restored.isEmpty else { continue }
-            for value in restored {
-                let model = value.makeModel(storeApp: value.storeAppID.flatMap { appsByID[$0] })
-                context.insert(model)
-                models[value.identityKey] = model
-            }
-            let remaining = values.filter { !missing.contains($0.identityKey) }
-            if remaining.isEmpty { context.delete(chunk) }
-            else { try replace(remaining, in: chunk) }
+    /// Mutate only the caller's transaction. One live logical day per scope;
+    /// rollover and historical corrections update only the affected archives.
+    /// The caller commits or rolls back these changes with its other work.
+    /// Shared stores use BackgroundModelStore.write for transaction-wide access.
+    static func ingest(
+        _ observations: [Observation], storeApps: [Int64: StoreApp],
+        acceptsEqualTimestamps: Bool = true, in context: ModelContext
+    ) throws {
+        guard !observations.isEmpty else { return }
+        guard context.container.schema.entities.contains(where: { $0.name == "RatingHistoryChunk" }) else {
+            throw RatingHistoryError.schemaUpgradeRequired
         }
-        return models
+        let scopes = Dictionary(grouping: observations, by: { $0.record.scopeKey })
+        let appIDs = Array(Set(observations.map { $0.record.appStoreID }))
+        let storefronts = Array(Set(observations.map { $0.record.storefront }))
+        var descriptor = FetchDescriptor<AppDailyRating>(predicate: #Predicate {
+            appIDs.contains($0.appStoreID) && storefronts.contains($0.storefront)
+        })
+        descriptor.relationshipKeyPathsForPrefetching = [\.storeApp]
+        let live = try context.fetch(descriptor).filter { scopes[LatestAppRating.makeIdentityKey(
+            appStoreID: $0.appStoreID, storefront: $0.storefront)] != nil }
+        let liveByScope = Dictionary(grouping: live, by: {
+            LatestAppRating.makeIdentityKey(appStoreID: $0.appStoreID, storefront: $0.storefront)
+        })
+        let chunkKeys = Array(Set(observations.map { $0.record.chunkKey } + live.map { RatingHistoryRecord($0).chunkKey }))
+        let archives = try ArchiveEdits(keys: chunkKeys, in: context)
+        let latestValues = try context.fetch(FetchDescriptor<LatestAppRating>(predicate: #Predicate {
+            appIDs.contains($0.appStoreID) && storefronts.contains($0.storefront)
+        }))
+        let latestByScope = Dictionary(uniqueKeysWithValues: latestValues.map { ($0.identityKey, $0) })
+        var hotUpdates: [(RatingHistoryRecord, AppDailyRating?)] = []
+        var obsolete: [AppDailyRating] = []
+        var latestUpdates: [String: RatingHistoryRecord] = [:]
+
+        for (scope, incoming) in scopes {
+            let rows = liveByScope[scope] ?? []
+            let hotRow = rows.max { $0.ratingDate < $1.ratingDate }
+            var hot = hotRow.map(RatingHistoryRecord.init)
+            // Covers raw legacy rows in a caller's existing transaction without
+            // scanning any app/storefront outside this ingestion batch.
+            for row in rows where row !== hotRow {
+                try archives.merge(RatingHistoryRecord(row))
+                obsolete.append(row)
+            }
+            for observation in incoming {
+                var record = observation.record
+                let previous = hot?.identityKey == record.identityKey ? hot : try archives.record(record)
+                if let previous {
+                    guard record.observedAt > previous.observedAt
+                        || (acceptsEqualTimestamps && record.observedAt == previous.observedAt) else { continue }
+                    if !observation.replacesStarCounts { record.retainStarCounts(from: previous) }
+                }
+                if let previous = hot, record.ratingDate > previous.ratingDate {
+                    try archives.merge(previous)
+                }
+                if hot == nil || record.ratingDate >= hot!.ratingDate {
+                    hot = record
+                } else {
+                    try archives.merge(record, replacesEqual: acceptsEqualTimestamps)
+                }
+                let latest = latestByScope[scope]
+                let previousDate = latestUpdates[scope]?.observedAt ?? latest?.observedAt
+                if let previousDate, record.observedAt < previousDate
+                    || (!acceptsEqualTimestamps && record.observedAt == previousDate) { continue }
+                var latestRecord = observation.record
+                if !observation.replacesStarCounts {
+                    if let previous = latestUpdates[scope] { latestRecord.retainStarCounts(from: previous) }
+                    else if let latest {
+                        latestRecord.oneStarRatingCount = latest.oneStarRatingCount
+                        latestRecord.twoStarRatingCount = latest.twoStarRatingCount
+                        latestRecord.threeStarRatingCount = latest.threeStarRatingCount
+                        latestRecord.fourStarRatingCount = latest.fourStarRatingCount
+                        latestRecord.fiveStarRatingCount = latest.fiveStarRatingCount
+                    }
+                }
+                latestUpdates[scope] = latestRecord
+            }
+            if let hot { hotUpdates.append((hot, hotRow)) }
+        }
+        // Validate every compressed update before changing or removing live rows.
+        try archives.apply(in: context)
+        for (record, row) in hotUpdates {
+            let app = record.storeAppID.flatMap { storeApps[$0] } ?? row?.storeApp
+            if let row { record.apply(to: row, storeApp: app) }
+            else { context.insert(record.makeModel(storeApp: app)) }
+        }
+        for row in obsolete { context.delete(row) }
+        for (scope, record) in latestUpdates {
+            let app = record.storeAppID.flatMap { storeApps[$0] }
+            let latest = latestByScope[scope] ?? LatestAppRating(
+                appStoreID: record.appStoreID, storefront: record.storefront,
+                ratingCount: record.ratingCount, averageRating: record.averageRating, storeApp: app
+            )
+            if latest.modelContext == nil { context.insert(latest) }
+            record.apply(to: latest, storeApp: app)
+        }
+    }
+
+    private final class ArchiveEdits {
+        private let chunks: [String: RatingHistoryChunk]
+        private var decoded: [String: [String: RatingHistoryRecord]] = [:]
+        private var changed = Set<String>()
+
+        init(keys: [String], in context: ModelContext) throws {
+            chunks = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<RatingHistoryChunk>(
+                predicate: #Predicate { keys.contains($0.identityKey) }
+            )).map { ($0.identityKey, $0) })
+        }
+
+        private func values(for key: String) throws -> [String: RatingHistoryRecord] {
+            if let values = decoded[key] { return values }
+            let values = try chunks[key].map { chunk in
+                Dictionary(uniqueKeysWithValues: try records(in: chunk).map { ($0.identityKey, $0) })
+            } ?? [:]
+            decoded[key] = values
+            return values
+        }
+
+        func record(_ record: RatingHistoryRecord) throws -> RatingHistoryRecord? {
+            try values(for: record.chunkKey)[record.identityKey]
+        }
+
+        func merge(_ record: RatingHistoryRecord, replacesEqual: Bool = true) throws {
+            var values = try values(for: record.chunkKey)
+            if let previous = values[record.identityKey] {
+                guard record != previous, record.observedAt > previous.observedAt
+                    || (replacesEqual && record.observedAt == previous.observedAt) else { return }
+            }
+            values[record.identityKey] = record
+            decoded[record.chunkKey] = values
+            changed.insert(record.chunkKey)
+        }
+
+        func apply(in context: ModelContext) throws {
+            for key in changed.sorted() {
+                let values = Array(decoded[key]!.values)
+                let first = values[0]
+                let chunk = chunks[key] ?? RatingHistoryChunk(appStoreID: first.appStoreID,
+                    storefront: first.storefront, year: String(first.ratingDate.prefix(4)))
+                try replace(values, in: chunk)
+                if chunk.modelContext == nil { context.insert(chunk) }
+            }
+        }
     }
 
     static func remove(appStoreID: Int64, storefront: String, in context: ModelContext) throws {

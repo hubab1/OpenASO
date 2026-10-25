@@ -89,8 +89,10 @@ private actor BackgroundModelContextWorker {
     func write<Value: Sendable>(
         _ operation: @Sendable (ModelContext) throws -> Value
     ) throws -> Value {
-        let modelContext = prepareModelContext()
-        do {
+        // The dedicated queue may wait for another process's bounded save;
+        // never keep a cached context across independent write transactions.
+        defer { context = nil }
+        return try ModelContainerFactory.withWriteTransaction(in: modelContainer) { modelContext in
             let value = try operation(modelContext)
             try modelContext.save()
             let now = Date.now
@@ -102,9 +104,6 @@ private actor BackgroundModelContextWorker {
                 }
             }
             return value
-        } catch {
-            modelContext.rollback()
-            throw error
         }
     }
 

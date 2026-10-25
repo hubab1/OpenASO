@@ -62,13 +62,7 @@ enum StorageSchemaV7Migrator {
             state.setValue(true, forKey: "needsCompaction")
             try context.save()
         }
-        if state.value(forKey: "completed") as? Bool == true {
-            let previous = state.value(forKey: "lastMaintenanceAt") as? Date ?? .distantPast
-            guard now.timeIntervalSince(previous) >= 86_400 else { return true }
-            state.setValue(false, forKey: "completed")
-            state.setValue(true, forKey: "needsCompaction")
-            state.setValue(nil, forKey: "lastIdentityKey")
-        }
+        if state.value(forKey: "completed") as? Bool == true { return true }
         if let pending = state.value(forKey: "pendingDeletionPayload") as? Data {
             try finishDeletion(JSONDecoder().decode(PendingDeletion.self, from: pending), state: state, in: context)
             return false

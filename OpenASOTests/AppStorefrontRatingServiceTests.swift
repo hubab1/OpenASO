@@ -654,6 +654,7 @@ private func makeRatingContainer() throws -> ModelContainer {
         AppKeywordStats.self,
         LatestAppRating.self,
         AppDailyRating.self,
+        RatingHistoryChunk.self,
         AppStorefrontReview.self,
         StoreApp.self,
         AppStorefrontMetadata.self,
