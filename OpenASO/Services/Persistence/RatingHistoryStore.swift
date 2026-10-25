@@ -308,7 +308,7 @@ enum RatingHistoryStore {
             LatestAppRating.makeIdentityKey(appStoreID: $0.appStoreID, storefront: $0.storefront)
         })
         let chunkKeys = Array(Set(observations.map { $0.record.chunkKey } + live.map { RatingHistoryRecord($0).chunkKey }))
-        let archives = try ArchiveEdits(keys: chunkKeys, in: context)
+        let archives = ArchiveEdits(keys: chunkKeys, in: context)
         let latestValues = try context.fetch(FetchDescriptor<LatestAppRating>(predicate: #Predicate {
             appIDs.contains($0.appStoreID) && storefronts.contains($0.storefront)
         }))
@@ -382,19 +382,26 @@ enum RatingHistoryStore {
     }
 
     private final class ArchiveEdits {
-        private let chunks: [String: RatingHistoryChunk]
+        private var chunks: [String: RatingHistoryChunk]?
+        private let keys: [String]
+        private let context: ModelContext
         private var decoded: [String: [String: RatingHistoryRecord]] = [:]
         private var changed = Set<String>()
 
-        init(keys: [String], in context: ModelContext) throws {
-            chunks = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<RatingHistoryChunk>(
-                predicate: #Predicate { keys.contains($0.identityKey) }
-            )).map { ($0.identityKey, $0) })
+        init(keys: [String], in context: ModelContext) {
+            self.keys = keys
+            self.context = context
         }
 
         private func values(for key: String) throws -> [String: RatingHistoryRecord] {
             if let values = decoded[key] { return values }
-            let values = try chunks[key].map { chunk in
+            if chunks == nil {
+                let requestedKeys = keys
+                chunks = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<RatingHistoryChunk>(
+                    predicate: #Predicate { requestedKeys.contains($0.identityKey) }
+                )).map { ($0.identityKey, $0) })
+            }
+            let values = try chunks?[key].map { chunk in
                 Dictionary(uniqueKeysWithValues: try records(in: chunk).map { ($0.identityKey, $0) })
             } ?? [:]
             decoded[key] = values
@@ -420,7 +427,7 @@ enum RatingHistoryStore {
             for key in changed.sorted() {
                 let values = Array(decoded[key]!.values)
                 let first = values[0]
-                let chunk = chunks[key] ?? RatingHistoryChunk(appStoreID: first.appStoreID,
+                let chunk = chunks?[key] ?? RatingHistoryChunk(appStoreID: first.appStoreID,
                     storefront: first.storefront, year: String(first.ratingDate.prefix(4)))
                 try replace(values, in: chunk)
                 if chunk.modelContext == nil { context.insert(chunk) }
@@ -428,10 +435,21 @@ enum RatingHistoryStore {
         }
     }
 
+    /// Explicit scope clearing only; provider unavailability must preserve history.
     static func remove(appStoreID: Int64, storefront: String, in context: ModelContext) throws {
         let chunks = try context.fetch(FetchDescriptor<RatingHistoryChunk>(predicate: #Predicate {
             $0.appStoreID == appStoreID && $0.storefront == storefront
         }))
+        let live = try context.fetch(FetchDescriptor<AppDailyRating>(predicate: #Predicate {
+            $0.appStoreID == appStoreID && $0.storefront == storefront
+        }))
+        let latest = try context.fetch(FetchDescriptor<LatestAppRating>(predicate: #Predicate {
+            $0.appStoreID == appStoreID && $0.storefront == storefront
+        }))
+        // Fetch every representation before staging changes. The caller owns
+        // the save/rollback, just as with ingestion.
         for chunk in chunks { context.delete(chunk) }
+        for value in live { context.delete(value) }
+        for value in latest { context.delete(value) }
     }
 }

@@ -349,6 +349,10 @@
 		F008A0000000000000000001 /* Networking/ProviderRequestGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F008A0000000000000000011 /* Networking/ProviderRequestGate.swift */; };
 		F008A0000000000000000002 /* ProviderRequestGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F008A0000000000000000012 /* ProviderRequestGateTests.swift */; };
 		F008B0000000000000000001 /* Networking/ProviderHTTPClientPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F008B0000000000000000011 /* Networking/ProviderHTTPClientPipeline.swift */; };
+		40A7F458B27249B89EDDCC41 /* Persistence/RatingHistoryStore+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */; };
+		D45DEBF8843440B384689D6A /* Persistence/RatingHistoryStore+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */; };
+		04FE3BB52BA4436A8E8A7B36 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
+		195FABB04F3A4F39925CFA43 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -637,6 +641,8 @@
 		F008A0000000000000000011 /* Networking/ProviderRequestGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/ProviderRequestGate.swift; sourceTree = "<group>"; };
 		F008A0000000000000000012 /* ProviderRequestGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderRequestGateTests.swift; sourceTree = "<group>"; };
 		F008B0000000000000000011 /* Networking/ProviderHTTPClientPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/ProviderHTTPClientPipeline.swift; sourceTree = "<group>"; };
+		E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Persistence/RatingHistoryStore+Reading.swift"; sourceTree = "<group>"; };
+		382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Persistence/StoragePreparationProgress.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -869,6 +875,8 @@
 				9AED285CFBB54DB09AC958F9 /* Persistence/PersistentStoreCompactor.swift */,
 				EB753AAEB38F4C8DA227FFA3 /* Persistence/StorageSchemaV7Migrator.swift */,
 				ED8BE61549704D9DA2D9FC76 /* Persistence/RatingHistoryStore.swift */,
+				382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */,
+				E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */,
 				D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */,
 				D34A00000000000000000011 /* SearchRanking/KeywordResearchHistoryReader.swift */,
 				A70000000000000000000002 /* RatingsReviews/ReviewLanguageDetectionService.swift */,
@@ -1364,6 +1372,8 @@
 				49621A2D2079403C8FB09C1A /* Persistence/PersistentStoreCompactor.swift in Sources */,
 				0129D26AA92C4ED0B32BCDB8 /* Persistence/StorageSchemaV7Migrator.swift in Sources */,
 				CD1242318DB74C7DB224A6FF /* Persistence/RatingHistoryStore.swift in Sources */,
+				04FE3BB52BA4436A8E8A7B36 /* Persistence/StoragePreparationProgress.swift in Sources */,
+				40A7F458B27249B89EDDCC41 /* Persistence/RatingHistoryStore+Reading.swift in Sources */,
 				D32A00000000000000000003 /* KeywordResearchProject.swift in Sources */,
 				D32A00000000000000000005 /* KeywordResearchKeyword.swift in Sources */,
 				D20B00000000000000000003 /* EstimatedKeywordDifficultyMetric.swift in Sources */,
@@ -1561,6 +1571,8 @@
 				DBF111AE76C4432B9DE83560 /* Persistence/PersistentStoreCompactor.swift in Sources */,
 				073892B3DFEF4C34B0EBBC39 /* Persistence/StorageSchemaV7Migrator.swift in Sources */,
 				9532E6E87A564ABFB26C6A21 /* Persistence/RatingHistoryStore.swift in Sources */,
+				195FABB04F3A4F39925CFA43 /* Persistence/StoragePreparationProgress.swift in Sources */,
+				D45DEBF8843440B384689D6A /* Persistence/RatingHistoryStore+Reading.swift in Sources */,
 				D32A00000000000000000004 /* KeywordResearchProject.swift in Sources */,
 				D32A00000000000000000006 /* KeywordResearchKeyword.swift in Sources */,
 				D20B00000000000000000004 /* EstimatedKeywordDifficultyMetric.swift in Sources */,

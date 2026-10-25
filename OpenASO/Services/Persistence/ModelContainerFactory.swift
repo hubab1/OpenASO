@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import ObjectiveC
 import SwiftData
+import Synchronization
 
 enum PersistentStoreError: LocalizedError, Sendable {
     case locationUnavailable(diagnosticDescription: String)
@@ -54,6 +55,8 @@ enum PersistentStoreError: LocalizedError, Sendable {
 }
 
 enum ModelContainerFactory {
+    private static let writingContexts = Mutex<Set<ObjectIdentifier>>([])
+
     typealias ContainerOpener = (Schema, ModelConfiguration) throws -> ModelContainer
 
     static var schema: Schema {
@@ -63,7 +66,8 @@ enum ModelContainerFactory {
     static func makeModelContainer(
         isStoredInMemoryOnly: Bool,
         namespace: AppNamespace = .current,
-        opener: ContainerOpener = openModelContainer
+        opener: ContainerOpener = openModelContainer,
+        progress: (@Sendable (StoragePreparationProgress) -> Void)? = nil
     ) throws -> ModelContainer {
         let schema = Self.schema
         if isStoredInMemoryOnly {
@@ -71,7 +75,10 @@ enum ModelContainerFactory {
                 schema: schema,
                 isStoredInMemoryOnly: true
             )
-            return try opener(schema, configuration)
+            progress?(.opening)
+            let container = try opener(schema, configuration)
+            progress?(.ready)
+            return container
         }
 
         let persistentStoreURL: URL
@@ -85,19 +92,21 @@ enum ModelContainerFactory {
 
         return try makePersistentModelContainer(
             at: persistentStoreURL,
-            opener: opener
+            opener: opener, progress: progress
         )
     }
 
     static func makePersistentModelContainer(
         at storeURL: URL,
         opener: ContainerOpener = openModelContainer,
-        compactStore: (URL) throws -> Void = PersistentStoreCompactor.compactIfNeeded
+        compactStore: (URL) throws -> Void = PersistentStoreCompactor.compactIfNeeded,
+        progress: (@Sendable (StoragePreparationProgress) -> Void)? = nil
     ) throws -> ModelContainer {
         let schema = Self.schema
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         do {
-            return try withMigrationAccess(for: storeURL) { canMigrate in
+            progress?(.opening)
+            return try withMigrationAccess(for: storeURL, progress: progress) { canMigrate in
                 guard canMigrate else {
                     let container = try opener(schema, configuration)
                     let state = try ModelContext(container).fetch(FetchDescriptor<StorageMigrationState>()).first
@@ -108,6 +117,7 @@ enum ModelContainerFactory {
                             NSLocalizedDescriptionKey: "The database upgrade is unfinished. Quit other OpenASO, refresh, or MCP processes and reopen to resume it."
                         ])
                     }
+                    progress?(.ready)
                     return container
                 }
                 let prepared: ModelContainer? = try autoreleasepool {
@@ -122,8 +132,12 @@ enum ModelContainerFactory {
                     try PersistentHistoryMaintenance.prune(in: context)
                     return nil
                 }
-                if let prepared { return prepared }
-                try StorageSchemaV7Migrator.migrateIfNeeded(at: storeURL)
+                if let prepared {
+                    progress?(.ready)
+                    return prepared
+                }
+                try StorageSchemaV7Migrator.migrateIfNeeded(at: storeURL, progress: progress)
+                progress?(.compacting)
                 var compactionFinished = false
                 do {
                     try compactStore(storeURL)
@@ -142,6 +156,7 @@ enum ModelContainerFactory {
                         try context.save()
                     }
                 }
+                progress?(.ready)
                 return container
             }
         } catch {
@@ -158,6 +173,43 @@ enum ModelContainerFactory {
     static func withWriteTransaction<Value>(
         in container: ModelContainer, _ operation: (ModelContext) throws -> Value
     ) throws -> Value {
+        try withTransactionAccess(in: container, mode: LOCK_EX) {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            let identity = ObjectIdentifier(context)
+            writingContexts.withLock { _ = $0.insert(identity) }
+            defer { writingContexts.withLock { _ = $0.remove(identity) } }
+            do {
+                let result = try operation(context)
+                if context.hasChanges { try context.save() }
+                return result
+            } catch {
+                context.rollback()
+                throw error
+            }
+        }
+    }
+
+    /// A bounded history query reads live rows, chunk metadata, and payloads
+    /// under one shared lease. Fresh contexts avoid mixing cached generations.
+    /// Reads inside an existing write transaction reuse its exclusive lease.
+    static func withReadTransaction<Value>(
+        in context: ModelContext, _ operation: (ModelContext) throws -> Value
+    ) throws -> Value {
+        if writingContexts.withLock({ $0.contains(ObjectIdentifier(context)) }) {
+            return try operation(context)
+        }
+        return try withTransactionAccess(in: context.container, mode: LOCK_SH) {
+            if context.hasChanges { return try operation(context) }
+            let fresh = ModelContext(context.container)
+            fresh.autosaveEnabled = false
+            return try operation(fresh)
+        }
+    }
+
+    private static func withTransactionAccess<Value>(
+        in container: ModelContainer, mode: Int32, _ operation: () throws -> Value
+    ) throws -> Value {
         let configuration = container.configurations.first!
         let identity = configuration.isStoredInMemoryOnly
             ? "memory:\(ObjectIdentifier(container))"
@@ -169,20 +221,11 @@ enum ModelContainerFactory {
         let descriptor = url.path.withCString { Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR) }
         guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { Darwin.close(descriptor) }
-        while flock(descriptor, LOCK_EX) != 0 {
+        while flock(descriptor, mode) != 0 {
             guard errno == EINTR else { throw CocoaError(.fileLocking) }
         }
         defer { flock(descriptor, LOCK_UN) }
-        let context = ModelContext(container)
-        context.autosaveEnabled = false
-        do {
-            let result = try operation(context)
-            if context.hasChanges { try context.save() }
-            return result
-        } catch {
-            context.rollback()
-            throw error
-        }
+        return try operation()
     }
 
     private static func storeURL(namespace: AppNamespace) throws -> URL {
@@ -205,6 +248,7 @@ enum ModelContainerFactory {
 
     private static func withMigrationAccess(
         for storeURL: URL,
+        progress: (@Sendable (StoragePreparationProgress) -> Void)?,
         _ operation: (Bool) throws -> ModelContainer
     ) throws -> ModelContainer {
         let lockDirectory = FileManager.default.temporaryDirectory
@@ -227,6 +271,7 @@ enum ModelContainerFactory {
         let exclusive = flock(descriptor, LOCK_EX | LOCK_NB) == 0
         if !exclusive {
             guard errno == EWOULDBLOCK || errno == EAGAIN else { throw CocoaError(.fileLocking) }
+            progress?(.waitingForClients)
             while flock(descriptor, LOCK_SH) != 0 {
                 guard errno == EINTR else { throw CocoaError(.fileLocking) }
             }

@@ -139,8 +139,7 @@ final class AppStorefrontRatingService: Sendable {
                 storefront: storefront,
                 result: nil,
                 error: nil,
-                unavailabilityReason: unavailable.localizedDescription,
-                clearsStoredRatings: true
+                unavailabilityReason: unavailable.localizedDescription
             )
         } catch let mismatch as AppStorefrontRatingStorefrontMismatch {
             try Task.checkCancellation()
@@ -151,8 +150,7 @@ final class AppStorefrontRatingService: Sendable {
             return AppStorefrontRatingRefreshOutcome(
                 storefront: storefront,
                 result: nil,
-                error: mappedError,
-                clearsStoredRatings: true
+                error: mappedError
             )
         } catch {
             if Task.isCancelled {
@@ -179,10 +177,6 @@ final class AppStorefrontRatingService: Sendable {
             try RatingHistoryStore.ingest([.init(result)],
                 storeApps: [storeApp.appStoreID: storeApp], in: modelContext)
         }
-
-        if outcome.clearsStoredRatings {
-            try clearRatings(appStoreID: storeApp.appStoreID, storefront: outcome.storefront, in: modelContext)
-        }
     }
 
     func fetchRatings(appStoreID: Int64, storefront: String) async throws -> AppStorefrontRatingResult {
@@ -197,34 +191,6 @@ final class AppStorefrontRatingService: Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
         return Array(Set(normalizedStorefronts)).sorted()
-    }
-
-    private func clearRatings(appStoreID: Int64, storefront: String, in modelContext: ModelContext) throws {
-        let targetAppStoreID = appStoreID
-        let targetStorefront = storefront
-        let latestDescriptor = FetchDescriptor<LatestAppRating>(
-            predicate: #Predicate { latest in
-                latest.appStoreID == targetAppStoreID && latest.storefront == targetStorefront
-            }
-        )
-        let snapshotDescriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.appStoreID == targetAppStoreID && snapshot.storefront == targetStorefront
-            }
-        )
-
-        try RatingHistoryStore.remove(appStoreID: appStoreID, storefront: storefront, in: modelContext)
-        let latest = (try? modelContext.fetch(latestDescriptor)) ?? []
-        let snapshots = (try? modelContext.fetch(snapshotDescriptor)) ?? []
-        for value in latest {
-            modelContext.delete(value)
-        }
-        for value in snapshots {
-            modelContext.delete(value)
-        }
-        OpenASOLog.ratings.info(
-            "Cleared ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) latest=\(latest.count, privacy: .public) snapshots=\(snapshots.count, privacy: .public)"
-        )
     }
 }
 

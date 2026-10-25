@@ -20,7 +20,8 @@ enum StorageSchemaV7Migrator {
     @discardableResult
     static func migrateIfNeeded(
         at storeURL: URL, now: Date = .now, batchLimit: Int? = nil,
-        beforeDeletion: (@Sendable () throws -> Void)? = nil
+        beforeDeletion: (@Sendable () throws -> Void)? = nil,
+        progress: (@Sendable (StoragePreparationProgress) -> Void)? = nil
     ) throws -> Bool {
         guard let model = NSManagedObjectModel.makeManagedObjectModel(for: OpenASOMigrationPlan.currentSchema.models) else {
             throw CocoaError(.persistentStoreInvalidType)
@@ -29,17 +30,43 @@ enum StorageSchemaV7Migrator {
         let store = try coordinator.addPersistentStore(type: .sqlite, at: storeURL,
             options: [NSPersistentHistoryTrackingKey: true, NSSQLitePragmasOption: ["cache_size": "-65536"]])
         defer { try? coordinator.remove(store) }
+        var total: Int?
+        if progress != nil {
+            let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+            context.persistentStoreCoordinator = coordinator
+            total = try context.performAndWait {
+                let request = NSFetchRequest<NSManagedObject>(entityName: "StorageMigrationState")
+                request.predicate = NSPredicate(format: "migrationKey == %@", "storage-v7")
+                request.fetchLimit = 1
+                let state = try context.fetch(request).first
+                guard state?.value(forKey: "completed") as? Bool != true else { return nil }
+                let cursor = state?.value(forKey: "lastIdentityKey") as? String ?? ""
+                let remaining = NSFetchRequest<NSFetchRequestResult>(entityName: "AppDailyRating")
+                remaining.predicate = NSPredicate(format: "identityKey > %@", cursor)
+                return try context.count(for: remaining)
+            }
+            // A completed migration must not count or scan old source history.
+            guard let total else { return true }
+            progress?(.archiving(completed: 0, total: total))
+        }
+        var completed = 0
         var batches = 0
         while batchLimit == nil || batches < batchLimit! {
-            let done = try autoreleasepool {
+            let processed = try autoreleasepool {
                 let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
                 context.persistentStoreCoordinator = coordinator
                 context.undoManager = nil
                 return try context.performAndWait {
-                    try migratePersistentBatch(in: context, coordinator: coordinator, now: now, beforeDeletion: beforeDeletion)
+                    try migratePersistentBatch(in: context, coordinator: coordinator, now: now, beforeDeletion: beforeDeletion,
+                                               reportsProgress: progress != nil)
                 }
             }
-            if done { return true }
+            guard let processed else {
+                if let total { progress?(.archiving(completed: total, total: total)) }
+                return true
+            }
+            completed += processed
+            if let total { progress?(.archiving(completed: min(completed, total), total: total)) }
             batches += 1
         }
         return false
@@ -47,8 +74,8 @@ enum StorageSchemaV7Migrator {
 
     private static func migratePersistentBatch(
         in context: NSManagedObjectContext, coordinator: NSPersistentStoreCoordinator, now: Date,
-        beforeDeletion: (@Sendable () throws -> Void)?
-    ) throws -> Bool {
+        beforeDeletion: (@Sendable () throws -> Void)?, reportsProgress: Bool
+    ) throws -> Int? {
         let stateRequest = NSFetchRequest<NSManagedObject>(entityName: "StorageMigrationState")
         stateRequest.predicate = NSPredicate(format: "migrationKey == %@", "storage-v7")
         stateRequest.fetchLimit = 1
@@ -62,10 +89,18 @@ enum StorageSchemaV7Migrator {
             state.setValue(true, forKey: "needsCompaction")
             try context.save()
         }
-        if state.value(forKey: "completed") as? Bool == true { return true }
+        if state.value(forKey: "completed") as? Bool == true { return nil }
         if let pending = state.value(forKey: "pendingDeletionPayload") as? Data {
-            try finishDeletion(JSONDecoder().decode(PendingDeletion.self, from: pending), state: state, in: context)
-            return false
+            let pending = try JSONDecoder().decode(PendingDeletion.self, from: pending)
+            var processed = 0
+            if reportsProgress {
+                let request = NSFetchRequest<NSFetchRequestResult>(entityName: "AppDailyRating")
+                let cursor = state.value(forKey: "lastIdentityKey") as? String ?? ""
+                request.predicate = NSPredicate(format: "identityKey > %@ AND identityKey <= %@", cursor, pending.nextCursor)
+                processed = try context.count(for: request)
+            }
+            try finishDeletion(pending, state: state, in: context)
+            return processed
         }
         let cursor = state.value(forKey: "lastIdentityKey") as? String ?? ""
         let request = NSFetchRequest<NSManagedObject>(entityName: "AppDailyRating")
@@ -81,7 +116,7 @@ enum StorageSchemaV7Migrator {
             state.setValue(now, forKey: "lastMaintenanceAt")
             try context.save()
             try context.execute(NSPersistentHistoryChangeRequest.deleteHistory(before: Date.now))
-            return true
+            return nil
         }
         let nextCursor = try RatingHistoryRecord(last).identityKey
         let records = try batch.map(RatingHistoryRecord.init)
@@ -157,7 +192,7 @@ enum StorageSchemaV7Migrator {
         try context.save()
         try beforeDeletion?()
         try finishDeletion(pending, state: state, in: context)
-        return false
+        return batch.count
     }
 
     private static func finishDeletion(

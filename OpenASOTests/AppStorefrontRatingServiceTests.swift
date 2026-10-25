@@ -250,7 +250,7 @@ struct AppStorefrontRatingServiceTests {
     }
 
     @Test
-    func refreshRatingsTreatsLookupMissAsUnavailableStorefrontNotFailure() async throws {
+    func refreshRatingsPreservesHistoryWhenLookupBecomesUnavailable() async throws {
         let container = try makeRatingContainer()
         let modelContext = ModelContext(container)
         let storeApp = StoreApp(
@@ -276,7 +276,9 @@ struct AppStorefrontRatingServiceTests {
             averageRating: 4.1,
             storeApp: storeApp
         ))
+        try addArchivedRating(for: storeApp, storefront: "ru", in: modelContext)
         try modelContext.save()
+        let expectedHistory = try RatingHistoryStore.fetch(appStoreIDs: [storeApp.appStoreID], in: modelContext)
 
         var requestedURLs: [String] = []
         let progressRecorder = RatingProgressRecorder()
@@ -311,8 +313,9 @@ struct AppStorefrontRatingServiceTests {
         #expect(outcomes.first?.error == nil)
         #expect(outcomes.first?.unavailabilityReason == "App 6480417616 is not available in RU.")
         #expect(await progressRecorder.failureCounts == [0, 0])
-        #expect(try modelContext.fetch(FetchDescriptor<LatestAppRating>()).isEmpty)
-        #expect(try modelContext.fetch(FetchDescriptor<AppDailyRating>()).isEmpty)
+        #expect(try modelContext.fetchCount(FetchDescriptor<LatestAppRating>()) == 1)
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [storeApp.appStoreID], in: modelContext) == expectedHistory)
+        #expect(try modelContext.fetchCount(FetchDescriptor<RatingHistoryChunk>()) == 1)
     }
 
     @Test
@@ -524,7 +527,7 @@ struct AppStorefrontRatingServiceTests {
     }
 
     @Test
-    func refreshRatingsRejectsRedirectedStorefrontAndClearsStaleRows() async throws {
+    func refreshRatingsRejectsRedirectedStorefrontAndPreservesHistory() async throws {
         let container = try makeRatingContainer()
         let modelContext = ModelContext(container)
         let storeApp = StoreApp(
@@ -550,7 +553,9 @@ struct AppStorefrontRatingServiceTests {
             averageRating: 4.7,
             storeApp: storeApp
         ))
+        try addArchivedRating(for: storeApp, storefront: "ad", in: modelContext)
         try modelContext.save()
+        let expectedHistory = try RatingHistoryStore.fetch(appStoreIDs: [storeApp.appStoreID], in: modelContext)
 
         var requestURLs: [String] = []
         let client = MockHTTPClient { request in
@@ -602,8 +607,20 @@ struct AppStorefrontRatingServiceTests {
             "https://itunes.apple.com/lookup?id=6608976383&country=ad",
             "https://apps.apple.com/ad/app/id6608976383?l=en-US"
         ])
-        #expect(try modelContext.fetch(FetchDescriptor<LatestAppRating>()).isEmpty)
-        #expect(try modelContext.fetch(FetchDescriptor<AppDailyRating>()).isEmpty)
+        #expect(try modelContext.fetchCount(FetchDescriptor<LatestAppRating>()) == 1)
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [storeApp.appStoreID], in: modelContext) == expectedHistory)
+        #expect(try modelContext.fetchCount(FetchDescriptor<RatingHistoryChunk>()) == 1)
+    }
+
+    private func addArchivedRating(for app: StoreApp, storefront: String, in context: ModelContext) throws {
+        let older = AppDailyRating(appStoreID: app.appStoreID, storefront: storefront,
+                                   ratingCount: 7, averageRating: 4.0, ratingDate: "2020-01-01",
+                                   observedAt: Date(timeIntervalSince1970: 1_577_836_800), storeApp: nil)
+        let chunk = RatingHistoryChunk(appStoreID: app.appStoreID, storefront: storefront, year: "2020")
+        var record = RatingHistoryRecord(older)
+        record.storeAppID = app.appStoreID
+        try RatingHistoryStore.replace([record], in: chunk)
+        context.insert(chunk)
     }
 
     private static func reviewFeedJSON(entries: [String]) -> String {

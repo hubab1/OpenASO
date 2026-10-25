@@ -1356,17 +1356,13 @@ final class OpenASOMCPService: Sendable {
       let minimumDate = dateFrom ?? .distantPast
       let maximumDate = dateTo ?? .distantFuture
       let storefrontValues = Array(storefronts)
-      let filtersStorefront = !storefrontValues.isEmpty
-      let allRatings = try RatingHistoryStore.fetch(
-        appStoreIDs: [appStoreID], storefronts: storefrontValues,
-        from: minimumDate, to: maximumDate, in: modelContext
+      let cursor = historyCursor.map { RatingHistoryStore.Cursor(observedAt: $0.timestamp, identityKey: $0.tieKey) }
+      let history = try RatingHistoryStore.page(
+        appStoreID: appStoreID, storefronts: storefrontValues,
+        from: minimumDate, to: maximumDate, after: cursor, limit: page.limit + 1, in: modelContext
       )
-      let total = allRatings.count
-      let ratingsWithLookahead = Array(allRatings.filter { rating in
-        guard let historyCursor else { return true }
-        return rating.observedAt < historyCursor.timestamp
-          || (rating.observedAt == historyCursor.timestamp && rating.identityKey > historyCursor.tieKey)
-      }.prefix(page.limit + 1))
+      let total = history.total
+      let ratingsWithLookahead = history.records
       let pageSlice = try Self.historyPageFromLookahead(
         rowsWithLookahead: ratingsWithLookahead,
         kind: .ratings,

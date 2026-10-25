@@ -15,6 +15,9 @@ struct AppRatingsView: View {
     @State private var latestRatings: [RatingLatestValue] = []
     @State private var ratingSnapshots: [RatingSnapshotValue] = []
     @State private var isLoadingRatings = false
+    @State private var activeRatingsLoad: UUID?
+    @State private var loadedRatingsAppID: Int64?
+    @State private var ratingsLoadError: String?
     @State private var appStoreConnectStatus = RatingsAppStoreConnectStatus.notConnected
     @State private var metric = RatingsMetric.ratingCount
 
@@ -64,11 +67,26 @@ struct AppRatingsView: View {
             )
             .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
         }
+        .safeAreaInset(edge: .top) {
+            if let ratingsLoadError {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Rating history couldn’t be loaded", systemImage: "exclamationmark.triangle")
+                        Text(ratingsLoadError).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Retry") { Task { await loadRatings() } }
+                        .disabled(isLoadingRatings)
+                }
+                .padding()
+                .background(.bar)
+            }
+        }
         .task {
             loadStorefrontDefinitionsIfNeeded()
         }
         .task(id: ratingsReloadID) {
-            await loadRatings(reset: true)
+            await loadRatings()
         }
         .task(id: appStoreConnectReloadID) {
             await updateAppStoreConnectStatus()
@@ -102,15 +120,19 @@ struct AppRatingsView: View {
         }
     }
 
-    private func loadRatings(reset: Bool) async {
-        guard let backgroundModelStore = services.backgroundModelStore, !isLoadingRatings else {
-            return
-        }
-
+    private func loadRatings() async {
+        guard let backgroundModelStore = services.backgroundModelStore else { return }
+        let loadID = UUID()
+        activeRatingsLoad = loadID
         isLoadingRatings = true
-        defer { isLoadingRatings = false }
+        ratingsLoadError = nil
+        defer { if activeRatingsLoad == loadID { isLoadingRatings = false } }
 
         let targetAppStoreID = appStoreID
+        if loadedRatingsAppID != targetAppStoreID {
+            latestRatings = []
+            ratingSnapshots = []
+        }
         do {
             let data = try await backgroundModelStore.read { modelContext in
                 try Self.fetchRatingsDashboardData(
@@ -119,11 +141,13 @@ struct AppRatingsView: View {
                 )
             }
 
+            guard !Task.isCancelled, activeRatingsLoad == loadID, appStoreID == targetAppStoreID else { return }
             latestRatings = data.latestRatings
             ratingSnapshots = data.ratingSnapshots.sorted { $0.observedAt < $1.observedAt }
+            loadedRatingsAppID = targetAppStoreID
         } catch {
-            latestRatings = reset ? [] : latestRatings
-            ratingSnapshots = reset ? [] : ratingSnapshots
+            guard !Task.isCancelled, activeRatingsLoad == loadID, appStoreID == targetAppStoreID else { return }
+            ratingsLoadError = error.localizedDescription
         }
     }
 

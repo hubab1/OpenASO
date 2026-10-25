@@ -239,9 +239,10 @@ enum KeywordRankingListLoader {
         snapshotsByID.reserveCapacity(uniqueAppStoreIDs.count)
 
         guard !uniqueAppStoreIDs.isEmpty else { return [:] }
-        let snapshots = try RatingHistoryStore.fetch(
-            appStoreIDs: uniqueAppStoreIDs, storefronts: [targetStorefront], in: modelContext
-        ).filter { $0.ratingCount != nil }.sorted {
+        let snapshots = try RatingHistoryStore.recent(
+            appStoreIDs: uniqueAppStoreIDs, storefronts: [targetStorefront], limitPerApp: ratingSnapshotLimit,
+            order: .ratingDate, requiresRatingCount: true, in: modelContext
+        ).sorted {
             if $0.appStoreID != $1.appStoreID { return $0.appStoreID < $1.appStoreID }
             if $0.ratingDate != $1.ratingDate { return $0.ratingDate > $1.ratingDate }
             return $0.observedAt > $1.observedAt

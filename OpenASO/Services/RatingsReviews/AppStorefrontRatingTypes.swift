@@ -25,20 +25,17 @@ struct AppStorefrontRatingRefreshOutcome: Sendable {
     let result: AppStorefrontRatingResult?
     let error: OpenASOError?
     let unavailabilityReason: String?
-    let clearsStoredRatings: Bool
 
     init(
         storefront: String,
         result: AppStorefrontRatingResult?,
         error: OpenASOError?,
-        unavailabilityReason: String? = nil,
-        clearsStoredRatings: Bool = false
+        unavailabilityReason: String? = nil
     ) {
         self.storefront = storefront
         self.result = result
         self.error = error
         self.unavailabilityReason = unavailabilityReason
-        self.clearsStoredRatings = clearsStoredRatings
     }
 }
 

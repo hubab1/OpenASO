@@ -1,6 +1,7 @@
 import Foundation
 import SQLite3
 import SwiftData
+import Synchronization
 import Testing
 @testable import OpenASO
 
@@ -542,8 +543,7 @@ struct StorageSchemaV7MigrationTests {
                              count: 100 + day, in: context)
         }
         try context.save()
-        try service.persist(.init(storefront: "gb", result: nil, error: nil, clearsStoredRatings: true),
-                            for: app, in: context)
+        try RatingHistoryStore.remove(appStoreID: app.appStoreID, storefront: "gb", in: context)
         try context.save()
         #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context).isEmpty)
         #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 0)
@@ -720,6 +720,211 @@ struct StorageSchemaV7MigrationTests {
         #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context).count == 2)
         let state = try #require(try context.fetch(FetchDescriptor<StorageMigrationState>()).first)
         #expect(state.completed && state.needsCompaction)
+    }
+
+    @Test
+    func boundedPagesRetainExactTotalsDatesTiesAndCorrections() throws {
+        try withTestStore { container, url in
+            try seedBoundedHistory(in: container, at: url)
+            let context = ModelContext(container)
+            let all = try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+            var cursor: RatingHistoryStore.Cursor?
+            var collected: [RatingHistoryRecord] = []
+            for _ in 0..<100 {
+                let page = try RatingHistoryStore.page(appStoreID: 42, after: cursor, limit: 7, in: context)
+                #expect(page.total == all.count)
+                collected.append(contentsOf: page.records)
+                guard let last = page.records.last else { break }
+                cursor = .init(observedAt: last.observedAt, identityKey: last.identityKey)
+            }
+            #expect(collected == all)
+            let from = try Date("2025-01-12T00:00:00Z", strategy: .iso8601)
+            let to = try Date("2026-01-10T00:00:00Z", strategy: .iso8601)
+            let expected = try RatingHistoryStore.fetch(appStoreIDs: [42], storefronts: ["gb"], from: from, to: to, in: context)
+            let page = try RatingHistoryStore.page(appStoreID: 42, storefronts: ["gb"], from: from, to: to, limit: 9, in: context)
+            #expect(page.total == expected.count)
+            #expect(page.records == Array(expected.prefix(9)))
+            #expect(all.first?.ratingDate == "2023-01-01")
+        }
+    }
+
+    @Test
+    func boundedRecentReadsRetainPerAppLogicalDatesAndObservationDates() throws {
+        try withTestStore { container, url in
+            try seedBoundedHistory(in: container, at: url)
+            let context = ModelContext(container)
+            let all = try RatingHistoryStore.fetch(appStoreIDs: [42, 43], storefronts: ["gb"], in: context)
+            let recent = try RatingHistoryStore.recent(appStoreIDs: [42, 43], storefronts: ["gb"],
+                limitPerApp: 31, order: .ratingDate, requiresRatingCount: true, in: context)
+            for appID: Int64 in [42, 43] {
+                let expected = all.filter { $0.appStoreID == appID && $0.ratingCount != nil }.sorted {
+                    $0.ratingDate == $1.ratingDate ? $0.observedAt > $1.observedAt : $0.ratingDate > $1.ratingDate
+                }
+                #expect(recent.filter { $0.appStoreID == appID } == Array(expected.prefix(31)))
+            }
+            let export = try RatingHistoryStore.recent(appStoreIDs: [42], storefronts: ["gb"], limitPerApp: 9, in: context)
+            #expect(export == Array(all.filter { $0.appStoreID == 42 }.prefix(9)))
+        }
+    }
+
+    @Test
+    func boundedReadsSkipUnneededPayloadsAndStillValidateRequestedHistory() throws {
+        try withTestStore { container, _ in
+            let context = ModelContext(container)
+            for year in [2023, 2026] {
+                let chunk = RatingHistoryChunk(appStoreID: 42, storefront: "gb", year: String(year))
+                let rows = try (1...28).map { day in
+                    let date = String(format: "%d-01-%02d", year, day)
+                    return RatingHistoryRecord(makeRating(day: date,
+                        observedAt: try Date(date + "T00:00:00Z", strategy: .iso8601), app: nil))
+                }
+                try RatingHistoryStore.replace(rows, in: chunk)
+                if year == 2023 { chunk.payload = Data([1, 2, 3]) }
+                context.insert(chunk)
+            }
+            try context.save()
+            let fresh = ModelContext(container)
+            let page = try RatingHistoryStore.page(appStoreID: 42, limit: 5, in: fresh)
+            #expect(page.records.count == 5 && page.total == 56)
+            #expect(page.records.allSatisfy { $0.ratingDate.hasPrefix("2026") })
+            #expect(try RatingHistoryStore.recent(appStoreIDs: [42], limitPerApp: 5, order: .ratingDate, in: fresh).count == 5)
+            #expect(throws: (any Error).self) {
+                try RatingHistoryStore.page(appStoreID: 42,
+                    after: .init(observedAt: Date("2025-01-01T00:00:00Z", strategy: .iso8601), identityKey: ""), limit: 5, in: fresh)
+            }
+        }
+    }
+
+    @Test
+    func boundedReaderReconcilesLegacyOverlapBeforeApplyingLimits() throws {
+        try withTestStore { container, _ in
+            let context = ModelContext(container)
+            let old = makeRating(day: "2026-01-01", observedAt: Date(timeIntervalSince1970: 10), app: nil)
+            let chunk = RatingHistoryChunk(appStoreID: 42, storefront: "gb", year: "2026")
+            try RatingHistoryStore.replace([RatingHistoryRecord(old)], in: chunk)
+            context.insert(chunk)
+            context.insert(makeRating(day: old.ratingDate, observedAt: Date(timeIntervalSince1970: 20), app: nil))
+            try context.save()
+            let page = try RatingHistoryStore.page(appStoreID: 42, limit: 5, in: context)
+            #expect(page.total == 1 && page.records.first?.observedAt == Date(timeIntervalSince1970: 20))
+        }
+    }
+
+    @Test
+    func migrationReportsCommittedProgressAndCompletedReopeningDoesNotArchive() throws {
+        try withTestStore { container, url in
+            let context = ModelContext(container)
+            for day in ["2026-01-01", "2026-01-02", "2026-01-03"] {
+                context.insert(makeRating(day: day, observedAt: .now, app: nil))
+            }
+            try context.save()
+            let events = Mutex<[StoragePreparationProgress]>([])
+            try StorageSchemaV7Migrator.migrateIfNeeded(at: url, progress: { event in events.withLock { $0.append(event) } })
+            let values = events.withLock { $0 }
+            #expect(values.first == .archiving(completed: 0, total: 3))
+            #expect(values.last == .archiving(completed: 3, total: 3))
+            events.withLock { $0.removeAll() }
+            try StorageSchemaV7Migrator.migrateIfNeeded(at: url, progress: { event in events.withLock { $0.append(event) } })
+            #expect(events.withLock { $0.isEmpty })
+        }
+    }
+
+    @Test
+    func explicitClearRollsBackLiveArchivedAndLatestTogether() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil, iconURLString: nil, defaultPlatform: .iphone)
+        context.insert(app)
+        let start = try Date("2026-01-01T15:00:00Z", strategy: .iso8601)
+        for day in 0..<3 { try ingestRating(service, app: app, observedAt: start.addingTimeInterval(Double(day) * 86_400), count: day, in: context) }
+        try context.save()
+        let expected = try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+        let worker = BackgroundModelStore(modelContainer: container)
+        await #expect(throws: InjectedStorageInterruption.self) {
+            try await worker.write { context in
+                try RatingHistoryStore.remove(appStoreID: 42, storefront: "gb", in: context)
+                throw InjectedStorageInterruption.stop
+            }
+        }
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: ModelContext(container)) == expected)
+        #expect(try ModelContext(container).fetchCount(FetchDescriptor<LatestAppRating>()) == 1)
+    }
+
+    @Test
+    func boundedPagesRemainCoherentDuringConcurrentRollover() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-PageRace-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        let container = try ModelContainerFactory.makePersistentModelContainer(at: url)
+        let writer = BackgroundModelStore(modelContainer: container)
+        let start = Date(timeIntervalSince1970: 1_735_689_600)
+        try await writer.write { context in
+            try RatingHistoryStore.ingest((0..<200).map { day in
+                .init(.init(appStoreID: 42, storefront: "gb", ratingCount: day, averageRating: 4.5,
+                    ratingCounts: nil, observedAt: start.addingTimeInterval(Double(day) * 86_400), source: .iTunesSearch))
+            }, storeApps: [:], in: context)
+        }
+        let readers = try (0..<2).map { _ in
+            BackgroundModelStore(modelContainer: try ModelContainerFactory.makePersistentModelContainer(at: url))
+        }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for day in 200..<250 {
+                    try await writer.write { context in
+                        try RatingHistoryStore.ingest([.init(.init(appStoreID: 42, storefront: "gb", ratingCount: day,
+                            averageRating: 4.5, ratingCounts: nil, observedAt: start.addingTimeInterval(Double(day) * 86_400),
+                            source: .iTunesSearch))], storeApps: [:], in: context)
+                    }
+                }
+            }
+            for reader in readers {
+                group.addTask {
+                    for _ in 0..<100 {
+                        let page = try await reader.read { try RatingHistoryStore.page(appStoreID: 42, limit: 1000, in: $0) }
+                        #expect(page.records.count == page.total)
+                        #expect((200...250).contains(page.total))
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+
+    @Test
+    func boundedReadsWithinWriteTransactionsSeePendingHistory() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let writer = BackgroundModelStore(modelContainer: container)
+        let page = try await writer.write { context in
+            try RatingHistoryStore.ingest((0..<2).map { day in
+                .init(.init(appStoreID: 42, storefront: "gb", ratingCount: day, averageRating: 4.5,
+                    ratingCounts: nil, observedAt: Date(timeIntervalSince1970: 1_735_689_600 + Double(day) * 86_400),
+                    source: .iTunesSearch))
+            }, storeApps: [:], in: context)
+            return try RatingHistoryStore.page(appStoreID: 42, limit: 10, in: context)
+        }
+        #expect(page.total == 2 && page.records.count == 2)
+    }
+
+    private func seedBoundedHistory(in container: ModelContainer, at url: URL) throws {
+        let context = ModelContext(container)
+        for appID: Int64 in [42, 43] {
+            for storefront in ["gb", "us"] {
+                for year in [2023, 2025, 2026] {
+                    for day in 1...28 {
+                        let date = String(format: "%d-01-%02d", year, day)
+                        let observed = try Date(date + "T00:00:00Z", strategy: .iso8601)
+                        let value = AppDailyRating(appStoreID: appID, storefront: storefront,
+                            ratingCount: day.isMultiple(of: 7) ? nil : day, averageRating: 4.5,
+                            ratingDate: date, observedAt: year == 2023 && day == 1 ? observed.addingTimeInterval(126_230_400) : observed)
+                        context.insert(value)
+                    }
+                }
+            }
+        }
+        try context.save()
+        try StorageSchemaV7Migrator.migrateIfNeeded(at: url)
     }
 
     private func ingestRating(_ service: AppStorefrontRatingService, app: StoreApp, observedAt: Date,

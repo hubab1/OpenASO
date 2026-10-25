@@ -9,6 +9,7 @@ struct OpenASOApp: App {
 
     @State private var startupState: OpenASOStartupState = .preparing
     @State private var isPreparingStartup = false
+    @State private var preparationProgress = StoragePreparationProgress.opening
 
     init() {
         let executionMode = OpenASOExecutionMode(
@@ -40,22 +41,31 @@ struct OpenASOApp: App {
         guard case .preparing = startupState, !isPreparingStartup else { return }
         isPreparingStartup = true
         defer { isPreparingStartup = false }
+        let (updates, continuation) = AsyncStream<StoragePreparationProgress>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        async let progressUpdates: Void = observePreparationProgress(updates)
         let result = await Task.detached(priority: .userInitiated) {
             () -> Result<ModelContainer, PersistentStoreError> in
+            defer { continuation.finish() }
             do {
-                return .success(try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: false))
+                return .success(try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: false,
+                    progress: { continuation.yield($0) }))
             } catch let error as PersistentStoreError {
                 return .failure(error)
             } catch {
                 return .failure(.unexpected(diagnosticDescription: String(reflecting: error)))
             }
         }.value
+        await progressUpdates
         switch result {
         case .success(let container):
             startupState = .ready(modelContainer: container, services: AppServices.appLaunch(modelContainer: container))
         case .failure(let error):
             startupState = .storeUnavailable(error)
         }
+    }
+
+    private func observePreparationProgress(_ updates: AsyncStream<StoragePreparationProgress>) async {
+        for await progress in updates { preparationProgress = progress }
     }
 
     private static func makeStartupState() -> OpenASOStartupState {
@@ -108,7 +118,7 @@ struct OpenASOApp: App {
         WindowGroup("OpenASO") {
             switch startupState {
             case .preparing:
-                ProgressView("Preparing your workspace…")
+                StoragePreparationView(progress: preparationProgress)
                     .frame(idealWidth: 1000, idealHeight: 760)
                     .task { await prepareStartupIfNeeded() }
             case .ready(let modelContainer, let services):
@@ -151,7 +161,7 @@ struct OpenASOApp: App {
         Settings {
             switch startupState {
             case .preparing:
-                ProgressView("Preparing your workspace…")
+                StoragePreparationView(progress: preparationProgress)
                     .frame(idealWidth: 680, idealHeight: 480)
                     .task { await prepareStartupIfNeeded() }
             case .ready(let modelContainer, let services):
@@ -207,4 +217,27 @@ private struct AppLaunchAlertContext: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+}
+
+private struct StoragePreparationView: View {
+    let progress: StoragePreparationProgress
+
+    var body: some View {
+        VStack(spacing: 12) {
+            switch progress {
+            case .archiving(let completed, let total):
+                ProgressView("Compressing rating history…", value: Double(completed), total: Double(max(total, 1)))
+                Text("\(completed.formatted()) of \(total.formatted()) rating records processed")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .compacting:
+                ProgressView("Reclaiming database space…")
+            case .waitingForClients:
+                ProgressView("Waiting for another OpenASO process to finish preparing the database…")
+            case .opening, .ready:
+                ProgressView("Opening your workspace…")
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: 440)
+    }
 }

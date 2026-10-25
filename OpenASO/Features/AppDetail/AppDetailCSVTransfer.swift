@@ -191,11 +191,11 @@ struct AppDetailRatingsCSVExporter {
             },
             sortBy: [SortDescriptor(\.storefront, order: .forward)]
         )
-        let snapshots = try RatingHistoryStore.fetch(appStoreIDs: [appStoreID], in: modelContext)
+        let snapshots = try RatingHistoryStore.recent(appStoreIDs: [appStoreID], limitPerApp: 1_000, in: modelContext)
 
         return AppDetailRatingsExportData(
             latestRatings: try modelContext.fetch(latestDescriptor).map(AppDetailRatingLatestValue.init),
-            ratingSnapshots: snapshots.prefix(1_000).map(AppDetailRatingSnapshotValue.init)
+            ratingSnapshots: snapshots.map(AppDetailRatingSnapshotValue.init)
         )
     }
 
