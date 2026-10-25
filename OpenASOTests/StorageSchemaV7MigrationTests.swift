@@ -609,8 +609,8 @@ struct StorageSchemaV7MigrationTests {
         #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
     }
 
-    @Test(arguments: [false, true])
-    func diskFullDuringOptionalCompactionStillOpensVerifiedHistoryAndRetriesLater(wrappedSQLiteError: Bool) throws {
+    @Test(arguments: ["cocoa", "underlyingSQLite", "metadataSQLite"])
+    func diskFullDuringOptionalCompactionStillOpensVerifiedHistoryAndRetriesLater(errorRepresentation: String) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-CompactionDiskFull-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -627,7 +627,11 @@ struct StorageSchemaV7MigrationTests {
         }
         let completion = try autoreleasepool {
             let container = try ModelContainerFactory.makePersistentModelContainer(at: url, compactStore: { _ in
-                if wrappedSQLiteError {
+                if errorRepresentation == "metadataSQLite" {
+                    throw NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileReadUnknown.rawValue,
+                                  userInfo: ["NSSQLiteErrorDomain": Int(SQLITE_FULL)])
+                }
+                if errorRepresentation == "underlyingSQLite" {
                     throw NSError(domain: NSCocoaErrorDomain, code: 134070, userInfo: [
                         NSUnderlyingErrorKey: NSError(domain: "NSSQLiteErrorDomain", code: Int(SQLITE_FULL))
                     ])
@@ -687,8 +691,8 @@ struct StorageSchemaV7MigrationTests {
         #expect(after.allSatisfy { $0.storeAppID == 42 })
     }
 
-    @Test
-    func optionalCompactionNeverSuppressesCorruptionErrors() throws {
+    @Test(arguments: [false, true])
+    func optionalCompactionNeverSuppressesCorruptionErrors(sqliteMetadata: Bool) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-CompactionCorruption-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -703,6 +707,10 @@ struct StorageSchemaV7MigrationTests {
         }
         #expect(throws: PersistentStoreError.self) {
             _ = try ModelContainerFactory.makePersistentModelContainer(at: url, compactStore: { _ in
+                if sqliteMetadata {
+                    throw NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileReadUnknown.rawValue,
+                                  userInfo: ["NSSQLiteErrorDomain": Int(SQLITE_CORRUPT)])
+                }
                 throw CocoaError(.fileReadCorruptFile)
             })
         }

@@ -17,10 +17,14 @@ enum PersistentStoreCompactor {
             if [CocoaError.fileWriteOutOfSpace.rawValue, CocoaError.fileWriteNoPermission.rawValue,
                 CocoaError.fileLocking.rawValue].contains(error.code) { return true }
         }
-        if error.domain == "NSSQLiteErrorDomain" {
+        // Core Data may attach the SQLite code directly to a Cocoa error
+        // instead of wrapping an underlying NSSQLiteErrorDomain error.
+        let sqliteCode = error.domain == "NSSQLiteErrorDomain"
+            ? error.code : (error.userInfo["NSSQLiteErrorDomain"] as? NSNumber)?.intValue
+        if let sqliteCode {
             // Extended SQLite errors keep the primary code in the low byte.
             return [SQLITE_FULL, SQLITE_BUSY, SQLITE_LOCKED, SQLITE_READONLY, SQLITE_PERM]
-                .contains(Int32(error.code & 0xff))
+                .contains(Int32(sqliteCode & 0xff))
         }
         if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
             return canRetryLater(underlying)
