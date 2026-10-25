@@ -9,7 +9,8 @@ struct AppleAdsPlatformServiceTests {
             appStoreID: 123,
             countryCode: "GB",
             seedKeyword: " speech to text ",
-            limit: 500
+            limit: 500,
+            offset: 50
         )
         let object = try #require(JSONSerialization.jsonObject(
             with: JSONEncoder().encode(request)
@@ -26,6 +27,7 @@ struct AppleAdsPlatformServiceTests {
         #expect(byField["terms"] == ["speech to text"])
         #expect(object["sorting"] == nil)
         #expect((object["pagination"] as? [String: Int])?["pageSize"] == 50)
+        #expect((object["pagination"] as? [String: Int])?["offset"] == 50)
     }
 
     @Test

@@ -533,6 +533,8 @@ struct OpenASOMCPKeywordSuggestionResult: Codable, Sendable {
     let appleAdsSuggestions: [OpenASOMCPAppleAdsKeywordSuggestion]
     let providerErrors: [OpenASOMCPKeywordSuggestionProviderError]
     let notes: [String]
+    var suggestionPages: [OpenASOMCPKeywordSuggestionPage] = []
+    var metadataSeeds: [String] = []
 }
 
 struct OpenASOMCPAppleAdsKeywordSuggestion: Codable, Sendable {
@@ -541,6 +543,33 @@ struct OpenASOMCPAppleAdsKeywordSuggestion: Codable, Sendable {
     let requestedStorefront: String
     let seedKeyword: String?
     let observedAt: Date
+    var popularity: OpenASOMCPKeywordPopularity? = nil
+    var isTracked: Bool = false
+}
+
+struct OpenASOMCPKeywordSuggestionPage: Codable, Sendable {
+    let requestedStorefront: String
+    let seedKeyword: String?
+    let offset: Int
+    let limit: Int
+    let returnedCount: Int
+    let nextOffset: Int?
+}
+
+struct OpenASOMCPKeywordPopularity: Codable, Sendable {
+    let keyword: String
+    let storefront: String
+    let platform: String
+    let popularityScore: Int?
+    let source: String?
+    let observedAt: Date
+    let unavailableReason: String?
+}
+
+struct OpenASOMCPKeywordPopularityResult: Codable, Sendable {
+    let items: [OpenASOMCPKeywordPopularity]
+    let providerErrors: [OpenASOMCPKeywordSuggestionProviderError]
+    let notes: [String]
 }
 
 struct OpenASOMCPKeywordSuggestionProviderError: Codable, Sendable {

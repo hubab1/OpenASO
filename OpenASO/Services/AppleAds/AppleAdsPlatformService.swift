@@ -165,6 +165,7 @@ protocol AppleAdsPlatformAPI: Sendable {
         countryOrRegion: String,
         seedKeyword: String?,
         limit: Int,
+        offset: Int,
         using credentials: AppleAdsCredentials
     ) async throws -> [AppleAdsKeywordSuggestion]
 }
@@ -177,6 +178,7 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
         countryOrRegion: String,
         seedKeyword: String?,
         limit: Int,
+        offset: Int,
         using credentials: AppleAdsCredentials
     ) async throws -> [AppleAdsKeywordSuggestion] {
         guard appStoreID > 0 else { throw OpenASOError.invalidAppStoreID }
@@ -192,7 +194,8 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
             appStoreID: appStoreID,
             countryCode: countryCode,
             seedKeyword: seedKeyword,
-            limit: limit
+            limit: limit,
+            offset: offset
         )
         return try await perform(credentials: credentials) { client in
             try Task.checkCancellation()
@@ -230,7 +233,8 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
         appStoreID: Int64,
         countryCode: String,
         seedKeyword: String?,
-        limit: Int
+        limit: Int,
+        offset: Int = 0
     ) -> Components.Schemas.RecommendationQueryRequest {
         var filters: [Components.Schemas.RecommendationFilterCondition] = [
             .init(field: "promotedObjectId", _operator: .equals, value: [String(appStoreID)]),
@@ -243,7 +247,7 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
         // The live suggestions endpoint rejects sorting by popularity. Sort the
         // bounded returned page locally, retaining the seed/request context.
         return .init(
-            pagination: .init(offset: 0, pageSize: Int32(max(1, min(limit, 50)))),
+            pagination: .init(offset: Int32(max(0, min(offset, 1_000))), pageSize: Int32(max(1, min(limit, 50)))),
             sorting: nil,
             filters: filters
         )

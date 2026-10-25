@@ -694,6 +694,114 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func discoveryPopularityLookupSupportsUntrackedTermsAndKeepsMarketsSeparate() async throws {
+        let rows = [("voice notes", "US", 42), ("voice notes", "GB", 73)].map { term, country, score in
+            AppleAdsSearchTermPopularity(
+                searchTerm: term, countryOrRegion: country, genre: "Productivity", week: "2026-05-02",
+                month: nil, rankInGenre: nil, popularityInGenre: nil, popularity1to100: score, popularity1to5: nil
+            )
+        }
+        let context = try MCPTestContext(
+            includeKeywordMetricsService: true,
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], popularityRows: rows),
+            appleAdsCredentials: .init(clientID: "client", teamID: "team", keyID: "key", privateKey: "private")
+        )
+        let result = try await context.service.getKeywordPopularity(
+            keywords: ["voice notes", "unknown", "VOICE NOTES"], storefronts: ["us", "gb"]
+        )
+        #expect(result.items.count == 4)
+        #expect(result.items.first { $0.keyword == "voice notes" && $0.storefront == "us" }?.popularityScore == 42)
+        #expect(result.items.first { $0.keyword == "voice notes" && $0.storefront == "gb" }?.popularityScore == 73)
+        #expect(result.items.filter { $0.keyword == "unknown" }.allSatisfy {
+            $0.popularityScore == nil && $0.source == nil && $0.unavailableReason != nil
+        })
+        #expect(result.items.filter { $0.keyword == "voice notes" }.allSatisfy { $0.source == "apple_ads_platform" })
+        #expect(try context.modelContext.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 0)
+        #expect(try context.modelContext.fetchCount(FetchDescriptor<KeywordDailyMetric>()) == 0)
+    }
+
+    @Test
+    func suggestionsPrioritizeFreshMarketPopularityBeforeContextScoreAndRankBudget() async throws {
+        let rows = [("useful phrase", 65), ("floor phrase", 5)].map { term, score in
+            AppleAdsSearchTermPopularity(
+                searchTerm: term, countryOrRegion: "US", genre: "Productivity", week: "2026-05-02",
+                month: nil, rankInGenre: nil, popularityInGenre: nil, popularity1to100: score, popularity1to5: nil
+            )
+        }
+        let context = try MCPTestContext(
+            rankingProvider: StubMCPRankingProvider(pages: [:]),
+            includeKeywordMetricsService: true,
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], popularityRows: rows, keywordSuggestionRows: [
+                "us": [.init(keyword: "floor phrase", suggestionScore: 99),
+                       .init(keyword: "unknown phrase", suggestionScore: 80),
+                       .init(keyword: "useful phrase", suggestionScore: 6)]
+            ]),
+            appleAdsCredentials: .init(clientID: "client", teamID: "team", keyID: "key", privateKey: "private")
+        )
+        try context.insertTrackedApp(appStoreID: 123, name: "Utter")
+        _ = try await context.service.addKeywords(appStoreID: 123, keywords: ["floor phrase"], storefronts: ["us"])
+        let result = try await context.service.suggestKeywords(
+            appStoreID: 123, storefronts: ["us"], limit: 3, rankingLimit: 1
+        )
+        #expect(result.appleAdsSuggestions.map(\.keyword) == ["useful phrase", "floor phrase", "unknown phrase"])
+        #expect(result.appleAdsSuggestions.first?.suggestionScore == 6)
+        #expect(result.appleAdsSuggestions.first?.popularity?.popularityScore == 65)
+        #expect(result.appleAdsSuggestions.first { $0.keyword == "floor phrase" }?.isTracked == true)
+        #expect(result.candidates.map(\.keyword) == ["useful phrase"])
+        #expect(result.candidates.first?.popularityScore == 65)
+        #expect(try context.modelContext.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 1)
+        #expect(try context.modelContext.fetchCount(FetchDescriptor<KeywordDailyMetric>()) == 0)
+    }
+
+    @Test
+    func discoveryPagesKeepOffsetsAndCanSkipRankingEntirely() async throws {
+        let context = try MCPTestContext(
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], keywordSuggestionRows: [
+                "us": (0..<5).map { .init(keyword: "phrase \($0)", suggestionScore: 10) }
+            ]),
+            appleAdsCredentials: .init(clientID: "client", teamID: "team", keyID: "key", privateKey: "private")
+        )
+        try context.insertStoreApp(appStoreID: 123, name: "Utter")
+        let page = try await context.service.suggestKeywords(
+            appStoreID: 123, storefronts: ["us"], limit: 2, seedKeyword: "voice", offset: 2, rankingLimit: 0
+        )
+        #expect(page.appleAdsSuggestions.map(\.keyword) == ["phrase 2", "phrase 3"])
+        #expect(page.suggestionPages.first?.offset == 2)
+        #expect(page.suggestionPages.first?.nextOffset == 4)
+        #expect(page.candidates.isEmpty)
+        #expect(page.errors.isEmpty)
+        let lastPage = try await context.service.suggestKeywords(
+            appStoreID: 123, storefronts: ["us"], limit: 2, offset: 4, rankingLimit: 0
+        )
+        #expect(lastPage.appleAdsSuggestions.map(\.keyword) == ["phrase 4"])
+        #expect(lastPage.suggestionPages.first?.nextOffset == nil)
+    }
+
+    @Test
+    func compactDiscoveryPreservesMetadataFallbackWithoutCredentials() async throws {
+        let context = try MCPTestContext()
+        try context.insertStoreApp(appStoreID: 123, name: "Focus Timer")
+        let result = try await context.service.suggestKeywords(appStoreID: 123, rankingLimit: 0)
+        #expect(result.appleAdsSuggestions.isEmpty)
+        #expect(result.metadataSeeds.contains("focus timer"))
+        #expect(result.candidates.isEmpty)
+        #expect(result.notes.contains { $0.contains("credentials are unavailable") })
+    }
+
+    @Test
+    func discoveryPopularityProviderFailurePreservesUnknownCandidates() async throws {
+        let context = try MCPTestContext(
+            includeKeywordMetricsService: true,
+            appleAdsPlatformAPI: FailingSearchPopularityAPI(error: .rateLimited),
+            appleAdsCredentials: .init(clientID: "client", teamID: "team", keyID: "key", privateKey: "private")
+        )
+        let result = try await context.service.getKeywordPopularity(keywords: ["voice notes"])
+        #expect(result.items.first?.popularityScore == nil)
+        #expect(result.items.first?.unavailableReason != nil)
+        #expect(result.providerErrors.first?.error.code == "rate_limited")
+    }
+
+    @Test
     func suggestKeywordsAutomaticallyUsesSavedAppleAdsCredentialsAndKeepsScoresSeparate() async throws {
         let api = StaticAppleAdsPlatformAPI(apps: [], keywordSuggestionRows: [
             "us": [.init(keyword: "voice notes", suggestionScore: 0), .init(keyword: "dictation", suggestionScore: nil)]

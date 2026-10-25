@@ -21,6 +21,10 @@ Use OpenASO as the evidence layer for ASO recommendations. Do not copy generic A
 4. Keep refreshes bounded. Prefer narrow storefronts, small limits, and partial results over broad crawls.
 5. Separate verified evidence from hypotheses. Label unsupported or missing inputs instead of inventing them.
 
+## Keyword Discovery
+
+For keyword research, expansion, or high-impact opportunities, follow [references/keyword-discovery.md](references/keyword-discovery.md). Use fresh popularity to choose branches, explore distinct feature seeds and additional pages, then verify a relevant shortlist. Report coverage and the remaining frontier so a bounded search is not mistaken for exhaustive market coverage.
+
 ## Unsupported Or User-Provided Data
 
 OpenASO public/local evidence does not prove:

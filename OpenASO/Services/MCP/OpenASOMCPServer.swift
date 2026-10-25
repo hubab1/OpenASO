@@ -321,9 +321,18 @@ struct OpenASOMCPServerFactory: Sendable {
                 platform: arguments.string("platform"),
                 limit: arguments.int("limit"),
                 websiteMarkdown: arguments.string("website_markdown"),
-                seedKeyword: try arguments.optionalString("seed_keyword")
+                seedKeyword: try arguments.optionalString("seed_keyword"),
+                offset: try arguments.optionalInt("offset") ?? 0,
+                rankingLimit: try arguments.optionalInt("ranking_limit")
             )
             return try Self.toolResult(result)
+
+        case "get_keyword_popularity":
+            return try Self.toolResult(try await service.getKeywordPopularity(
+                keywords: try arguments.requiredStringArray("keywords"),
+                storefronts: try arguments.optionalStringArray("storefronts"),
+                platform: try arguments.optionalString("platform")
+            ))
 
         case "refresh_keyword_rankings":
             let result = try await service.refreshKeywordRankings(
@@ -387,7 +396,8 @@ struct OpenASOMCPServerFactory: Sendable {
             let result = try await service.refreshKeywordMetrics(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
                 storefronts: arguments.stringArray("storefronts"),
-                platform: arguments.string("platform")
+                platform: arguments.string("platform"),
+                keywords: try arguments.optionalStringArray("keywords")
             )
             return try Self.toolResult(result)
 
@@ -626,9 +636,13 @@ private extension OpenASOMCPServerFactory {
                     "limit": .integer
                 ]
             ), readOnly: true, openWorld: true),
-            tool("suggest_keywords", "Discover keywords using saved Apple Ads API credentials automatically, with app metadata and optional website fallback. Optional seed_keyword narrows Apple's suggestions. Returns bounded ranking candidates plus appleAdsSuggestions with separate contextual suggestionScore, requestedStorefront and seed; these scores are not market popularity. Apple discovery is capped at three storefronts and ranking verification may be partial. Does not add keywords; use add_keywords after selecting relevant terms.", schema(
+            tool("get_keyword_popularity", "Look up fresh market popularity for 1...50 keywords in up to three storefronts, including untracked terms. Uses valid saved Apple Ads API credentials and the active web session fallback automatically. Returns score, source, observation time and unavailability reasons; missing is unknown, not zero. Use this to validate candidates and choose relevant above-floor (>5) seeds for suggest_keywords. Creates no tracks and stores no metrics.", schema(
+                required: ["keywords"],
+                optional: ["keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
+            ), readOnly: true, openWorld: true),
+            tool("suggest_keywords", "Discover keywords with saved Apple Ads credentials, fresh market-popularity lookup, and metadata/website fallback. Returns appleAdsSuggestions ordered by market popularity with source/time, isTracked and separate contextual suggestionScore. Start with distinct feature seeds (or omit seed_keyword), branch using relevant terms with popularity >5, and page using suggestionPages.nextOffset with the same seed/limit. Set ranking_limit: 0 for compact expansion; verify shortlisted terms with get_ranked_apps_for_keyword. Filter irrelevant/brand terms before choosing seeds or additions. Missing popularity is unknown; contextual scores are not market popularity or volume. Each call covers at most three storefronts, 50 suggestions per page and 16 ranking checks. Use get_keyword_popularity to recheck evidence and stop expansion when new relevant above-floor terms stop appearing. Does not add tracks; use add_keywords for authorized selections.", schema(
                 required: ["appStoreID"],
-                optional: commonAppFilters.merging(["limit": .integer, "website_markdown": .string, "seed_keyword": .string]) { current, _ in current }
+                optional: commonAppFilters.merging(["limit": .integer, "website_markdown": .string, "seed_keyword": .string, "offset": .integer, "ranking_limit": .integer]) { current, _ in current }
             ), readOnly: true, openWorld: true),
             tool("refresh_keyword_rankings", "Refresh and persist rankings for tracked keywords so keyword and competitor tools share the same evidence. The limit defaults to 20 and is clamped to 1...25 tracks. Never-attempted tracks are selected first, then by least-recent activity using successful and durable attempt times; attempt rotation survives OpenASO relaunches and in-flight reservations are shared across MCP connections.", schema(
                 required: ["appStoreID"],
@@ -671,9 +685,9 @@ private extension OpenASOMCPServerFactory {
                     "cursor": .string
                 ]
             ), readOnly: true),
-            tool("refresh_keyword_metrics", "Refresh keyword popularity metrics when Apple Ads is configured; otherwise return actionable setup status per keyword.", schema(
+            tool("refresh_keyword_metrics", "Refresh and save market popularity for tracked keywords using saved Apple Ads access. Optional keywords selects 1...50 terms for a bounded refresh after discovery/addition; omit it to refresh the whole app/storefront/platform scope. Returns actionable setup status when access is unavailable.", schema(
                 required: ["appStoreID"],
-                optional: commonAppFilters
+                optional: commonAppFilters.merging(["keywords": .stringArray]) { current, _ in current }
             ), readOnly: false, destructive: false, idempotent: false, openWorld: true),
             tool("refresh_reviews", "Fetch and store a bounded most-recent public App Store review sample. Defaults to the US storefront.", schema(
                 required: ["appStoreID"],
@@ -765,8 +779,10 @@ private extension OpenASOMCPServerFactory {
             """
         case "keyword_research_brief":
             body = """
-            For appStoreID \(appStoreID), inspect get_app_overview, list_keywords, score_keywords, list_competitors, list_reviews, list_screenshots, and any available website markdown before recommending keywords.
-            Use staged, bounded discovery: start with current evidence, then run suggest_keywords or discover_keyword_landscape for the top 1-2 storefronts or a small seed limit before broadening. Continue with partial results when a tool returns verification_budget_exceeded or per-keyword errors.
+            For appStoreID \(appStoreID), start with get_app_overview and a bounded list_keywords/score_keywords read for \(storefronts). Use metadata, review themes and competitors as needed to establish feature relevance and intent. If a broad workspace read times out, continue with narrower calls and disclose the gap.
+            Use popularity-guided discovery in the requested storefronts. Run suggest_keywords with distinct feature/use-case seeds and ranking_limit: 0 during expansion; inspect fresh popularity, source/time, isTracked, and separate contextual suggestionScore. Check untracked or missing evidence with get_keyword_popularity when Apple Ads access is available. Missing scores are unknown, not zero; popularity is an index, not exact search volume.
+            Filter brands, unrelated terms, unsupported features and wrong-language phrases before branching. Prefer relevant market-popularity scores above 5; retain low/unknown terms separately when they cover an important feature. Reuse promising terms as new seeds and explore suggestionPages.nextOffset with the same seed/limit. Deduplicate by keyword/storefront/platform and skip repeated seeds/pages. Use an explicit request budget; stop after two successive expansion calls yield no new relevant above-floor terms, or when the budget is reached. Return the unexplored frontier when stopping at the budget.
+            Verify the strongest shortlist with get_ranked_apps_for_keyword, then weigh relevance, popularity, target rank, competition and evidence freshness. Rank evidence from iTunesFallback is weaker than native App Store ranking. Return a shortlist and coverage report with seeds/pages tried, new/tracked counts, provider errors and remaining gaps. Add keywords only within the user's authorized scope, then use refresh_keyword_metrics with a keywords filter to save their market popularity. Continue with partial results on verification_budget_exceeded or provider/ranking failures.
             Classify keywords as defend, attack, long-tail, brand, experimental, or noisy. Drop generic fragments and irrelevant phrases unless ranking evidence proves relevance.
             Apply opportunity scoring as a rubric, not a substitute for evidence: weigh popularity, rankability/difficulty or result count, relevance, current rank, competitor overlap, and review-language support.
             Recommend keywords only after separating hypotheses from verified ranking/popularity evidence. Prioritize terms with direct download intent and avoid broad phrases that do not describe the app's core value.

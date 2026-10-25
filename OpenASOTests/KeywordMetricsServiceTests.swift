@@ -7,6 +7,37 @@ import Testing
 @MainActor
 struct KeywordMetricsServiceTests {
     @Test
+    func discoveryLookupKeepsOfficialAndWebSourcesWithoutPersisting() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let services = AppServices.mocked(
+            httpClient: MockHTTPClient { request in
+                let body = try JSONDecoder().decode(
+                    KeywordPopularityRequestBody.self, from: try #require(request.httpBody)
+                )
+                #expect(Set(body.terms) == ["voice to text", "missing"])
+                return (
+                    Data(#"{"status":"success","data":[{"name":"voice to text","popularity":67}]}"#.utf8),
+                    makeHTTPURLResponse(url: try #require(request.url), statusCode: 200)
+                )
+            },
+            modelContainer: container,
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], popularityRows: [officialFlightTrackerPopularity])
+        )
+        try configureCampaignManagementFallback(in: services)
+        let rows = try await services.keywordMetricsService.lookupPopularity(
+            for: ["flight tracker", "voice to text", "missing"], storefront: "us"
+        )
+        #expect(rows.first { $0.keyword == "flight tracker" }?.source == "apple_ads_platform")
+        #expect(rows.first { $0.keyword == "voice to text" }?.source == "apple_ads_web")
+        #expect(rows.first { $0.keyword == "voice to text" }?.popularityScore == 67)
+        #expect(rows.first { $0.keyword == "missing" }?.popularityScore == nil)
+        #expect(rows.first { $0.keyword == "missing" }?.unavailableReason != nil)
+        let modelContext = ModelContext(container)
+        #expect(try modelContext.fetchCount(FetchDescriptor<KeywordDailyMetric>()) == 0)
+        #expect(try modelContext.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 0)
+    }
+
+    @Test
     func expiredRefreshPreservesExistingPopularityAndRequiresReconnect() async throws {
         let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
         let modelContext = ModelContext(container)
@@ -2835,10 +2866,11 @@ struct StaticAppleAdsPlatformAPI: AppleAdsPlatformAPI {
         countryOrRegion: String,
         seedKeyword: String?,
         limit: Int,
+        offset: Int,
         using credentials: AppleAdsCredentials
     ) async throws -> [AppleAdsKeywordSuggestion] {
         if let error = keywordSuggestionErrors[countryOrRegion.lowercased()] { throw error }
-        return Array((keywordSuggestionRows[countryOrRegion.lowercased()] ?? []).prefix(limit))
+        return Array((keywordSuggestionRows[countryOrRegion.lowercased()] ?? []).dropFirst(offset).prefix(limit))
     }
 
     func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
@@ -2895,6 +2927,7 @@ struct FailingSearchPopularityAPI: AppleAdsPlatformAPI {
         countryOrRegion: String,
         seedKeyword: String?,
         limit: Int,
+        offset: Int,
         using credentials: AppleAdsCredentials
     ) async throws -> [AppleAdsKeywordSuggestion] {
         throw error
@@ -2942,6 +2975,7 @@ struct HTTPBackedSearchPopularityAPI: AppleAdsPlatformAPI {
         countryOrRegion: String,
         seedKeyword: String?,
         limit: Int,
+        offset: Int,
         using credentials: AppleAdsCredentials
     ) async throws -> [AppleAdsKeywordSuggestion] {
         []

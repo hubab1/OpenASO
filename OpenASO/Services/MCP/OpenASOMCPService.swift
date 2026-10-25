@@ -2362,11 +2362,23 @@ final class OpenASOMCPService: Sendable {
   func refreshKeywordMetrics(
     appStoreID: Int64,
     storefronts: [String]? = nil,
-    platform: String? = nil
+    platform: String? = nil,
+    keywords: [String]? = nil
   ) async throws -> OpenASOMCPKeywordRefreshResult {
     let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
     let storefronts = Set(try OpenASOMCPValidation.storefronts(storefronts))
     let platform = try platform.map(OpenASOMCPValidation.platform)
+
+    let selectedKeywords: Set<String>?
+    if let keywords {
+      let normalized = try OpenASOMCPValidation.keywords(keywords)
+      guard !normalized.isEmpty, normalized.count <= 50 else {
+        throw OpenASOError.providerUnavailable("Select between 1 and 50 keywords for a filtered metric refresh.")
+      }
+      selectedKeywords = Set(normalized.map(AppleAdsSearchTermPopularity.normalized))
+    } else {
+      selectedKeywords = nil
+    }
 
     let trackIdentityKeys = try await backgroundModelStore.read { modelContext in
       let descriptor = FetchDescriptor<TrackedAppKeyword>(
@@ -2377,6 +2389,9 @@ final class OpenASOMCPService: Sendable {
       return try modelContext.fetch(descriptor).filter { track in
         if !storefronts.isEmpty && !storefronts.contains(track.storefront) { return false }
         if let platform, track.platform != platform { return false }
+        if let selectedKeywords, !selectedKeywords.contains(AppleAdsSearchTermPopularity.normalized(track.term)) {
+          return false
+        }
         return true
       }.map(\.identityKey)
     }
@@ -2491,13 +2506,78 @@ final class OpenASOMCPService: Sendable {
     }
   }
 
+  /// Queries popularity for discovery terms without requiring tracked keywords.
+  func getKeywordPopularity(
+    keywords: [String],
+    storefronts: [String]? = nil,
+    platform: String? = nil
+  ) async throws -> OpenASOMCPKeywordPopularityResult {
+    let keywords = try OpenASOMCPValidation.keywords(keywords)
+    guard !keywords.isEmpty, keywords.count <= 50 else {
+      throw OpenASOError.providerUnavailable("Look up between 1 and 50 distinct keywords per call.")
+    }
+    for keyword in keywords {
+      _ = try OpenASOMCPValidation.nonEmpty(keyword, fieldName: "keyword", maximumLength: 200)
+    }
+    let requested = try OpenASOMCPValidation.storefronts(storefronts)
+    let storefronts = requested.isEmpty ? ["us"] : requested
+    guard storefronts.count <= 3 else {
+      throw OpenASOError.providerUnavailable("Look up popularity in at most three storefronts per call.")
+    }
+    let platform = try OpenASOMCPValidation.platform(platform)
+    var items: [OpenASOMCPKeywordPopularity] = []
+    var errors: [OpenASOMCPKeywordSuggestionProviderError] = []
+    for storefront in storefronts {
+      try Task.checkCancellation()
+      var rows: [KeywordPopularityLookup] = []
+      var failure: String?
+      do {
+        guard let keywordMetricsService else {
+          throw OpenASOError.providerUnavailable("Apple Ads popularity lookup is unavailable in this runtime.")
+        }
+        rows = try await Self.withRankingSearchTimeout(operationName: "Keyword popularity") {
+          try await keywordMetricsService.lookupPopularity(
+            for: keywords, storefront: storefront, now: self.now
+          )
+        }
+      } catch {
+        try Task.checkCancellation()
+        if let error = error as? URLError, error.code == .cancelled { throw CancellationError() }
+        let mapped = OpenASOError.map(error)
+        failure = mapped.localizedDescription
+        errors.append(.init(storefront: storefront, error: OpenASOMCPErrorDTO(mapped)))
+      }
+      let byKeyword = Dictionary(uniqueKeysWithValues: rows.map {
+        (AppleAdsSearchTermPopularity.normalized($0.keyword), $0)
+      })
+      items.append(contentsOf: keywords.map { keyword in
+        let row = byKeyword[AppleAdsSearchTermPopularity.normalized(keyword)]
+        return OpenASOMCPKeywordPopularity(
+          keyword: keyword,
+          storefront: storefront,
+          platform: platform.rawValue,
+          popularityScore: row?.popularityScore,
+          source: row?.source,
+          observedAt: row?.observedAt ?? now(),
+          unavailableReason: row?.unavailableReason ?? failure
+        )
+      })
+    }
+    return .init(items: items, providerErrors: errors, notes: [
+      "Fresh market popularity uses the official Apple Ads API, then the saved web session for missing terms. This lookup creates no tracks and stores no metrics.",
+      "A missing score is unknown, not zero. A score at or below 5 is weak demand evidence; prioritize relevant terms above that floor. Popularity is an index, not exact search volume."
+    ])
+  }
+
   func suggestKeywords(
     appStoreID: Int64,
     storefronts: [String]? = nil,
     platform: String? = nil,
     limit: Int? = nil,
     websiteMarkdown: String? = nil,
-    seedKeyword: String? = nil
+    seedKeyword: String? = nil,
+    offset: Int = 0,
+    rankingLimit: Int? = nil
   ) async throws -> OpenASOMCPKeywordSuggestionResult {
     let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
     let storefronts = try await normalizedDiscoveryStorefronts(storefronts, appStoreID: appStoreID)
@@ -2512,18 +2592,64 @@ final class OpenASOMCPService: Sendable {
     let seedKeyword = try seedKeyword.map {
       try OpenASOMCPValidation.nonEmpty($0, fieldName: "seed_keyword", maximumLength: 200)
     }
+    guard (0...1_000).contains(offset) else {
+      throw OpenASOError.providerUnavailable("Suggestion offset must be between 0 and 1000.")
+    }
+    let rankingLimit = max(0, min(rankingLimit ?? ResponseLimits.keywordVerificationSearchBudget,
+                                  ResponseLimits.keywordVerificationSearchBudget))
     var seeds = try await seedKeywords(
       appStoreID: appStoreID,
       storefronts: storefronts,
       limit: limit * 2,
       websiteMarkdown: websiteMarkdown
     )
-    let appleAds = try await appleAdsSuggestions(
+    let metadataSeeds = seeds.map(\.keyword)
+    var appleAds = try await appleAdsSuggestions(
       appStoreID: appStoreID,
       storefronts: storefronts,
       seedKeyword: seedKeyword,
-      limit: limit
+      limit: limit,
+      offset: offset
     )
+    let trackedKeys = try await trackedQueryKeys(appStoreID: appStoreID)
+    var freshMetrics: [String: KeywordMetricValue] = [:]
+    for index in appleAds.suggestions.indices {
+      let row = appleAds.suggestions[index]
+      appleAds.suggestions[index].isTracked = trackedKeys.contains(
+        TrackedAppKeyword.makeQueryKey(term: row.keyword, storefront: row.requestedStorefront, platform: platform)
+      )
+    }
+    for storefront in storefronts.prefix(3) {
+      let keywords = appleAds.suggestions.filter { $0.requestedStorefront == storefront }.map(\.keyword)
+      guard !keywords.isEmpty, keywordMetricsService != nil else { continue }
+      let popularity = try await getKeywordPopularity(
+        keywords: keywords, storefronts: [storefront], platform: platform.rawValue
+      )
+      appleAds.errors.append(contentsOf: popularity.providerErrors)
+      let byKeyword = Dictionary(uniqueKeysWithValues: popularity.items.map {
+        (AppleAdsSearchTermPopularity.normalized($0.keyword), $0)
+      })
+      for index in appleAds.suggestions.indices where appleAds.suggestions[index].requestedStorefront == storefront {
+        let term = appleAds.suggestions[index].keyword
+        let key = TrackedAppKeyword.makeQueryKey(term: term, storefront: storefront, platform: platform)
+        let evidence = byKeyword[AppleAdsSearchTermPopularity.normalized(term)]
+        appleAds.suggestions[index].popularity = evidence
+        appleAds.suggestions[index].isTracked = trackedKeys.contains(key)
+        if let score = evidence?.popularityScore {
+          freshMetrics[key] = .init(popularityScore: score, difficultyScore: nil)
+        }
+      }
+    }
+    appleAds.suggestions.sort {
+      let left = $0.popularity?.popularityScore ?? -1
+      let right = $1.popularity?.popularityScore ?? -1
+      if left != right { return left > right }
+      if $0.suggestionScore != $1.suggestionScore {
+        return ($0.suggestionScore ?? -1) > ($1.suggestionScore ?? -1)
+      }
+      return $0.keyword < $1.keyword
+    }
+    appleAds.notes.append("Suggestions are ordered by fresh market popularity, then contextual suggestion score. Use relevant above-floor terms as new seed_keyword values; use suggestionPages.nextOffset to explore another page. ranking_limit: 0 skips ranking searches during expansion.")
     // Put Apple's candidates inside the existing verification budget. Keep the
     // complete bounded suggestion page in the response even when ranking is capped.
     var seedsByKeyword = Dictionary(uniqueKeysWithValues: seeds.map { ($0.keyword, $0) })
@@ -2548,13 +2674,15 @@ final class OpenASOMCPService: Sendable {
     }
     seeds = appleKeywords.compactMap { seedsByKeyword.removeValue(forKey: $0) }
       + seeds.filter { seedsByKeyword[$0.keyword] != nil }
-    let candidates = try await verifyKeywordSeeds(
-      seeds,
-      appStoreID: appStoreID,
-      storefronts: storefronts,
-      platform: platform,
-      limit: limit
-    )
+    let candidates: KeywordVerificationResult
+    if rankingLimit == 0 {
+      candidates = KeywordVerificationResult(candidates: [], errors: [])
+    } else {
+      candidates = try await verifyKeywordSeeds(
+        seeds, appStoreID: appStoreID, storefronts: storefronts, platform: platform,
+        limit: limit, searchBudget: rankingLimit, metricsOverride: freshMetrics
+      )
+    }
     return OpenASOMCPKeywordSuggestionResult(
       app: app,
       generatedAt: now(),
@@ -2562,7 +2690,9 @@ final class OpenASOMCPService: Sendable {
       errors: candidates.errors,
       appleAdsSuggestions: appleAds.suggestions,
       providerErrors: appleAds.errors,
-      notes: appleAds.notes
+      notes: appleAds.notes,
+      suggestionPages: appleAds.pages,
+      metadataSeeds: metadataSeeds
     )
   }
 
@@ -2570,18 +2700,21 @@ final class OpenASOMCPService: Sendable {
     appStoreID: Int64,
     storefronts: [String],
     seedKeyword: String?,
-    limit: Int
+    limit: Int,
+    offset: Int
   ) async throws -> (
     suggestions: [OpenASOMCPAppleAdsKeywordSuggestion],
     errors: [OpenASOMCPKeywordSuggestionProviderError],
-    notes: [String]
+    notes: [String],
+    pages: [OpenASOMCPKeywordSuggestionPage]
   ) {
     guard let api = appleAdsPlatformAPI,
           let credentials = await appleAdsCredentialsProvider(), credentials.canVerify else {
-      return ([], [], ["Apple Ads API credentials are unavailable; candidates use app metadata and optional website text."])
+      return ([], [], ["Apple Ads API credentials are unavailable; candidates use app metadata and optional website text."], [])
     }
     var suggestions: [OpenASOMCPAppleAdsKeywordSuggestion] = []
     var errors: [OpenASOMCPKeywordSuggestionProviderError] = []
+    var pages: [OpenASOMCPKeywordSuggestionPage] = []
     var notes = [
       "Apple Ads suggestionScore is contextual to the app and seed, not country-wide market popularity. requestedStorefront records the request; Apple does not return a country with each suggestion.",
       "Apple Ads suggestions may lack ranking verification when the live-search budget is exhausted. This tool does not add keywords or change stored popularity."
@@ -2595,10 +2728,16 @@ final class OpenASOMCPService: Sendable {
             countryOrRegion: storefront,
             seedKeyword: seedKeyword,
             limit: limit,
+            offset: offset,
             using: credentials
           )
         }
         try Task.checkCancellation()
+        pages.append(.init(
+          requestedStorefront: storefront, seedKeyword: seedKeyword, offset: offset,
+          limit: limit, returnedCount: rows.count,
+          nextOffset: rows.count == limit && offset + limit <= 1_000 ? offset + limit : nil
+        ))
         suggestions.append(contentsOf: rows.prefix(limit).map {
           OpenASOMCPAppleAdsKeywordSuggestion(
             keyword: $0.keyword,
@@ -2623,7 +2762,7 @@ final class OpenASOMCPService: Sendable {
     if suggestions.isEmpty {
       notes.append("Apple Ads returned no candidates; metadata and optional website candidates remain available.")
     }
-    return (suggestions, errors, notes)
+    return (suggestions, errors, notes, pages)
   }
 
   func refreshReviews(
@@ -3446,11 +3585,13 @@ extension OpenASOMCPService {
     storefronts: [String],
     platform: AppPlatform,
     limit: Int,
-    persistResults: Bool = false
+    persistResults: Bool = false,
+    searchBudget: Int = ResponseLimits.keywordVerificationSearchBudget,
+    metricsOverride: [String: KeywordMetricValue] = [:]
   ) async throws -> KeywordVerificationResult {
     let provider = try requireRankingProvider()
     let trackedKeys = try await trackedQueryKeys(appStoreID: appStoreID)
-    let metrics: [String: KeywordMetricValue] = try await backgroundModelStore.read {
+    var metrics: [String: KeywordMetricValue] = try await backgroundModelStore.read {
       modelContext in
       try Self.metricValuesByQueryKey(
         queryKeys: seeds.flatMap { seed in
@@ -3461,6 +3602,7 @@ extension OpenASOMCPService {
         in: modelContext
       )
     }
+    metrics.merge(metricsOverride) { _, fresh in fresh }
     var candidates: [OpenASOMCPKeywordCandidate] = []
     var errors: [OpenASOMCPKeywordVerificationError] = []
     var searchedCount = 0
@@ -3468,7 +3610,7 @@ extension OpenASOMCPService {
       for storefront in storefronts {
         if let allowed = seed.storefronts, !allowed.contains(storefront) { continue }
         try Task.checkCancellation()
-        guard searchedCount < ResponseLimits.keywordVerificationSearchBudget else {
+        guard searchedCount < searchBudget else {
           errors.append(
             OpenASOMCPKeywordVerificationError(
               keyword: seed.keyword,
@@ -3477,7 +3619,7 @@ extension OpenASOMCPService {
               error: OpenASOMCPErrorDTO(
                 code: "verification_budget_exceeded",
                 message:
-                  "Keyword verification stopped after \(ResponseLimits.keywordVerificationSearchBudget) ranking searches to keep the MCP response inside the tool timeout. Run add_keywords or refresh_keyword_rankings in smaller batches for remaining seeds."
+                  "Keyword verification stopped after \(searchBudget) ranking searches to keep the MCP response inside the tool timeout. Use get_ranked_apps_for_keyword for selected terms or refresh_keyword_rankings after adding tracks."
               )
             ))
           break seedLoop
