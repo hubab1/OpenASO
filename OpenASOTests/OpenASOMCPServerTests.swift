@@ -581,6 +581,47 @@ struct OpenASOMCPServerTests {
     }
 
     @Test
+    func suggestKeywordsUsesSavedCredentialsOverMCPAndPreservesUnverifiedAppleSuggestions() async throws {
+        let context = try AppServicesMCPTestContext(
+            httpClient: MockHTTPClient { _ in throw OpenASOError.networkUnavailable },
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], keywordSuggestionRows: [
+                "us": [.init(keyword: "focus session", suggestionScore: 0)]
+            ])
+        )
+        try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
+        try context.configureAppleAds(contextAppStoreID: 987)
+        let server = try await context.services.mcpServerProvider.makeServer()
+        let client = Client(name: "Suggestion integration test", version: "1.0")
+        let transports = await InMemoryTransport.createConnectedPair()
+        try await server.start(transport: transports.server)
+        do {
+            _ = try await client.connect(transport: transports.client)
+            let response = try await client.callTool(name: "suggest_keywords", arguments: [
+                "appStoreID": 123,
+                "storefronts": ["us"],
+                "seed_keyword": "focus",
+                "limit": 5
+            ])
+            let text = try #require(response.content.first?.textValue)
+            let result = try JSONDecoder.openASOMCP.decode(
+                OpenASOMCPKeywordSuggestionResult.self, from: Data(text.utf8)
+            )
+            #expect(result.appleAdsSuggestions.first?.keyword == "focus session")
+            #expect(result.appleAdsSuggestions.first?.suggestionScore == 0)
+            #expect(result.appleAdsSuggestions.first?.seedKeyword == "focus")
+            #expect(result.providerErrors.isEmpty)
+            #expect(!result.errors.isEmpty)
+            #expect(try context.modelContext.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 1)
+            await client.disconnect()
+            await server.stop()
+        } catch {
+            await client.disconnect()
+            await server.stop()
+            throw error
+        }
+    }
+
+    @Test
     func appServicesMCPProviderSkipsHTTPWhenAppleAdsConfigurationIsMissing() async throws {
         var requestCount = 0
         let context = try AppServicesMCPTestContext(

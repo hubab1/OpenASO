@@ -61,6 +61,12 @@ struct AppleAdsSearchTermPopularity: Codable, Equatable, Identifiable, Sendable 
     }
 }
 
+/// Apple's suggestion-context score is distinct from country-wide search popularity.
+struct AppleAdsKeywordSuggestion: Codable, Equatable, Sendable {
+    let keyword: String
+    let suggestionScore: Int?
+}
+
 struct AppleAdsSearchTermPopularityWindow: Codable, Equatable, Sendable {
     let start: String
     let end: String
@@ -153,10 +159,95 @@ protocol AppleAdsPlatformAPI: Sendable {
         window: AppleAdsSearchTermPopularityWindow,
         using credentials: AppleAdsCredentials
     ) async throws -> [AppleAdsSearchTermPopularity]
+
+    func keywordSuggestions(
+        appStoreID: Int64,
+        countryOrRegion: String,
+        seedKeyword: String?,
+        limit: Int,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsKeywordSuggestion]
 }
 
 struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
     let coverage = AppleAdsPlatformCoverage.current
+
+    func keywordSuggestions(
+        appStoreID: Int64,
+        countryOrRegion: String,
+        seedKeyword: String?,
+        limit: Int,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsKeywordSuggestion] {
+        guard appStoreID > 0 else { throw OpenASOError.invalidAppStoreID }
+        let credentials = try await credentialsWithAccount(try validated(credentials))
+        let accountID = try requiredAdAccountID(from: credentials)
+        let countryCode = countryOrRegion.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard countryCode.utf8.count == 2,
+              countryCode.utf8.allSatisfy({ (65...90).contains($0) }) else {
+            throw OpenASOError.providerUnavailable("Enter a two-letter Apple Ads country or region code.")
+        }
+        let limit = max(1, min(limit, 50))
+        let request = Self.keywordSuggestionsRequest(
+            appStoreID: appStoreID,
+            countryCode: countryCode,
+            seedKeyword: seedKeyword,
+            limit: limit
+        )
+        return try await perform(credentials: credentials) { client in
+            try Task.checkCancellation()
+            let payload = try await client.queryKeywordSuggestions(
+                headers: .init(xApContext: XApContext(adAccountID: accountID).rawValue),
+                body: .json(request)
+            ).ok.body.json
+            if let error = payload.value1.error {
+                throw OpenASOError.providerUnavailable(
+                    "Apple Ads keyword suggestions: \(error.message ?? "The provider returned an error.")"
+                )
+            }
+            var seen = Set<String>()
+            return (payload.value2.result ?? []).compactMap { row in
+                guard let keyword = row.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !keyword.isEmpty,
+                      seen.insert(AppleAdsSearchTermPopularity.normalized(keyword)).inserted else { return nil }
+                return AppleAdsKeywordSuggestion(
+                    keyword: keyword,
+                    suggestionScore: row.popularity.map(Int.init)
+                )
+            }
+            .sorted { left, right in
+                if left.suggestionScore != right.suggestionScore {
+                    return (left.suggestionScore ?? -1) > (right.suggestionScore ?? -1)
+                }
+                return left.keyword < right.keyword
+            }
+            .prefix(limit)
+            .map { $0 }
+        }
+    }
+
+    static func keywordSuggestionsRequest(
+        appStoreID: Int64,
+        countryCode: String,
+        seedKeyword: String?,
+        limit: Int
+    ) -> Components.Schemas.RecommendationQueryRequest {
+        var filters: [Components.Schemas.RecommendationFilterCondition] = [
+            .init(field: "promotedObjectId", _operator: .equals, value: [String(appStoreID)]),
+            .init(field: "promotedObjectType", _operator: .equals, value: ["APPSTORE_APP"]),
+            .init(field: "countriesOrRegions", _operator: ._in, value: [countryCode]),
+        ]
+        if let seed = seedKeyword?.trimmingCharacters(in: .whitespacesAndNewlines), !seed.isEmpty {
+            filters.append(.init(field: "terms", _operator: ._in, value: [seed]))
+        }
+        // The live suggestions endpoint rejects sorting by popularity. Sort the
+        // bounded returned page locally, retaining the seed/request context.
+        return .init(
+            pagination: .init(offset: 0, pageSize: Int32(max(1, min(limit, 50)))),
+            sorting: nil,
+            filters: filters
+        )
+    }
 
     func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
         let credentials = try validated(credentials)

@@ -530,6 +530,22 @@ struct OpenASOMCPKeywordSuggestionResult: Codable, Sendable {
     let generatedAt: Date
     let candidates: [OpenASOMCPKeywordCandidate]
     let errors: [OpenASOMCPKeywordVerificationError]
+    let appleAdsSuggestions: [OpenASOMCPAppleAdsKeywordSuggestion]
+    let providerErrors: [OpenASOMCPKeywordSuggestionProviderError]
+    let notes: [String]
+}
+
+struct OpenASOMCPAppleAdsKeywordSuggestion: Codable, Sendable {
+    let keyword: String
+    let suggestionScore: Int?
+    let requestedStorefront: String
+    let seedKeyword: String?
+    let observedAt: Date
+}
+
+struct OpenASOMCPKeywordSuggestionProviderError: Codable, Sendable {
+    let storefront: String
+    let error: OpenASOMCPErrorDTO
 }
 
 struct OpenASOMCPReviewRefreshOutcomeDTO: Codable, Sendable {

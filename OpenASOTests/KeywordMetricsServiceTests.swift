@@ -2827,6 +2827,19 @@ struct StaticAppleAdsPlatformAPI: AppleAdsPlatformAPI {
     let coverage = AppleAdsPlatformCoverage.current
     let apps: [AppleAdsPromotedApp]
     var popularityRows: [AppleAdsSearchTermPopularity] = []
+    var keywordSuggestionRows: [String: [AppleAdsKeywordSuggestion]] = [:]
+    var keywordSuggestionErrors: [String: OpenASOError] = [:]
+
+    func keywordSuggestions(
+        appStoreID: Int64,
+        countryOrRegion: String,
+        seedKeyword: String?,
+        limit: Int,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsKeywordSuggestion] {
+        if let error = keywordSuggestionErrors[countryOrRegion.lowercased()] { throw error }
+        return Array((keywordSuggestionRows[countryOrRegion.lowercased()] ?? []).prefix(limit))
+    }
 
     func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
         AppleAdsPlatformConnection(
@@ -2877,6 +2890,16 @@ struct FailingSearchPopularityAPI: AppleAdsPlatformAPI {
     let coverage = AppleAdsPlatformCoverage.current
     let error: OpenASOError
 
+    func keywordSuggestions(
+        appStoreID: Int64,
+        countryOrRegion: String,
+        seedKeyword: String?,
+        limit: Int,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsKeywordSuggestion] {
+        throw error
+    }
+
     func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
         throw error
     }
@@ -2913,6 +2936,16 @@ struct FailingSearchPopularityAPI: AppleAdsPlatformAPI {
 struct HTTPBackedSearchPopularityAPI: AppleAdsPlatformAPI {
     let coverage = AppleAdsPlatformCoverage.current
     let httpClient: any HTTPClient
+
+    func keywordSuggestions(
+        appStoreID: Int64,
+        countryOrRegion: String,
+        seedKeyword: String?,
+        limit: Int,
+        using credentials: AppleAdsCredentials
+    ) async throws -> [AppleAdsKeywordSuggestion] {
+        []
+    }
 
     func verify(credentials: AppleAdsCredentials) async throws -> AppleAdsPlatformConnection {
         AppleAdsPlatformConnection(

@@ -48,6 +48,23 @@ Anonymous analytics are enabled by default and can be disabled at any time in Se
 
 OpenASO stores app, keyword, rating, review, and metric data locally with SwiftData. CSV export is the primary path for using that data outside the app, especially for AI-assisted review analysis, keyword research, reporting, or spreadsheets.
 
+### MCP Keyword Suggestions
+
+The `suggest_keywords` tool automatically queries Apple's official keyword suggestion API when saved Apple Ads API credentials are available. It combines those candidates with app metadata and optional website text, then checks a bounded sample against live App Store rankings. Without API access, or when an Apple request fails, metadata and website suggestions remain available; `providerErrors` reports failed Apple requests separately from ranking errors.
+
+Pass `seed_keyword` to explore a specific topic, for example:
+
+```json
+{
+  "appStoreID": 123456789,
+  "storefronts": ["us"],
+  "seed_keyword": "speech to text",
+  "limit": 20
+}
+```
+
+The `appleAdsSuggestions` array includes the returned keyword, contextual `suggestionScore`, requested storefront, seed, and observation time. These scores can change with the seed and are separate from stored market `popularityScore`. Apple does not return a country on each suggestion, so the requested storefront is not a guarantee of the returned score's geographic scope. Discovery queries cover at most three storefronts per call, with at most 50 suggestions per storefront; ranking verification can return partial results. The tool does not add tracks. Select relevant terms and call `add_keywords` to track them, which skips duplicates.
+
 ### Recovering A Local Database
 
 If OpenASO cannot open its local database, it does not delete or replace the existing files and shows the database location when available. Before attempting recovery:

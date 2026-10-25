@@ -320,7 +320,8 @@ struct OpenASOMCPServerFactory: Sendable {
                 storefronts: arguments.stringArray("storefronts"),
                 platform: arguments.string("platform"),
                 limit: arguments.int("limit"),
-                websiteMarkdown: arguments.string("website_markdown")
+                websiteMarkdown: arguments.string("website_markdown"),
+                seedKeyword: try arguments.optionalString("seed_keyword")
             )
             return try Self.toolResult(result)
 
@@ -625,9 +626,9 @@ private extension OpenASOMCPServerFactory {
                     "limit": .integer
                 ]
             ), readOnly: true, openWorld: true),
-            tool("suggest_keywords", "Generate candidate keywords from app metadata and verify a bounded live-ranking sample; returns partial candidates and errors when verification is capped.", schema(
+            tool("suggest_keywords", "Discover keywords using saved Apple Ads API credentials automatically, with app metadata and optional website fallback. Optional seed_keyword narrows Apple's suggestions. Returns bounded ranking candidates plus appleAdsSuggestions with separate contextual suggestionScore, requestedStorefront and seed; these scores are not market popularity. Apple discovery is capped at three storefronts and ranking verification may be partial. Does not add keywords; use add_keywords after selecting relevant terms.", schema(
                 required: ["appStoreID"],
-                optional: commonAppFilters.merging(["limit": .integer, "website_markdown": .string]) { current, _ in current }
+                optional: commonAppFilters.merging(["limit": .integer, "website_markdown": .string, "seed_keyword": .string]) { current, _ in current }
             ), readOnly: true, openWorld: true),
             tool("refresh_keyword_rankings", "Refresh and persist rankings for tracked keywords so keyword and competitor tools share the same evidence. The limit defaults to 20 and is clamped to 1...25 tracks. Never-attempted tracks are selected first, then by least-recent activity using successful and durable attempt times; attempt rotation survives OpenASO relaunches and in-flight reservations are shared across MCP connections.", schema(
                 required: ["appStoreID"],

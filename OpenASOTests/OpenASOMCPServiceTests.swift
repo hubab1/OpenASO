@@ -694,6 +694,85 @@ struct OpenASOMCPServiceTests {
     }
 
     @Test
+    func suggestKeywordsAutomaticallyUsesSavedAppleAdsCredentialsAndKeepsScoresSeparate() async throws {
+        let api = StaticAppleAdsPlatformAPI(apps: [], keywordSuggestionRows: [
+            "us": [.init(keyword: "voice notes", suggestionScore: 0), .init(keyword: "dictation", suggestionScore: nil)]
+        ])
+        let context = try MCPTestContext(
+            rankingProvider: StubMCPRankingProvider(pages: [:]),
+            appleAdsPlatformAPI: api,
+            appleAdsCredentials: .init(clientID: "client", teamID: "team", keyID: "key", privateKey: "private", adAccountID: "123")
+        )
+        try context.insertStoreApp(appStoreID: 123, name: "Utter")
+
+        let result = try await context.service.suggestKeywords(
+            appStoreID: 123, storefronts: ["us"], limit: 10, seedKeyword: "voice"
+        )
+
+        #expect(result.appleAdsSuggestions.map(\.keyword) == ["voice notes", "dictation"])
+        #expect(result.appleAdsSuggestions.first?.suggestionScore == 0)
+        #expect(result.appleAdsSuggestions.last?.suggestionScore == nil)
+        #expect(result.appleAdsSuggestions.allSatisfy { $0.seedKeyword == "voice" && $0.requestedStorefront == "us" })
+        #expect(result.candidates.contains { $0.keyword == "voice notes" && $0.sources.contains("apple_ads_keyword_suggestions") })
+        #expect(result.candidates.allSatisfy { $0.popularityScore == nil })
+        #expect(result.providerErrors.isEmpty)
+        #expect(try context.modelContext.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 0)
+    }
+
+    @Test
+    func suggestKeywordsKeepsMetadataWhenAppleAdsFailsAndReportsProviderError() async throws {
+        let context = try MCPTestContext(
+            rankingProvider: StubMCPRankingProvider(pages: [:]),
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], keywordSuggestionErrors: ["us": .rateLimited]),
+            appleAdsCredentials: .init(clientID: "client", teamID: "team", keyID: "key", privateKey: "private")
+        )
+        try context.insertStoreApp(appStoreID: 123, name: "Focus Timer")
+
+        let result = try await context.service.suggestKeywords(appStoreID: 123, storefronts: ["us"])
+
+        #expect(!result.candidates.isEmpty)
+        #expect(result.appleAdsSuggestions.isEmpty)
+        #expect(result.providerErrors.first?.storefront == "us")
+        #expect(result.providerErrors.first?.error.code == "rate_limited")
+    }
+
+    @Test
+    func suggestKeywordsDoesNotUseAPIWithoutCredentials() async throws {
+        let context = try MCPTestContext(
+            rankingProvider: StubMCPRankingProvider(pages: [:]),
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], keywordSuggestionErrors: ["us": .rateLimited])
+        )
+        try context.insertStoreApp(appStoreID: 123, name: "Focus Timer")
+
+        let result = try await context.service.suggestKeywords(appStoreID: 123, storefronts: ["us"])
+
+        #expect(!result.candidates.isEmpty)
+        #expect(result.providerErrors.isEmpty)
+        #expect(result.appleAdsSuggestions.isEmpty)
+        #expect(result.notes.contains { $0.contains("credentials are unavailable") })
+    }
+
+    @Test
+    func appleAdsOnlySeedsAreVerifiedInTheirRequestedStorefront() async throws {
+        let context = try MCPTestContext(
+            rankingProvider: StubMCPRankingProvider(pages: [:]),
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], keywordSuggestionRows: [
+                "us": [.init(keyword: "voice notes", suggestionScore: 10)],
+                "gb": [.init(keyword: "dictation", suggestionScore: 20)]
+            ]),
+            appleAdsCredentials: .init(clientID: "client", teamID: "team", keyID: "key", privateKey: "private")
+        )
+        try context.insertStoreApp(appStoreID: 123, name: "Utter")
+
+        let result = try await context.service.suggestKeywords(appStoreID: 123, storefronts: ["us", "gb"])
+
+        #expect(result.candidates.contains { $0.keyword == "voice notes" && $0.storefront == "us" })
+        #expect(!result.candidates.contains { $0.keyword == "voice notes" && $0.storefront == "gb" })
+        #expect(result.candidates.contains { $0.keyword == "dictation" && $0.storefront == "gb" })
+        #expect(!result.candidates.contains { $0.keyword == "dictation" && $0.storefront == "us" })
+    }
+
+    @Test
     func suggestKeywordsKeepsPartialResultsWhenOneSeedFails() async throws {
         let rankingProvider = StubMCPRankingProvider(
             pages: [
