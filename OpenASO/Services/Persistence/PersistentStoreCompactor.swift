@@ -4,6 +4,33 @@ import SQLite3
 import SwiftData
 
 enum PersistentStoreCompactor {
+    static func compactIfNeeded(at storeURL: URL) throws {
+        if try shouldCompact(at: storeURL) { try compact(at: storeURL) }
+    }
+
+    /// Only storage-capacity/access failures are optional. Archive validation,
+    /// schema incompatibility, and corruption errors must still stop startup.
+    static func canRetryLater(_ error: any Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain {
+            if error.code == CocoaError.fileReadCorruptFile.rawValue { return false }
+            if [CocoaError.fileWriteOutOfSpace.rawValue, CocoaError.fileWriteNoPermission.rawValue,
+                CocoaError.fileLocking.rawValue].contains(error.code) { return true }
+        }
+        if error.domain == "NSSQLiteErrorDomain" {
+            // Extended SQLite errors keep the primary code in the low byte.
+            return [SQLITE_FULL, SQLITE_BUSY, SQLITE_LOCKED, SQLITE_READONLY, SQLITE_PERM]
+                .contains(Int32(error.code & 0xff))
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return canRetryLater(underlying)
+        }
+        if let details = error.userInfo[NSDetailedErrorsKey] as? [NSError], !details.isEmpty {
+            return details.allSatisfy(canRetryLater)
+        }
+        return false
+    }
+
     static func shouldCompact(at storeURL: URL) throws -> Bool {
         var database: OpaquePointer?
         guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {

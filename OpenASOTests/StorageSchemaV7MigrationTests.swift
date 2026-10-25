@@ -551,6 +551,169 @@ struct StorageSchemaV7MigrationTests {
         #expect(try context.fetchCount(FetchDescriptor<RatingHistoryChunk>()) == 0)
     }
 
+    @Test
+    func migrationRejectsZeroCountExistingArchiveInsteadOfReplacingItsHistory() throws {
+        try withTestStore { container, url in
+            let context = ModelContext(container)
+            let prior = makeRating(day: "2026-01-01", observedAt: Date(timeIntervalSince1970: 100), app: nil)
+            let chunk = RatingHistoryChunk(appStoreID: 42, storefront: "gb", year: "2026")
+            try RatingHistoryStore.replace([RatingHistoryRecord(prior)], in: chunk)
+            let payload = chunk.payload
+            chunk.recordCount = 0 // Corrupt metadata must never mean an existing archive is empty.
+            context.insert(chunk)
+            context.insert(makeRating(day: "2026-01-02", observedAt: .now, app: nil))
+            context.insert(makeRating(day: "2026-01-03", observedAt: .now, app: nil))
+            try context.save()
+            #expect(throws: (any Error).self) { try StorageSchemaV7Migrator.migrateIfNeeded(at: url) }
+            let reread = ModelContext(container)
+            #expect(try reread.fetchCount(FetchDescriptor<AppDailyRating>()) == 2)
+            #expect(try reread.fetch(FetchDescriptor<RatingHistoryChunk>()).first?.payload == payload)
+        }
+    }
+
+    @Test
+    func waitingClientRejectsAnUnfinishedUpgradeAndLaterResumePreservesHistory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-UnfinishedOwner-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        let expected = try autoreleasepool {
+            let owner = try ModelContainerFactory.makePersistentModelContainer(at: url)
+            let context = ModelContext(owner)
+            let state = try #require(try context.fetch(FetchDescriptor<StorageMigrationState>()).first)
+            state.completed = false
+            state.needsCompaction = true
+            let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                               iconURLString: nil, defaultPlatform: .iphone)
+            context.insert(app)
+            context.insert(makeRating(day: "2026-01-01", observedAt: .now, app: app))
+            context.insert(makeRating(day: "2026-01-02", observedAt: .now, app: app))
+            try context.save()
+            let expected = try RatingHistoryStore.fetch(appStoreIDs: [42], in: context)
+            #expect(throws: InjectedStorageInterruption.self) {
+                try StorageSchemaV7Migrator.migrateIfNeeded(at: url, beforeDeletion: {
+                    throw InjectedStorageInterruption.stop
+                })
+            }
+            #expect(try ModelContext(owner).fetch(FetchDescriptor<StorageMigrationState>()).first?.pendingDeletionPayload != nil)
+            // Shared access must not turn an unfinished migration into a ready app.
+            #expect(throws: PersistentStoreError.self) {
+                _ = try ModelContainerFactory.makePersistentModelContainer(at: url)
+            }
+            return expected
+        }
+        let reopened = try ModelContainerFactory.makePersistentModelContainer(at: url)
+        let context = ModelContext(reopened)
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context) == expected)
+        #expect(try context.fetch(FetchDescriptor<StorageMigrationState>()).first?.completed == true)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func diskFullDuringOptionalCompactionStillOpensVerifiedHistoryAndRetriesLater(wrappedSQLiteError: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-CompactionDiskFull-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        let expected = try autoreleasepool {
+            let schema = Schema(versionedSchema: OpenASOSchemaV6.self)
+            let container = try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, url: url))
+            let context = ModelContext(container)
+            let records = [makeRating(day: "2026-01-01", observedAt: .now, app: nil),
+                           makeRating(day: "2026-01-02", observedAt: .now, app: nil)]
+            for record in records { context.insert(record) }
+            try context.save()
+            return records.map(RatingHistoryRecord.init).sorted { $0.identityKey < $1.identityKey }
+        }
+        let completion = try autoreleasepool {
+            let container = try ModelContainerFactory.makePersistentModelContainer(at: url, compactStore: { _ in
+                if wrappedSQLiteError {
+                    throw NSError(domain: NSCocoaErrorDomain, code: 134070, userInfo: [
+                        NSUnderlyingErrorKey: NSError(domain: "NSSQLiteErrorDomain", code: Int(SQLITE_FULL))
+                    ])
+                }
+                throw CocoaError(.fileWriteOutOfSpace)
+            })
+            let context = ModelContext(container)
+            #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context).sorted { $0.identityKey < $1.identityKey } == expected)
+            let state = try #require(try context.fetch(FetchDescriptor<StorageMigrationState>()).first)
+            #expect(state.completed && state.needsCompaction)
+            return state.lastMaintenanceAt
+        }
+        let reopened = try ModelContainerFactory.makePersistentModelContainer(at: url)
+        let context = ModelContext(reopened)
+        let state = try #require(try context.fetch(FetchDescriptor<StorageMigrationState>()).first)
+        #expect(state.completed && !state.needsCompaction)
+        #expect(state.lastMaintenanceAt == completion)
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context).sorted { $0.identityKey < $1.identityKey } == expected)
+    }
+
+    @Test
+    func longLivedReaderSeesAnotherWorkersHistoricalCorrectionAndRollover() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-ReaderUpdates-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        let firstContainer = try ModelContainerFactory.makePersistentModelContainer(at: url)
+        let secondContainer = try ModelContainerFactory.makePersistentModelContainer(at: url)
+        let seed = ModelContext(firstContainer)
+        let app = StoreApp(appStoreID: 42, bundleID: nil, name: "App", sellerName: nil,
+                           iconURLString: nil, defaultPlatform: .iphone)
+        seed.insert(app)
+        let service = AppStorefrontRatingService(httpClient: PreviewHTTPClient())
+        let start = try Date("2026-01-01T15:00:00Z", strategy: .iso8601)
+        for day in 0..<3 {
+            try ingestRating(service, app: app, observedAt: start.addingTimeInterval(Double(day) * 86_400),
+                             count: 100 + day, in: seed)
+        }
+        try seed.save()
+        let reader = BackgroundModelStore(modelContainer: firstContainer)
+        let writer = BackgroundModelStore(modelContainer: secondContainer)
+        let before = try await reader.read { try RatingHistoryStore.fetch(appStoreIDs: [42], in: $0) }
+        #expect(before.count == 3)
+        try await writer.write { context in
+            let app = try #require(try context.fetch(FetchDescriptor<StoreApp>()).first)
+            try RatingHistoryStore.ingest([
+                .init(.init(appStoreID: 42, storefront: "gb", ratingCount: 111, averageRating: 4.5,
+                    ratingCounts: nil, observedAt: start.addingTimeInterval(3_600), source: .iTunesSearch)),
+                .init(.init(appStoreID: 42, storefront: "gb", ratingCount: 103, averageRating: 4.5,
+                    ratingCounts: nil, observedAt: start.addingTimeInterval(3 * 86_400), source: .iTunesSearch))
+            ], storeApps: [42: app], in: context)
+        }
+        let after = try await reader.read { try RatingHistoryStore.fetch(appStoreIDs: [42], in: $0) }
+        #expect(after.count == 4)
+        #expect(after.first { $0.ratingDate == "2026-01-01" }?.ratingCount == 111)
+        #expect(after.first { $0.ratingDate == "2026-01-04" }?.ratingCount == 103)
+        #expect(after.allSatisfy { $0.storeAppID == 42 })
+    }
+
+    @Test
+    func optionalCompactionNeverSuppressesCorruptionErrors() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-CompactionCorruption-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        try autoreleasepool {
+            let schema = Schema(versionedSchema: OpenASOSchemaV6.self)
+            let container = try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, url: url))
+            let context = ModelContext(container)
+            context.insert(makeRating(day: "2026-01-01", observedAt: .now, app: nil))
+            context.insert(makeRating(day: "2026-01-02", observedAt: .now, app: nil))
+            try context.save()
+        }
+        #expect(throws: PersistentStoreError.self) {
+            _ = try ModelContainerFactory.makePersistentModelContainer(at: url, compactStore: { _ in
+                throw CocoaError(.fileReadCorruptFile)
+            })
+        }
+        let schema = ModelContainerFactory.schema
+        let container = try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, url: url))
+        let context = ModelContext(container)
+        #expect(try RatingHistoryStore.fetch(appStoreIDs: [42], in: context).count == 2)
+        let state = try #require(try context.fetch(FetchDescriptor<StorageMigrationState>()).first)
+        #expect(state.completed && state.needsCompaction)
+    }
+
     private func ingestRating(_ service: AppStorefrontRatingService, app: StoreApp, observedAt: Date,
                               count: Int, in context: ModelContext) throws {
         try service.persist(.init(storefront: "gb", result: .init(

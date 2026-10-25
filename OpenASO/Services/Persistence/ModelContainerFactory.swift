@@ -91,13 +91,25 @@ enum ModelContainerFactory {
 
     static func makePersistentModelContainer(
         at storeURL: URL,
-        opener: ContainerOpener = openModelContainer
+        opener: ContainerOpener = openModelContainer,
+        compactStore: (URL) throws -> Void = PersistentStoreCompactor.compactIfNeeded
     ) throws -> ModelContainer {
         let schema = Self.schema
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         do {
             return try withMigrationAccess(for: storeURL) { canMigrate in
-                guard canMigrate else { return try opener(schema, configuration) }
+                guard canMigrate else {
+                    let container = try opener(schema, configuration)
+                    let state = try ModelContext(container).fetch(FetchDescriptor<StorageMigrationState>()).first
+                    // A failed migration owner also releases its lock. Shared
+                    // access alone does not prove that the upgrade finished.
+                    guard state?.completed == true, state?.pendingDeletionPayload == nil else {
+                        throw NSError(domain: "OpenASO.StorageMigration", code: 2, userInfo: [
+                            NSLocalizedDescriptionKey: "The database upgrade is unfinished. Quit other OpenASO, refresh, or MCP processes and reopen to resume it."
+                        ])
+                    }
+                    return container
+                }
                 let prepared: ModelContainer? = try autoreleasepool {
                     let container = try opener(schema, configuration)
                     try RankingSchemaV6Migrator.migrateIfNeeded(in: container)
@@ -112,14 +124,23 @@ enum ModelContainerFactory {
                 }
                 if let prepared { return prepared }
                 try StorageSchemaV7Migrator.migrateIfNeeded(at: storeURL)
-                if try PersistentStoreCompactor.shouldCompact(at: storeURL) {
-                    try PersistentStoreCompactor.compact(at: storeURL)
+                var compactionFinished = false
+                do {
+                    try compactStore(storeURL)
+                    compactionFinished = true
+                } catch {
+                    guard PersistentStoreCompactor.canRetryLater(error) else { throw error }
+                    // Logical migration has already verified all research data.
+                    // Reopening still has to succeed before returning a usable store.
+                    OpenASOLog.rankingMigration.error("Optional storage compaction deferred: \(String(reflecting: error), privacy: .public)")
                 }
                 let container = try opener(schema, configuration)
                 let context = ModelContext(container)
                 if let state = try context.fetch(FetchDescriptor<StorageMigrationState>()).first {
-                    state.needsCompaction = false
-                    try context.save()
+                    if compactionFinished {
+                        state.needsCompaction = false
+                        try context.save()
+                    }
                 }
                 return container
             }

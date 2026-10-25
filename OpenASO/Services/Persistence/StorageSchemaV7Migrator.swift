@@ -107,9 +107,16 @@ enum StorageSchemaV7Migrator {
         for (key, values) in groups {
             let first = values[0]
             let archived: RatingHistoryChunk
-            if let existing = chunks[key] { archived = try archiveValue(existing) }
-            else { archived = RatingHistoryChunk(appStoreID: first.appStoreID, storefront: first.storefront, year: String(first.ratingDate.prefix(4))) }
-            var merged = archived.recordCount == 0 ? [:] : Dictionary(uniqueKeysWithValues: try RatingHistoryStore.records(in: archived).map { ($0.identityKey, $0) })
+            var merged: [String: RatingHistoryRecord]
+            if let existing = chunks[key] {
+                archived = try archiveValue(existing)
+                // Only a new, unsaved archive may be empty. A stored zero count
+                // must fail validation rather than discard earlier batches.
+                merged = Dictionary(uniqueKeysWithValues: try RatingHistoryStore.records(in: archived).map { ($0.identityKey, $0) })
+            } else {
+                archived = RatingHistoryChunk(appStoreID: first.appStoreID, storefront: first.storefront, year: String(first.ratingDate.prefix(4)))
+                merged = [:]
+            }
             for record in values { merged[record.identityKey] = record }
             try RatingHistoryStore.replace(Array(merged.values), in: archived)
             let row = chunks[key] ?? NSEntityDescription.insertNewObject(forEntityName: "RatingHistoryChunk", into: context)
