@@ -69,6 +69,18 @@ For broader discovery, use `limit: 50` and `ranking_limit: 0`, try distinct feat
 
 Discovery queries cover at most three storefronts per call, with at most 50 suggestions per page and offsets through 1000. Ranking verification defaults to 16 checks and can return partial results; use `get_ranked_apps_for_keyword` to verify a shortlist after expansion. `metadataSeeds` remains available when ranking checks are skipped or API credentials are unavailable. Discovery does not add tracks. Select relevant terms and call `add_keywords` to track them, which skips duplicates. Then use `refresh_keyword_metrics` with an optional `keywords` filter (at most 50 terms) to save their market popularity without refreshing every tracked term. The [ASO skill](.agents/skills/openaso-aso/SKILL.md) documents the full research workflow.
 
+### MCP Metadata Targeting
+
+Saved App Store Connect credentials support `get_app_store_metadata`, which reads an exact locale from live or editable metadata, including private keywords and version/state. Apple Ads credentials supply separate popularity evidence. Metadata reads fail on missing locales or ambiguous app-info state instead of mixing languages or versions.
+
+Pass a discovery shortlist to `audit_keyword_targeting` to compare fresh popularity, app-specific relevance, field coverage and bounded ranking evidence. At most 50 keywords and eight ranking checks are supported; ranking checks default to five and can be skipped with `ranking_limit: 0`. Literal phrases, word combinations, plural variants and missing components remain distinct. Relevance uses the app's metadata rather than hard-coded app-blocker terms; overlap and popularity are evidence for review, not guaranteed opportunities.
+
+Use `compare_metadata_draft` for agent-written title/subtitle/keyword alternatives. It validates 30/30/100 character limits, highlights duplicate/filler terms, reports gained/lost coverage and accepts `expected_hash` to reject a stale baseline. All metadata reads, audits and draft comparisons leave App Store fields unchanged.
+
+`record_metadata_baseline` stores a private local snapshot before a metadata release. `list_metadata_baselines` locates it and `compare_metadata_baseline` compares the same keyword/market/platform set after the release. Rank deltas require known native positions in both samples; fallback and absent ranks remain unknown. Optional search impressions/downloads have caller-provided provenance and reporting periods, with no per-keyword attribution or causal lift claim. No tool publishes metadata or schedules a follow-up.
+
+See the [metadata targeting workflow](.agents/skills/openaso-aso/references/metadata-targeting.md) for sequencing and evidence requirements.
+
 ### Recovering A Local Database
 
 If OpenASO cannot open its local database, it does not delete or replace the existing files and shows the database location when available. Before attempting recovery:

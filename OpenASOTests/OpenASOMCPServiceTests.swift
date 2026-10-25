@@ -305,20 +305,23 @@ struct OpenASOMCPServiceTests {
     func scoreKeywordsClassifiesTrackedKeywordsForTriage() async throws {
         let context = try MCPTestContext()
         let storeApp = try context.insertTrackedApp(appStoreID: 123, name: "ScreenZen").storeApp
+        try context.insertMetadata(for: storeApp, storefront: "us", description: "Screen time control and focus tools")
+        storeApp.storefrontMetadata.first?.servedLanguageCode = "en-US"
         let screenTime = try context.insertKeyword("screen time control", trackedApp: storeApp, storefront: "us")
-        _ = try context.insertKeyword("after certain", trackedApp: storeApp, storefront: "us")
+        _ = try context.insertKeyword("the to", trackedApp: storeApp, storefront: "us")
         let brand = try context.insertKeyword("screenzen screen time", trackedApp: storeApp, storefront: "us")
         try context.insertRankingCrawl(
             keyword: screenTime.term,
             query: screenTime.query,
             storefront: "us",
             observedAt: isoDate("2026-05-01T10:00:00Z"),
+            source: .appStoreWeb,
             rows: [
                 RankingRow(position: 1, appStoreID: 123, name: "ScreenZen"),
                 RankingRow(position: 2, appStoreID: 456, name: "Competitor")
             ]
         )
-        try context.insertDailyRanking(track: screenTime, rank: 1, resultCount: 2)
+        try context.insertDailyRanking(track: screenTime, rank: 1, resultCount: 2, source: .appStoreWeb)
         try context.insertRankingCrawl(
             keyword: brand.term,
             query: brand.query,
@@ -339,7 +342,7 @@ struct OpenASOMCPServiceTests {
         #expect(result.summary.totalCount == 3)
         #expect(result.items.first { $0.keyword == "screen time control" }?.priority == "defend")
         #expect(result.items.first { $0.keyword == "screenzen screen time" }?.priority == "brand")
-        #expect(result.items.first { $0.keyword == "after certain" }?.priority == "noisy")
+        #expect(result.items.first { $0.keyword == "the to" }?.priority == "noisy")
     }
 
     @Test

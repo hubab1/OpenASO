@@ -234,6 +234,64 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "get_app_store_metadata":
+            return try Self.toolResult(try await service.getAppStoreMetadata(
+                appStoreID: arguments.requiredInt64("appStoreID"),
+                locale: arguments.optionalString("locale") ?? "en-US",
+                platform: arguments.optionalString("platform"),
+                scope: arguments.optionalString("scope") ?? "live"
+            ))
+
+        case "audit_keyword_targeting":
+            return try Self.toolResult(try await service.auditKeywordTargeting(
+                appStoreID: arguments.requiredInt64("appStoreID"),
+                locale: arguments.optionalString("locale") ?? "en-US",
+                storefront: arguments.optionalString("storefront") ?? "us",
+                platform: arguments.optionalString("platform"),
+                scope: arguments.optionalString("scope") ?? "live",
+                keywords: arguments.optionalStringArray("keywords"),
+                rankingLimit: arguments.optionalInt("ranking_limit") ?? 5
+            ))
+
+        case "compare_metadata_draft":
+            return try Self.toolResult(try await service.compareMetadataDraft(
+                appStoreID: arguments.requiredInt64("appStoreID"),
+                locale: arguments.optionalString("locale") ?? "en-US",
+                storefront: arguments.optionalString("storefront") ?? "us",
+                platform: arguments.optionalString("platform"),
+                scope: arguments.optionalString("scope") ?? "live",
+                keywords: arguments.optionalStringArray("keywords"),
+                proposedTitle: arguments.optionalString("proposed_title"),
+                proposedSubtitle: arguments.optionalString("proposed_subtitle"),
+                proposedKeywords: arguments.optionalString("proposed_keywords"),
+                expectedHash: arguments.optionalString("expected_hash"),
+                rankingLimit: arguments.optionalInt("ranking_limit") ?? 3
+            ))
+
+        case "record_metadata_baseline":
+            return try Self.toolResult(try await service.recordMetadataBaseline(
+                appStoreID: arguments.requiredInt64("appStoreID"),
+                locale: arguments.optionalString("locale") ?? "en-US",
+                storefront: arguments.optionalString("storefront") ?? "us",
+                platform: arguments.optionalString("platform"),
+                keywords: arguments.optionalStringArray("keywords"),
+                rankingLimit: arguments.optionalInt("ranking_limit") ?? 5,
+                label: arguments.requiredString("label"),
+                acquisition: arguments.acquisitionEvidence()
+            ))
+
+        case "list_metadata_baselines":
+            return try Self.toolResult(try await service.listMetadataBaselines(
+                appStoreID: arguments.requiredInt64("appStoreID"), limit: arguments.optionalInt("limit") ?? 20
+            ))
+
+        case "compare_metadata_baseline":
+            let rawID = try arguments.requiredString("baseline_id")
+            guard let id = UUID(uuidString: rawID) else { throw MCPError.invalidParams("baseline_id must be a UUID.") }
+            return try Self.toolResult(try await service.compareMetadataBaseline(
+                baselineID: id, acquisition: arguments.acquisitionEvidence()
+            ))
+
         case "add_keywords":
             let result = try await service.addKeywords(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
@@ -469,6 +527,14 @@ struct OpenASOMCPServerFactory: Sendable {
 }
 
 private extension OpenASOMCPServerFactory {
+    static var metadataFilters: [String: JSONSchemaType] {
+        ["appStoreID": .integer, "locale": .string, "storefront": .string, "platform": .string, "scope": .string]
+    }
+
+    static var acquisitionFilters: [String: JSONSchemaType] {
+        ["search_impressions": .integer, "search_downloads": .integer,
+         "analytics_date_from": .string, "analytics_date_to": .string]
+    }
     static let jsonMimeType = "application/json"
 
     static func toolResult<T: Codable>(_ value: T) throws -> CallTool.Result {
@@ -581,10 +647,33 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID"],
                 optional: commonAppFilters.merging(["limit": .integer, "cursor": .string]) { current, _ in current }
             ), readOnly: true),
-            tool("score_keywords", "Classify tracked keywords into defend, attack, long-tail, brand, experimental, or noisy buckets using rank, popularity, and phrase-quality heuristics.", schema(
+            tool("score_keywords", "Triage tracked keywords using this app's localized metadata and own brand, stored popularity and ranking provenance. Relevance is metadata overlap, not a universal category vocabulary or calibrated ranking forecast. High popularity alone does not make a term relevant; fallback ranks do not establish native positions.", schema(
                 required: ["appStoreID"],
                 optional: commonAppFilters
             ), readOnly: true),
+            tool("get_app_store_metadata", "Read owned title, subtitle and private keywords with saved App Store Connect credentials. Select exact locale, search platform and scope live/editable. Returns version/state, fields, source/time and contentHash; fails on ambiguous state or missing locale instead of substituting another version/language. Read-only; never publishes.", schema(
+                required: ["appStoreID"], optional: metadataFilters.filter { $0.key != "storefront" }
+            ), readOnly: true, openWorld: true),
+            tool("audit_keyword_targeting", "Compare 1...50 candidate keywords with authenticated owned metadata, fresh market popularity, app-specific relevance and up to eight live rank samples (ranking_limit defaults to five; zero skips ranks). Distinguishes literal phrases, component/plural combinations, missing words and ranking gaps. Default candidates are tracked terms ordered by stored popularity; pass your discovery shortlist for broader opportunities. Coverage is not proof of indexing; fallback ranks are unverified native evidence. Review semantic fit, competitors, readability and existing winners before recommending edits.", schema(
+                required: ["appStoreID"], optional: metadataFilters.merging(["keywords": .stringArray, "ranking_limit": .integer]) { current, _ in current }
+            ), readOnly: true, openWorld: true),
+            tool("compare_metadata_draft", "Evaluate an agent-written proposed_title, proposed_subtitle and/or proposed_keywords against current owned metadata and a bounded keyword shortlist. Returns 30/30/100 validation, duplicates/filler, gained/lost coverage, visible phrase changes, protected native winner warnings and baseline hash. Ranking checks default to three, cap at eight; ranking_limit: 0 skips them. Pass expected_hash to reject a stale baseline. Generate conservative and broader alternatives while preserving brand and useful current targets; rank lift is a hypothesis. Does not save or publish drafts.", schema(
+                required: ["appStoreID"], optional: metadataFilters.merging([
+                    "keywords": .stringArray, "proposed_title": .string, "proposed_subtitle": .string,
+                    "proposed_keywords": .string, "expected_hash": .string, "ranking_limit": .integer
+                ]) { current, _ in current }
+            ), readOnly: true, openWorld: true),
+            tool("record_metadata_baseline", "Save an immutable local baseline of live owned metadata, a fixed keyword set, fresh popularity and bounded ranking samples before a metadata release. Returns baseline id. Optional App Store Search aggregate counts need analytics_date_from/to and are labeled caller_provided; they are not per-keyword attribution. Stores private metadata locally; never publishes or schedules work.", schema(
+                required: ["appStoreID", "label"], optional: metadataFilters.merging([
+                    "keywords": .stringArray, "ranking_limit": .integer, "label": .string
+                ]) { current, _ in current }.merging(acquisitionFilters) { current, _ in current }.filter { $0.key != "scope" }
+            ), readOnly: false, destructive: false, idempotent: false, openWorld: true),
+            tool("list_metadata_baselines", "List up to 50 local metadata baseline summaries for one app. Use their ids with compare_metadata_baseline.", schema(
+                required: ["appStoreID"], optional: ["appStoreID": .integer, "limit": .integer]
+            ), readOnly: true),
+            tool("compare_metadata_baseline", "Compare a saved baseline with current live metadata using the same app/locale/storefront/platform and keyword set. Rechecks only previously sampled rank queries; rank deltas require native positions on both observations. Reports coverage changes, version change, popularity and optional caller-provided search acquisition counts. Before/after changes are observations, not a causal metadata A/B test. Does not publish or schedule anything.", schema(
+                required: ["baseline_id"], optional: ["baseline_id": .string].merging(acquisitionFilters) { current, _ in current }
+            ), readOnly: true, openWorld: true),
             tool("add_keywords", "Add missing keyword/storefront/platform tracks and skip duplicates.", schema(
                 required: ["appStoreID", "keywords", "storefronts"],
                 optional: ["appStoreID": .integer, "keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
@@ -826,11 +915,14 @@ private extension OpenASOMCPServerFactory {
             """
         case "metadata_optimization_package":
             body = """
-            For appStoreID \(appStoreID), build metadata recommendations from OpenASO evidence. Inspect get_app_overview, list_keywords, score_keywords, list_competitors, list_reviews, and any available website markdown for \(storefronts). Use suggest_keywords or discover_keyword_landscape only as a bounded expansion step after reviewing existing evidence.
+            For appStoreID \(appStoreID), start with get_app_overview and get_app_store_metadata for the exact locale, search platform and live/editable state. Saved App Store Connect access can read the private keyword field; Apple Ads access supplies separate popularity evidence. Keep locale and storefront explicit and fail visibly on missing private fields instead of inferring them.
+            Use popularity-guided suggest_keywords discovery for \(storefronts), then pass a curated shortlist to audit_keyword_targeting. Include high-value existing targets as well as promising new phrases. Distinguish literal phrases, cross-field word/plural combinations, missing components and well-covered terms with weak or unknown rankings. Relevance is app-aware metadata overlap; review semantic feature fit, brands, unsupported claims and competition before recommending a term.
+            Generate a conservative and a broader positioning alternative, preserving the brand and useful current targets. Call compare_metadata_draft with each proposed field set, the same shortlist and expected_hash from the baseline. Review field validation and gained/lost coverage; coverage is not confirmed indexing and metadata does not guarantee a rank increase.
             Produce title, subtitle, keyword-field, description, promotional-text, and What's New recommendations where evidence supports them. Use 30 characters for title, 30 for subtitle, 100 for the iOS keyword field when the user wants hidden keywords, 170 for promotional text, and 4000 for description and release notes.
             Build a keyword coverage matrix. Avoid repeating keyword words across title, subtitle, and keyword field; prefer singular keyword-field terms; use comma-separated keyword-field values without spaces; avoid app name, category names, competitor brands, "app", "free", and unsupported claims in the keyword field.
             Use review language and competitor positioning to improve conversion copy, but keep keyword recommendations tied to verified rankings, popularity metrics, competitor overlap, direct user intent, or clearly labeled hypotheses.
-            If current hidden keyword field, conversion rate, downloads, revenue, or ASC product-page metrics are unavailable, ask the user for them or label them missing rather than inferring them from public metadata.
+            Use record_metadata_baseline before an authorized metadata release, then compare_metadata_baseline afterward to keep the keyword and market comparison fixed. Only known native ranks support rank deltas. Optional acquisition counts are caller-provided search aggregates with reporting periods, not per-keyword attribution or causal proof. These tools do not publish metadata or schedule follow-ups.
+            If authenticated private metadata or conversion/download/product-page metrics are unavailable, ask for the missing inputs or label them missing. Preserve provider failures and iTunes fallback provenance instead of claiming a native organic rank.
             Return a recommended metadata package, two alternatives, character counts, keyword coverage, before/after comparison, rationale, and evidence gaps.
             """
         case "screenshot_optimization_plan":
@@ -986,6 +1078,21 @@ private struct OpenASOMCPAppResource: Sendable {
 }
 
 private extension Dictionary where Key == String, Value == MCP.Value {
+    func acquisitionEvidence() throws -> MetadataAcquisitionEvidence? {
+        let keys = ["search_impressions", "search_downloads", "analytics_date_from", "analytics_date_to"]
+        guard keys.contains(where: { self[$0] != nil }) else { return nil }
+        guard let start = try date("analytics_date_from"), let end = try date("analytics_date_to") else {
+            throw MCPError.invalidParams("Acquisition evidence needs analytics_date_from and analytics_date_to.")
+        }
+        let evidence = MetadataAcquisitionEvidence(
+            periodStart: start, periodEnd: end,
+            searchImpressions: try optionalInt("search_impressions"),
+            searchDownloads: try optionalInt("search_downloads"), source: "caller_provided"
+        )
+        try evidence.validate()
+        return evidence
+    }
+
     func string(_ key: String) -> String? {
         self[key]?.stringValue
     }

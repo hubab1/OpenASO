@@ -457,7 +457,14 @@ final class AppServices {
                 appleAdsPlatformAPI: appleAdsPlatformAPI,
                 appleAdsCredentialsProvider: {
                     appleAdsCredentialStore.apiCredentials
-                }
+                },
+                appStoreConnectCredentialsProvider: {
+                    appStoreConnectCredentialStore.credentials
+                },
+                metadataBaselineStore: MetadataBaselineStore(
+                    directory: try namespace.applicationSupportDirectoryURL()
+                        .appendingPathComponent("Metadata Baselines", isDirectory: true)
+                )
             )
 
             return await OpenASOMCPServerFactory(
