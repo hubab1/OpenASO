@@ -11,7 +11,7 @@ struct RootView: View {
 
     var body: some View {
         NavigationSplitView {
-            RootSidebarView(selectedApp: $selectedApp)
+            RootSidebarView(selectedApp: appSelection)
                 .navigationSplitViewColumnWidth(min: 280, ideal: 320)
         } detail: {
             RootDetailView(selectedApp: selectedApp)
@@ -57,6 +57,17 @@ struct RootView: View {
             }
             await services.dailyRefreshScheduler?.run()
         }
+    }
+
+    private var appSelection: Binding<TrackedApp?> {
+        Binding(
+            get: { selectedApp },
+            set: { app in
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { selectedApp = app }
+            }
+        )
     }
 
     private static var isRunningUnderTests: Bool {

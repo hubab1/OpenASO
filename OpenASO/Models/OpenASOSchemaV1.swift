@@ -42,7 +42,8 @@ enum OpenASOMigrationPlan: SchemaMigrationPlan {
             OpenASOSchemaV3.self,
             OpenASOSchemaV4.self,
             OpenASOSchemaV5.self,
-            OpenASOSchemaV6.self
+            OpenASOSchemaV6.self,
+            OpenASOSchemaV7.self
         ]
     }
 
@@ -73,6 +74,10 @@ enum OpenASOMigrationPlan: SchemaMigrationPlan {
             .lightweight(
                 fromVersion: OpenASOSchemaV5.self,
                 toVersion: OpenASOSchemaV6.self
+            ),
+            .lightweight(
+                fromVersion: OpenASOSchemaV6.self,
+                toVersion: OpenASOSchemaV7.self
             )
         ]
     }

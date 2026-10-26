@@ -30,3 +30,6 @@ dist/
 # Xcode user state
 *.xcuserdatad
 *.xcuserstate
+
+# Local reports, audits, and scratch work
+/.local/

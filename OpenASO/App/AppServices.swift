@@ -268,7 +268,7 @@ final class AppServices {
                                 observedAt: .now,
                                 source: .appStorePage
                             )
-                            appStorefrontRatingService.persist(
+                            try appStorefrontRatingService.persist(
                                 AppStorefrontRatingRefreshOutcome(
                                     storefront: request.storefront,
                                     result: result,

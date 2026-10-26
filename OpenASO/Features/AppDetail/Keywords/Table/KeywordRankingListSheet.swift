@@ -760,6 +760,10 @@ struct RatingSnapshotDisplayValue: Sendable {
     let observedAt: Date
 
     init(_ snapshot: AppDailyRating) {
+        self.init(RatingHistoryRecord(snapshot))
+    }
+
+    init(_ snapshot: RatingHistoryRecord) {
         self.appStoreID = snapshot.appStoreID
         self.ratingDate = snapshot.ratingDate
         self.ratingCount = snapshot.ratingCount

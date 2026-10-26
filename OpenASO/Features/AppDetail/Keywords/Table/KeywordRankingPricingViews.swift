@@ -422,8 +422,8 @@ struct KeywordPricingComparisonSheet: View {
 
     private var comparisonGrid: some View {
         ScrollView([.horizontal, .vertical]) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 0) {
                     Text("Ranked app")
                         .frame(width: 300, alignment: .leading)
                     ForEach(selectedStorefronts, id: \.code) { storefront in
@@ -437,44 +437,39 @@ struct KeywordPricingComparisonSheet: View {
                 .padding(.vertical, 9)
 
                 Divider()
-                    .gridCellColumns(selectedStorefrontCodes.count + 1)
 
                 ForEach(apps) { app in
-                    GridRow {
-                        comparisonAppCell(app)
-                            .frame(width: 300, alignment: .leading)
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            comparisonAppCell(app)
+                                .frame(width: 300, alignment: .leading)
 
-                        ForEach(selectedStorefronts, id: \.code) { storefront in
-                            KeywordRankingPriceCell(
-                                result: pricingModel.price(
-                                    appStoreID: app.id,
+                            ForEach(selectedStorefronts, id: \.code) { storefront in
+                                KeywordRankingPriceCell(
+                                    result: pricingModel.price(
+                                        appStoreID: app.id,
+                                        storefrontCode: storefront.code
+                                    ),
+                                    isLoading: pricingModel.isLoading,
                                     storefrontCode: storefront.code
-                                ),
-                                isLoading: pricingModel.isLoading,
-                                storefrontCode: storefront.code
-                            )
-                            .frame(width: 128, alignment: .trailing)
+                                )
+                                .frame(width: 128, alignment: .trailing)
+                            }
                         }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(
-                        app.id == trackedAppStoreID
-                            ? Color.accentColor.opacity(0.09)
-                            : Color.clear
-                    )
-
-                    Divider()
-                        .gridCellColumns(selectedStorefrontCodes.count + 1)
-
-                    if expandedAppStoreID == app.id {
-                        GridRow {
-                            visibleProductDetails(for: app)
-                                .gridCellColumns(selectedStorefrontCodes.count + 1)
-                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            app.id == trackedAppStoreID
+                                ? Color.accentColor.opacity(0.09)
+                                : Color.clear
+                        )
 
                         Divider()
-                            .gridCellColumns(selectedStorefrontCodes.count + 1)
+
+                        if expandedAppStoreID == app.id {
+                            visibleProductDetails(for: app)
+                            Divider()
+                        }
                     }
                 }
             }
@@ -549,10 +544,12 @@ struct KeywordPricingComparisonSheet: View {
             .frame(width: 300, alignment: .leading)
 
             ForEach(selectedStorefronts, id: \.code) { storefront in
-                visibleProductStorefrontColumn(
-                    app: app,
-                    storefront: storefront
-                )
+                VStack(alignment: .trailing, spacing: 0) {
+                    visibleProductStorefrontColumn(
+                        app: app,
+                        storefront: storefront
+                    )
+                }
                 .frame(width: 128, alignment: .trailing)
             }
         }

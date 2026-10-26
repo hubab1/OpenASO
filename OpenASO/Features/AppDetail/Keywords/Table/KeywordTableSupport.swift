@@ -705,6 +705,7 @@ struct KeywordRankingAppSummary: Identifiable, Equatable, Sendable {
     let name: String
     let subtitle: String?
     let sellerName: String?
+    let iconURLString: String?
 
     init(
         position: Int,
@@ -712,7 +713,8 @@ struct KeywordRankingAppSummary: Identifiable, Equatable, Sendable {
         bundleID: String?,
         name: String,
         subtitle: String?,
-        sellerName: String?
+        sellerName: String?,
+        iconURLString: String? = nil
     ) {
         self.id = appStoreID
         self.position = position
@@ -721,6 +723,7 @@ struct KeywordRankingAppSummary: Identifiable, Equatable, Sendable {
         self.name = name
         self.subtitle = subtitle
         self.sellerName = sellerName
+        self.iconURLString = iconURLString
     }
 
     init(_ result: TrackedKeywordRankedResult) {
@@ -735,13 +738,18 @@ struct KeywordRankingAppSummary: Identifiable, Equatable, Sendable {
     }
 
     init(_ ranking: RankingFact) {
+        self.init(ranking, iconURLString: nil)
+    }
+
+    init(_ ranking: RankingFact, iconURLString: String?) {
         self.init(
             position: ranking.position,
             appStoreID: ranking.appStoreID,
             bundleID: ranking.bundleID,
             name: ranking.name,
             subtitle: ranking.subtitle,
-            sellerName: ranking.sellerName
+            sellerName: ranking.sellerName,
+            iconURLString: iconURLString
         )
     }
 }

@@ -104,10 +104,6 @@ struct KeywordTableView: View, Equatable {
                     setChartSelection: setChartSelection,
                     openAppleAdsSettings: openAppleAdsSettings
                 )
-                // Deliberate user sorts rebuild the virtualized table once.
-                // Refresh deltas keep this identity stable while the presentation
-                // model maintains the selected order as values change.
-                .id(presentationModel.tableIdentity)
                 .contextMenu(forSelectionType: String.self) { selectedIDs in
                     let contextRows = selectedRows(for: selectedIDs)
                     if contextRows.isEmpty {
@@ -588,7 +584,6 @@ final class KeywordTablePresentationModel {
     private(set) var rows: [KeywordTablePresentationRow] = []
     private(set) var rowIDs: [String] = []
     private(set) var rankingChartSeries: [KeywordRankingChartSeries] = []
-    private(set) var tableIdentity = 0
     @ObservationIgnored private(set) var sortCount = 0
 
     func update(
@@ -615,7 +610,6 @@ final class KeywordTablePresentationModel {
         if forceSort || membershipChanged || rows.isEmpty {
             rows = incomingRows.sorted(using: sortOrder)
             sortCount &+= 1
-            tableIdentity &+= 1
         } else {
             // Keep the active table sort correct as refresh deltas change values,
             // but retain the table's identity so SwiftUI only moves affected rows.

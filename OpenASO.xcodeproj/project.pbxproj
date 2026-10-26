@@ -149,12 +149,14 @@
 		D32A00000000000000000002 /* OpenASOSchemaV5.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32A00000000000000000011 /* OpenASOSchemaV5.swift */; };
 		D32A00000000000000000003 /* KeywordResearchProject.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32A00000000000000000012 /* KeywordResearchProject.swift */; };
 		D60000000000000000000001 /* OpenASOSchemaV6.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000011 /* OpenASOSchemaV6.swift */; };
+		C20E9443FB12441E82E114E8 /* OpenASOSchemaV7.swift in Sources */ = {isa = PBXBuildFile; fileRef = B96ADC93B6AE4117B2E47D73 /* OpenASOSchemaV7.swift */; };
 		D60000000000000000000002 /* RankingAppRevision.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000012 /* RankingAppRevision.swift */; };
 		D60000000000000000000003 /* RankingCrawlRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000013 /* RankingCrawlRecord.swift */; };
 		D60000000000000000000004 /* RankingFact.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000014 /* RankingFact.swift */; };
 		D60000000000000000000005 /* TrackedRankingCrawlLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000015 /* TrackedRankingCrawlLink.swift */; };
 		D60000000000000000000006 /* RankingMigrationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000016 /* RankingMigrationState.swift */; };
 		D60000000000000000000021 /* OpenASOSchemaV6.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000011 /* OpenASOSchemaV6.swift */; };
+		D2DB6E31771E4C3195A905AC /* OpenASOSchemaV7.swift in Sources */ = {isa = PBXBuildFile; fileRef = B96ADC93B6AE4117B2E47D73 /* OpenASOSchemaV7.swift */; };
 		D60000000000000000000022 /* RankingAppRevision.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000012 /* RankingAppRevision.swift */; };
 		D60000000000000000000023 /* RankingCrawlRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000013 /* RankingCrawlRecord.swift */; };
 		D60000000000000000000024 /* RankingFact.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000014 /* RankingFact.swift */; };
@@ -163,8 +165,15 @@
 		D60000000000000000000007 /* SearchRanking/RankingAppRevisionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000017 /* SearchRanking/RankingAppRevisionStore.swift */; };
 		D60000000000000000000027 /* SearchRanking/RankingAppRevisionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000017 /* SearchRanking/RankingAppRevisionStore.swift */; };
 		D60000000000000000000008 /* Persistence/RankingSchemaV6Migrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000018 /* Persistence/RankingSchemaV6Migrator.swift */; };
+		49621A2D2079403C8FB09C1A /* Persistence/PersistentStoreCompactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AED285CFBB54DB09AC958F9 /* Persistence/PersistentStoreCompactor.swift */; };
+		0129D26AA92C4ED0B32BCDB8 /* Persistence/StorageSchemaV7Migrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB753AAEB38F4C8DA227FFA3 /* Persistence/StorageSchemaV7Migrator.swift */; };
+		CD1242318DB74C7DB224A6FF /* Persistence/RatingHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8BE61549704D9DA2D9FC76 /* Persistence/RatingHistoryStore.swift */; };
 		D60000000000000000000028 /* Persistence/RankingSchemaV6Migrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000018 /* Persistence/RankingSchemaV6Migrator.swift */; };
+		DBF111AE76C4432B9DE83560 /* Persistence/PersistentStoreCompactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AED285CFBB54DB09AC958F9 /* Persistence/PersistentStoreCompactor.swift */; };
+		073892B3DFEF4C34B0EBBC39 /* Persistence/StorageSchemaV7Migrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB753AAEB38F4C8DA227FFA3 /* Persistence/StorageSchemaV7Migrator.swift */; };
+		9532E6E87A564ABFB26C6A21 /* Persistence/RatingHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8BE61549704D9DA2D9FC76 /* Persistence/RatingHistoryStore.swift */; };
 		D60000000000000000000009 /* RankingSchemaV6MigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000019 /* RankingSchemaV6MigrationTests.swift */; };
+		72678FBA68F545FCBBDFA8B3 /* StorageSchemaV7MigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1112B3E0D44EE6B2271949 /* StorageSchemaV7MigrationTests.swift */; };
 		D32A00000000000000000004 /* KeywordResearchProject.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32A00000000000000000012 /* KeywordResearchProject.swift */; };
 		D32A00000000000000000005 /* KeywordResearchKeyword.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32A00000000000000000013 /* KeywordResearchKeyword.swift */; };
 		D32A00000000000000000006 /* KeywordResearchKeyword.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32A00000000000000000013 /* KeywordResearchKeyword.swift */; };
@@ -348,6 +357,10 @@
 		F241DBBDCE904A65BD3D0887 /* Persistence/MetadataBaselineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FB0FE05C81D4B6CA56EA3BD /* Persistence/MetadataBaselineStore.swift */; };
 		4C9E597C5496436BAC2878AE /* AppStoreConnect/AppStoreConnectCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A5C00000000000000000002 /* AppStoreConnect/AppStoreConnectCredentials.swift */; };
 		180607995081435EBFEB3F76 /* KeywordTargetingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B977F79EB964A5F8B069EED /* KeywordTargetingTests.swift */; };
+		40A7F458B27249B89EDDCC41 /* Persistence/RatingHistoryStore+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */; };
+		D45DEBF8843440B384689D6A /* Persistence/RatingHistoryStore+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */; };
+		04FE3BB52BA4436A8E8A7B36 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
+		195FABB04F3A4F39925CFA43 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -483,6 +496,7 @@
 		D32A00000000000000000013 /* KeywordResearchKeyword.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchKeyword.swift; sourceTree = "<group>"; };
 		D32A00000000000000000014 /* KeywordResearchPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchPersistenceTests.swift; sourceTree = "<group>"; };
 		D60000000000000000000011 /* OpenASOSchemaV6.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV6.swift; sourceTree = "<group>"; };
+		B96ADC93B6AE4117B2E47D73 /* OpenASOSchemaV7.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenASOSchemaV7.swift; sourceTree = "<group>"; };
 		D60000000000000000000012 /* RankingAppRevision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingAppRevision.swift; sourceTree = "<group>"; };
 		D60000000000000000000013 /* RankingCrawlRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingCrawlRecord.swift; sourceTree = "<group>"; };
 		D60000000000000000000014 /* RankingFact.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingFact.swift; sourceTree = "<group>"; };
@@ -490,7 +504,11 @@
 		D60000000000000000000016 /* RankingMigrationState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingMigrationState.swift; sourceTree = "<group>"; };
 		D60000000000000000000017 /* SearchRanking/RankingAppRevisionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/RankingAppRevisionStore.swift; sourceTree = "<group>"; };
 		D60000000000000000000018 /* Persistence/RankingSchemaV6Migrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/RankingSchemaV6Migrator.swift; sourceTree = "<group>"; };
+		9AED285CFBB54DB09AC958F9 /* Persistence/PersistentStoreCompactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/PersistentStoreCompactor.swift; sourceTree = "<group>"; };
+		EB753AAEB38F4C8DA227FFA3 /* Persistence/StorageSchemaV7Migrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/StorageSchemaV7Migrator.swift; sourceTree = "<group>"; };
+		ED8BE61549704D9DA2D9FC76 /* Persistence/RatingHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/RatingHistoryStore.swift; sourceTree = "<group>"; };
 		D60000000000000000000019 /* RankingSchemaV6MigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankingSchemaV6MigrationTests.swift; sourceTree = "<group>"; };
+		2A1112B3E0D44EE6B2271949 /* StorageSchemaV7MigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageSchemaV7MigrationTests.swift; sourceTree = "<group>"; };
 		D32C00000000000000000011 /* Persistence/KeywordResearchProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/KeywordResearchProjectStore.swift; sourceTree = "<group>"; };
 		D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordResearchProjectStoreTests.swift; sourceTree = "<group>"; };
 		D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordResearchRankingWorkflow.swift; sourceTree = "<group>"; };
@@ -635,6 +653,8 @@
 		0103F7D80DA84290B2497908 /* MCP/KeywordTargetingAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/KeywordTargetingAnalysis.swift; sourceTree = "<group>"; };
 		4FB0FE05C81D4B6CA56EA3BD /* Persistence/MetadataBaselineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/MetadataBaselineStore.swift; sourceTree = "<group>"; };
 		7B977F79EB964A5F8B069EED /* KeywordTargetingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTargetingTests.swift; sourceTree = "<group>"; };
+		E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Persistence/RatingHistoryStore+Reading.swift"; sourceTree = "<group>"; };
+		382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Persistence/StoragePreparationProgress.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -683,6 +703,7 @@
 				D02000000000000000000007 /* ReleasedV1StoreFixture.swift */,
 				D77BC4C40000000000000011 /* ExactV4StoreFixtureTests.swift */,
 				D60000000000000000000019 /* RankingSchemaV6MigrationTests.swift */,
+				2A1112B3E0D44EE6B2271949 /* StorageSchemaV7MigrationTests.swift */,
 				D32A00000000000000000014 /* KeywordResearchPersistenceTests.swift */,
 				D32C00000000000000000012 /* KeywordResearchProjectStoreTests.swift */,
 				D33A00000000000000000012 /* KeywordResearchRankingWorkflowTests.swift */,
@@ -867,6 +888,11 @@
 				26D4B2C87FDED9CFCFA50D7D /* SearchRanking/RankingRefreshCoordinator.swift */,
 				D60000000000000000000017 /* SearchRanking/RankingAppRevisionStore.swift */,
 				D60000000000000000000018 /* Persistence/RankingSchemaV6Migrator.swift */,
+				9AED285CFBB54DB09AC958F9 /* Persistence/PersistentStoreCompactor.swift */,
+				EB753AAEB38F4C8DA227FFA3 /* Persistence/StorageSchemaV7Migrator.swift */,
+				ED8BE61549704D9DA2D9FC76 /* Persistence/RatingHistoryStore.swift */,
+				382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */,
+				E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */,
 				D33A00000000000000000011 /* SearchRanking/KeywordResearchRankingWorkflow.swift */,
 				D34A00000000000000000011 /* SearchRanking/KeywordResearchHistoryReader.swift */,
 				A70000000000000000000002 /* RatingsReviews/ReviewLanguageDetectionService.swift */,
@@ -1060,6 +1086,7 @@
 				D20B00000000000000000011 /* OpenASOSchemaV4.swift */,
 				D32A00000000000000000011 /* OpenASOSchemaV5.swift */,
 				D60000000000000000000011 /* OpenASOSchemaV6.swift */,
+				B96ADC93B6AE4117B2E47D73 /* OpenASOSchemaV7.swift */,
 				D60000000000000000000012 /* RankingAppRevision.swift */,
 				D60000000000000000000013 /* RankingCrawlRecord.swift */,
 				D60000000000000000000014 /* RankingFact.swift */,
@@ -1350,6 +1377,7 @@
 				D20B00000000000000000001 /* OpenASOSchemaV4.swift in Sources */,
 				D32A00000000000000000001 /* OpenASOSchemaV5.swift in Sources */,
 				D60000000000000000000001 /* OpenASOSchemaV6.swift in Sources */,
+				C20E9443FB12441E82E114E8 /* OpenASOSchemaV7.swift in Sources */,
 				D60000000000000000000002 /* RankingAppRevision.swift in Sources */,
 				D60000000000000000000003 /* RankingCrawlRecord.swift in Sources */,
 				D60000000000000000000004 /* RankingFact.swift in Sources */,
@@ -1357,6 +1385,11 @@
 				D60000000000000000000006 /* RankingMigrationState.swift in Sources */,
 				D60000000000000000000007 /* SearchRanking/RankingAppRevisionStore.swift in Sources */,
 				D60000000000000000000008 /* Persistence/RankingSchemaV6Migrator.swift in Sources */,
+				49621A2D2079403C8FB09C1A /* Persistence/PersistentStoreCompactor.swift in Sources */,
+				0129D26AA92C4ED0B32BCDB8 /* Persistence/StorageSchemaV7Migrator.swift in Sources */,
+				CD1242318DB74C7DB224A6FF /* Persistence/RatingHistoryStore.swift in Sources */,
+				04FE3BB52BA4436A8E8A7B36 /* Persistence/StoragePreparationProgress.swift in Sources */,
+				40A7F458B27249B89EDDCC41 /* Persistence/RatingHistoryStore+Reading.swift in Sources */,
 				D32A00000000000000000003 /* KeywordResearchProject.swift in Sources */,
 				D32A00000000000000000005 /* KeywordResearchKeyword.swift in Sources */,
 				D20B00000000000000000003 /* EstimatedKeywordDifficultyMetric.swift in Sources */,
@@ -1495,6 +1528,7 @@
 				D35A00000000000000000003 /* HeadlessRefreshServiceTests.swift in Sources */,
 				D35D00000000000000000003 /* HeadlessRefreshObservationTests.swift in Sources */,
 				D60000000000000000000009 /* RankingSchemaV6MigrationTests.swift in Sources */,
+				72678FBA68F545FCBBDFA8B3 /* StorageSchemaV7MigrationTests.swift in Sources */,
 				0A5C00000000000000000005 /* AppStoreConnectReviewServiceTests.swift in Sources */,
 				0A5C00000000000000000007 /* AppStoreWebMetadataProviderTests.swift in Sources */,
 				A19000000000000000000003 /* AppStoreWebRankingProviderTests.swift in Sources */,
@@ -1550,6 +1584,7 @@
 				D20B00000000000000000002 /* OpenASOSchemaV4.swift in Sources */,
 				D32A00000000000000000002 /* OpenASOSchemaV5.swift in Sources */,
 				D60000000000000000000021 /* OpenASOSchemaV6.swift in Sources */,
+				D2DB6E31771E4C3195A905AC /* OpenASOSchemaV7.swift in Sources */,
 				D60000000000000000000022 /* RankingAppRevision.swift in Sources */,
 				D60000000000000000000023 /* RankingCrawlRecord.swift in Sources */,
 				D60000000000000000000024 /* RankingFact.swift in Sources */,
@@ -1557,6 +1592,11 @@
 				D60000000000000000000026 /* RankingMigrationState.swift in Sources */,
 				D60000000000000000000027 /* SearchRanking/RankingAppRevisionStore.swift in Sources */,
 				D60000000000000000000028 /* Persistence/RankingSchemaV6Migrator.swift in Sources */,
+				DBF111AE76C4432B9DE83560 /* Persistence/PersistentStoreCompactor.swift in Sources */,
+				073892B3DFEF4C34B0EBBC39 /* Persistence/StorageSchemaV7Migrator.swift in Sources */,
+				9532E6E87A564ABFB26C6A21 /* Persistence/RatingHistoryStore.swift in Sources */,
+				195FABB04F3A4F39925CFA43 /* Persistence/StoragePreparationProgress.swift in Sources */,
+				D45DEBF8843440B384689D6A /* Persistence/RatingHistoryStore+Reading.swift in Sources */,
 				D32A00000000000000000004 /* KeywordResearchProject.swift in Sources */,
 				D32A00000000000000000006 /* KeywordResearchKeyword.swift in Sources */,
 				D20B00000000000000000004 /* EstimatedKeywordDifficultyMetric.swift in Sources */,

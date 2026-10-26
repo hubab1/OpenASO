@@ -70,6 +70,10 @@ struct RatingSnapshotValue: Identifiable, Hashable, Sendable {
     var id: String { identityKey }
 
     init(_ snapshot: AppDailyRating) {
+        self.init(RatingHistoryRecord(snapshot))
+    }
+
+    init(_ snapshot: RatingHistoryRecord) {
         self.identityKey = snapshot.identityKey
         self.appStoreID = snapshot.appStoreID
         self.storefront = snapshot.storefront
