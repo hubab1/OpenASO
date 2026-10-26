@@ -75,11 +75,17 @@ Saved App Store Connect credentials support `get_app_store_metadata`, which read
 
 Pass a discovery shortlist to `audit_keyword_targeting` to compare fresh popularity, app-specific relevance, field coverage and bounded ranking evidence. At most 50 keywords and eight ranking checks are supported; ranking checks default to five and can be skipped with `ranking_limit: 0`. Literal phrases, word combinations, plural variants and missing components remain distinct. Relevance uses the app's metadata rather than hard-coded app-blocker terms; overlap and popularity are evidence for review, not guaranteed opportunities.
 
+Audits also calculate estimated competition from the same bounded native ranking sample. Results include the heuristic score, confidence, source/time, top-result rating and metadata evidence, and an explicit reason when native evidence or ratings are insufficient. Fallback and missing data never become a low-competition score. These read-only calculations do not persist difficulty or alter popularity.
+
 Use `compare_metadata_draft` for agent-written title/subtitle/keyword alternatives. It validates 30/30/100 character limits, highlights duplicate/filler terms, reports gained/lost coverage and accepts `expected_hash` to reject a stale baseline. All metadata reads, audits and draft comparisons leave App Store fields unchanged.
 
 `record_metadata_baseline` stores a private local snapshot before a metadata release. `list_metadata_baselines` locates it and `compare_metadata_baseline` compares the same keyword/market/platform set after the release. Rank deltas require known native positions in both samples; fallback and absent ranks remain unknown. Optional search impressions/downloads have caller-provided provenance and reporting periods, with no per-keyword attribution or causal lift claim. No tool publishes metadata or schedules a follow-up.
 
 See the [metadata targeting workflow](.agents/skills/openaso-aso/references/metadata-targeting.md) for sequencing and evidence requirements.
+
+`remove_keywords` retires explicitly selected tracks for one app/platform and up to three storefronts. It removes track-specific history and refresh status in one transaction while retaining shared ranking observations and query popularity. Missing tracks are skipped, and the response returns persisted terms for re-adding. Removal requires user authorization; a low popularity score alone is not a pruning instruction.
+
+Manual app refreshes now offer **Stop**. Stopping cancels in-flight work and skips later apps in an all-app run, keeps already saved results, and preserves queued keyword additions without immediately starting another refresh.
 
 ### Recovering A Local Database
 

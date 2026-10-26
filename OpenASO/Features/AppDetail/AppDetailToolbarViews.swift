@@ -4,29 +4,42 @@ import SwiftUI
 struct AppDetailRefreshToolbarButton: View {
     let isRefreshing: Bool
     let isDisabled: Bool
+    var isStopping = false
+    var stopAction: (() -> Void)? = nil
     let action: () -> Void
     let refreshAllStorefrontsAction: () -> Void
     let refreshAllAppsAction: () -> Void
     let help: String
 
     var body: some View {
-        Menu {
-            Button(action: refreshAllStorefrontsAction) {
-                Label("Refresh All Storefronts", systemImage: "globe")
-            }
-            .disabled(isDisabled)
+        HStack(spacing: 6) {
+            Menu {
+                Button(action: refreshAllStorefrontsAction) {
+                    Label("Refresh All Storefronts", systemImage: "globe")
+                }
+                .disabled(isDisabled)
 
-            Button(action: refreshAllAppsAction) {
-                Label("Refresh All Apps (Focused Countries)", systemImage: "arrow.triangle.2.circlepath")
+                Button(action: refreshAllAppsAction) {
+                    Label("Refresh All Apps (Focused Countries)", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(isDisabled)
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            } primaryAction: {
+                action()
             }
             .disabled(isDisabled)
-        } label: {
-            Label("Refresh", systemImage: "arrow.clockwise")
-        } primaryAction: {
-            action()
+            .help(help)
+            if isRefreshing, let stopAction {
+                if isStopping {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel("Stopping refresh")
+                } else {
+                    Button("Stop", systemImage: "stop.fill", action: stopAction)
+                        .help("Stop this manual refresh")
+                }
+            }
         }
-        .disabled(isDisabled)
-        .help(help)
     }
 }
 

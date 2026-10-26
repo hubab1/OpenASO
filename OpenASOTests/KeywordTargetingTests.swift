@@ -9,6 +9,36 @@ import Testing
 @MainActor
 struct KeywordTargetingTests {
     @Test
+    func auditCompetitionRequiresNativeRatedEvidenceAndDoesNotPersistIt() async throws {
+        let fixture = try TargetingFixture()
+        defer { fixture.cleanup() }
+        fixture.state.value.withLock { $0.rank = nil; $0.competitorCount = 5 }
+        let native = try await fixture.service.auditKeywordTargeting(appStoreID: 123, keywords: ["voice notes"], rankingLimit: 1)
+        let competition = try #require(native.items.first?.competition)
+        #expect(competition.score != nil)
+        #expect(competition.confidence != nil)
+        #expect(competition.evidence?.consideredResultCount == 5)
+        #expect(competition.evidence?.ratedResultCount == 5)
+        #expect(competition.algorithmIdentifier == "top10-authority-saturation")
+        #expect(try fixture.context.fetchCount(FetchDescriptor<EstimatedKeywordDifficultyMetric>()) == 0)
+        #expect(try fixture.context.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 0)
+        fixture.state.value.withLock { $0.rankingSource = .iTunesFallback }
+        let fallback = try await fixture.service.auditKeywordTargeting(appStoreID: 123, keywords: ["voice notes"], rankingLimit: 1)
+        #expect(fallback.items.first?.competition?.score == nil)
+        #expect(fallback.items.first?.competition?.unavailableReason == "native_ranking_required")
+        fixture.state.value.withLock { $0.rankingSource = .appStoreWeb; $0.competitorCount = 1 }
+        let sparse = try await fixture.service.auditKeywordTargeting(appStoreID: 123, keywords: ["voice notes"], rankingLimit: 1)
+        #expect(sparse.items.first?.competition?.score == nil)
+        #expect(sparse.items.first?.competition?.unavailableReason == "insufficientResults")
+        fixture.state.value.withLock { $0.competitorCount = 5; $0.omitsRatings = true }
+        let unrated = try await fixture.service.auditKeywordTargeting(appStoreID: 123, keywords: ["voice notes"], rankingLimit: 1)
+        #expect(unrated.items.first?.competition?.score == nil)
+        #expect(unrated.items.first?.competition?.unavailableReason == "insufficientRatingEvidence")
+        let skipped = try await fixture.service.auditKeywordTargeting(appStoreID: 123, keywords: ["voice notes"], rankingLimit: 0)
+        #expect(skipped.items.first?.competition == nil)
+    }
+
+    @Test
     func ownedMetadataSelectsLiveAndEditableWithoutMixingTheirFields() async throws {
         let fixture = try TargetingFixture()
         defer { fixture.cleanup() }
@@ -276,6 +306,8 @@ struct KeywordTargetingTests {
 private struct TargetingState: Sendable {
     var keywords = "audio,meeting,recorder"
     var version = "1.0"
+    var competitorCount = 0
+    var omitsRatings = false
     var rank: Int? = 3
     var rankingSource: RankingSource = .appStoreWeb
     var ambiguousInfo = false
@@ -374,11 +406,18 @@ private struct TargetingRankingProvider: SearchRankingProvider {
 
     func search(keyword: String, storefrontCode: String, platform: AppPlatform, limit: Int) async throws -> SearchRankingPage {
         let current = state.value.withLock { $0 }
-        let items: [SearchRankingItem] = current.rank.map { position in
+        var items: [SearchRankingItem] = current.rank.map { position in
             [.init(position: position, appStoreID: 123, bundleID: "com.test.utter", name: "Utter",
                    sellerName: "Test", iconURLString: nil, primaryGenreName: "Productivity",
                    screenshotURLs: [], ratingCount: 20, averageRating: 4.5, platform: platform)]
         } ?? []
+        for position in 0..<current.competitorCount {
+            items.append(.init(position: position + 1, appStoreID: Int64(200 + position), bundleID: nil,
+                               name: "Voice Notes Transcribe", sellerName: "Competitor", iconURLString: nil,
+                               primaryGenreName: "Productivity", screenshotURLs: [],
+                               ratingCount: current.omitsRatings ? nil : 100 + position * 100,
+                               averageRating: 4.5, platform: platform))
+        }
         return SearchRankingPage(items: items, source: current.rankingSource)
     }
 }

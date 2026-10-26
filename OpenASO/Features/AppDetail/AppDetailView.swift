@@ -21,6 +21,8 @@ struct AppDetailView: View {
 
     @State private var isPresentingAddKeywords = false
     @State private var isRefreshingApp = false
+    @State private var activeRefreshTask: Task<Void, Never>?
+    @State private var isStoppingRefresh = false
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var selectedWorkspaceView = AppDetailWorkspaceView.keywords
@@ -36,6 +38,7 @@ struct AppDetailView: View {
     @State private var keywordRefreshToken = 0
     @State private var queuedKeywordAdds: [KeywordAddRequest] = []
     @State private var isFlushingQueuedKeywordAdds = false
+    @State private var skipsQueuedKeywordRefresh = false
     @State private var isRefreshingQueuedKeywordAdds = false
 
     init(trackedApp: TrackedApp) {
@@ -92,6 +95,8 @@ struct AppDetailView: View {
                 AppDetailRefreshToolbarButton(
                     isRefreshing: isRefreshingApp,
                     isDisabled: isRefreshDisabled,
+                    isStopping: isStoppingRefresh,
+                    stopAction: stopRefresh,
                     action: refreshApp,
                     refreshAllStorefrontsAction: refreshAllStorefronts,
                     refreshAllAppsAction: refreshAllApps,
@@ -228,6 +233,7 @@ struct AppDetailView: View {
     }
 
     private func refreshApp(scope: AppDetailManualRefreshScope) {
+        guard !isRefreshingApp else { return }
         isRefreshingApp = true
         errorMessage = nil
         let activeWorkspaceView = selectedWorkspaceView
@@ -253,11 +259,11 @@ struct AppDetailView: View {
             "Refresh tapped appStoreID=\(appStoreID, privacy: .public) appName=\(appName, privacy: .public) view=\(activeWorkspaceView.title, privacy: .public) selectedStorefront=\(selectedStorefrontFilter.title, privacy: .public) storefrontCount=\(request.storefrontSelection.codes.count, privacy: .public) keywords=\(request.trackIdentityKeys.count, privacy: .public)"
         )
 
-        Task(priority: .userInitiated) {
+        activeRefreshTask = Task(priority: .userInitiated) {
             let result = await refreshService.refresh(request)
 
             await MainActor.run {
-                if let firstError = result.firstError {
+                if !Task.isCancelled, !result.wasCancelled, let firstError = result.firstError {
                     errorMessage = firstError.localizedDescription
                 }
                 keywordRefreshToken += 1
@@ -267,12 +273,15 @@ struct AppDetailView: View {
                     "Refresh finished appStoreID=\(appStoreID, privacy: .public) ratingSuccesses=\(result.ratingOutcomes.filter { $0.error == nil }.count, privacy: .public) ratingFailures=\(result.ratingOutcomes.filter { $0.error != nil }.count, privacy: .public) reviewSuccesses=\(result.reviewOutcomes.filter { $0.error == nil }.count, privacy: .public) reviewFailures=\(result.reviewOutcomes.filter { $0.error != nil }.count, privacy: .public) keywordFailures=\(result.keywordOutcomes.filter { $0.error != nil }.count, privacy: .public)"
                 )
                 isRefreshingApp = false
-                flushQueuedKeywordAdds()
+                activeRefreshTask = nil
+                isStoppingRefresh = false
+                flushQueuedKeywordAdds(refreshNewTracks: !Task.isCancelled && !result.wasCancelled)
             }
         }
     }
 
     private func refreshAllApps() {
+        guard !isRefreshingApp else { return }
         isRefreshingApp = true
         errorMessage = nil
         let activeWorkspaceView = selectedWorkspaceView
@@ -295,7 +304,7 @@ struct AppDetailView: View {
             "Refresh all tapped startingAppStoreID=\(appStoreID, privacy: .public) view=\(activeWorkspaceView.title, privacy: .public) selectedStorefront=\(selectedStorefrontFilter.title, privacy: .public) appCount=\(requests.count, privacy: .public)"
         )
 
-        Task(priority: .userInitiated) {
+        activeRefreshTask = Task(priority: .userInitiated) {
             var firstError: OpenASOError?
             var ratingSuccesses = 0
             var ratingFailures = 0
@@ -304,7 +313,9 @@ struct AppDetailView: View {
             var keywordFailures = 0
 
             for request in requests {
+                guard !Task.isCancelled else { break }
                 let result = await refreshService.refresh(request)
+                if result.wasCancelled || Task.isCancelled { break }
                 if firstError == nil {
                     firstError = result.firstError
                 }
@@ -323,7 +334,7 @@ struct AppDetailView: View {
             }
 
             await MainActor.run {
-                if let firstError {
+                if !Task.isCancelled, let firstError {
                     errorMessage = firstError.localizedDescription
                 }
                 keywordRefreshToken += 1
@@ -333,12 +344,22 @@ struct AppDetailView: View {
                     "Refresh all finished startingAppStoreID=\(appStoreID, privacy: .public) appCount=\(requests.count, privacy: .public) ratingSuccesses=\(ratingSuccesses, privacy: .public) ratingFailures=\(ratingFailures, privacy: .public) reviewSuccesses=\(reviewSuccesses, privacy: .public) reviewFailures=\(reviewFailures, privacy: .public) keywordFailures=\(keywordFailures, privacy: .public)"
                 )
                 isRefreshingApp = false
-                flushQueuedKeywordAdds()
+                activeRefreshTask = nil
+                isStoppingRefresh = false
+                flushQueuedKeywordAdds(refreshNewTracks: !Task.isCancelled)
             }
         }
     }
 
+    private func stopRefresh() {
+        guard let activeRefreshTask else { return }
+        isStoppingRefresh = true
+        if !queuedKeywordAdds.isEmpty { skipsQueuedKeywordRefresh = true }
+        activeRefreshTask.cancel()
+    }
+
     private func queueKeywordAdd(_ request: KeywordAddRequest) {
+        if isStoppingRefresh { skipsQueuedKeywordRefresh = true }
         queuedKeywordAdds.append(request)
         services.refreshProgressStore.queuePendingKeywordAddition(
             appStoreID: appStoreID,
@@ -347,7 +368,7 @@ struct AppDetailView: View {
         flushQueuedKeywordAdds()
     }
 
-    private func flushQueuedKeywordAdds() {
+    private func flushQueuedKeywordAdds(refreshNewTracks: Bool = true) {
         guard !queuedKeywordAdds.isEmpty, !isRefreshInProgress, !isFlushingQueuedKeywordAdds else {
             return
         }
@@ -356,11 +377,13 @@ struct AppDetailView: View {
         let requests = queuedKeywordAdds
         queuedKeywordAdds.removeAll()
         services.refreshProgressStore.clearPendingKeywordAdditions(appStoreID: appStoreID)
-        addQueuedKeywordTracks(requests)
+        let shouldRefresh = refreshNewTracks && !skipsQueuedKeywordRefresh
+        skipsQueuedKeywordRefresh = false
+        addQueuedKeywordTracks(requests, refreshNewTracks: shouldRefresh)
         isFlushingQueuedKeywordAdds = false
     }
 
-    private func addQueuedKeywordTracks(_ requests: [KeywordAddRequest]) {
+    private func addQueuedKeywordTracks(_ requests: [KeywordAddRequest], refreshNewTracks: Bool) {
         let existingKeys: Set<String>
         do {
             existingKeys = try existingKeywordDuplicateKeys()
@@ -431,7 +454,7 @@ struct AppDetailView: View {
             storefrontCount: requestedStorefrontCodes.count
         ))
 
-        guard let refreshService = services.appDetailRefreshService else {
+        guard refreshNewTracks, let refreshService = services.appDetailRefreshService else {
             return
         }
 

@@ -361,6 +361,7 @@
 		D45DEBF8843440B384689D6A /* Persistence/RatingHistoryStore+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */; };
 		04FE3BB52BA4436A8E8A7B36 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
 		195FABB04F3A4F39925CFA43 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
+		37EFA674B49B4F7C95F2435E /* SearchRanking/KeywordDifficultyEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20A00000000000000000011 /* SearchRanking/KeywordDifficultyEstimator.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1571,6 +1572,7 @@
 				C15A00000000000000000101 /* MCP/OpenASOMCPDTOs.swift in Sources */,
 				CF4F50E477D94EDB82CDC893 /* AppStoreConnect/AppStoreConnectMetadataService.swift in Sources */,
 				49D3E2B90078465ABC5F5C34 /* MCP/KeywordTargetingAnalysis.swift in Sources */,
+				37EFA674B49B4F7C95F2435E /* SearchRanking/KeywordDifficultyEstimator.swift in Sources */,
 				F241DBBDCE904A65BD3D0887 /* Persistence/MetadataBaselineStore.swift in Sources */,
 				4C9E597C5496436BAC2878AE /* AppStoreConnect/AppStoreConnectCredentials.swift in Sources */,
 				C15A00000000000000000102 /* MCP/OpenASOMCPService.swift in Sources */,

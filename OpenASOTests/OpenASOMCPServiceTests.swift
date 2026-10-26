@@ -7,6 +7,64 @@ import Testing
 @MainActor
 struct OpenASOMCPServiceTests {
     @Test
+    func removeKeywordsIsScopedIdempotentAndPreservesSharedResearch() async throws {
+        let context = try MCPTestContext()
+        try context.insertTrackedApp(appStoreID: 123, name: "Target")
+        try context.insertTrackedApp(appStoreID: 999, name: "Other")
+        _ = try await context.service.addKeywords(appStoreID: 123, keywords: ["Voice Notes"], storefronts: ["us", "gb"])
+        _ = try await context.service.addKeywords(appStoreID: 123, keywords: ["Voice Notes"], storefronts: ["us"], platform: "ipad")
+        _ = try await context.service.addKeywords(appStoreID: 999, keywords: ["Voice Notes"], storefronts: ["us"])
+        let removedIdentity = TrackedAppKeyword.makeIdentityKey(appStoreID: 123, term: "Voice Notes", storefront: "us", platform: .iphone)
+        try await context.backgroundModelStore.write { db in
+            let track = try #require(db.fetch(FetchDescriptor<TrackedAppKeyword>(predicate: #Predicate { $0.identityKey == removedIdentity })).first)
+            let snapshot = TrackedKeywordDailyRanking(rank: 3, searchedAt: isoDate("2026-05-07T12:00:00Z"), source: .appStoreWeb, resultCount: 10, keywordTrack: track)
+            db.insert(snapshot)
+            track.snapshots.append(snapshot)
+            db.insert(TrackedKeywordRankedResult(position: 1, appStoreID: 999, bundleID: nil, name: "Other", sellerName: nil, snapshot: snapshot))
+            let crawl = RankingCrawlRecord(keyword: track.term, storefront: "us", platform: .iphone, observedAt: snapshot.searchedAt, source: .appStoreWeb, resultCount: 10, query: track.query)
+            db.insert(crawl)
+            db.insert(TrackedRankingCrawlLink(snapshotKey: snapshot.snapshotKey, crawl: crawl))
+            db.insert(TrackedAppKeywordRefreshAttempt(trackIdentityKey: removedIdentity, appStoreID: 123, lastRankingRefreshAttemptAt: snapshot.searchedAt))
+            db.insert(TrackedKeywordRefreshStatus(trackIdentityKey: removedIdentity, trackCreatedAt: track.createdAt, appStoreID: 123, domain: .ranking, message: "old error", updatedAt: snapshot.searchedAt))
+        }
+        let result = try await context.service.removeKeywords(appStoreID: 123, keywords: ["voice notes", "VOICE NOTES", "unknown"], storefronts: ["US"], platform: "iphone")
+        #expect(result.summary.removed == 1)
+        #expect(result.summary.skipped == 1)
+        #expect(result.removed == [.init(keyword: "Voice Notes", storefront: "us", platform: "iphone")])
+        let db = ModelContext(context.container)
+        #expect(try db.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 3)
+        #expect(try db.fetchCount(FetchDescriptor<RankingCrawlRecord>()) == 1)
+        #expect(try db.fetchCount(FetchDescriptor<KeywordQuery>()) == 3)
+        #expect(try db.fetchCount(FetchDescriptor<TrackedKeywordDailyRanking>()) == 0)
+        #expect(try db.fetchCount(FetchDescriptor<TrackedKeywordRankedResult>()) == 0)
+        #expect(try db.fetchCount(FetchDescriptor<TrackedRankingCrawlLink>()) == 0)
+        #expect(try db.fetchCount(FetchDescriptor<TrackedKeywordRefreshStatus>()) == 0)
+        #expect(try db.fetchCount(FetchDescriptor<TrackedAppKeywordRefreshAttempt>()) == 0)
+        let repeated = try await context.service.removeKeywords(appStoreID: 123, keywords: ["voice notes"], storefronts: ["us"])
+        #expect(repeated.summary.removed == 0)
+        #expect(repeated.summary.skipped == 1)
+        _ = try await context.service.addKeywords(appStoreID: 123, keywords: ["Voice Notes"], storefronts: ["us"])
+        try await context.backgroundModelStore.write { db in
+            let track = try #require(db.fetch(FetchDescriptor<TrackedAppKeyword>(predicate: #Predicate { $0.identityKey == removedIdentity })).first)
+            db.insert(TrackedKeywordDailyRanking(rank: 1, searchedAt: isoDate("2026-05-07T13:00:00Z"), source: .appStoreWeb, resultCount: 10, keywordTrack: track))
+        }
+        let readded = ModelContext(context.container)
+        #expect(try readded.fetch(FetchDescriptor<TrackedKeywordDailyRanking>()).first?.rank == 1)
+        await #expect(throws: OpenASOError.self) {
+            _ = try await context.service.removeKeywords(appStoreID: 123, keywords: [], storefronts: ["us"])
+        }
+        #expect(try readded.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 4)
+    }
+
+    @Test
+    func legacyMutationSummariesDecodeWithoutRemovedCount() throws {
+        let data = Data(#"{"inserted":1,"updated":0,"skipped":0,"refreshed":0,"failed":0}"#.utf8)
+        let summary = try JSONDecoder().decode(OpenASOMCPMutationSummary.self, from: data)
+        #expect(summary.removed == 0)
+        #expect(try JSONDecoder().decode(OpenASOMCPMutationSummary.self, from: JSONEncoder().encode(summary)) == summary)
+    }
+
+    @Test
     func listAppsHandlesEmptyWorkspace() async throws {
         let service = try makeService()
 

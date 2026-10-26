@@ -96,6 +96,50 @@ struct KeywordTargetingItem: Codable, Sendable {
     let ranking: KeywordTargetingRanking?
     let opportunity: String
     let rationale: [String]
+    var competition: KeywordTargetingCompetition? = nil
+}
+
+/// Ephemeral analysis of the same bounded native sample used for rank checks.
+/// It is never written into Apple's popularity or legacy difficulty fields.
+struct KeywordTargetingCompetition: Codable, Sendable {
+    let score: Int?
+    let confidence: String?
+    let confidenceScore: Int?
+    let unavailableReason: String?
+    let source: String
+    let observedAt: Date
+    let algorithmIdentifier: String
+    let algorithmVersion: Int
+    let evidence: KeywordDifficultyEvidence?
+    let notes: [String]
+
+    static func analyze(_ row: OpenASOMCPKeywordRankingEvidence) -> Self {
+        guard row.source == RankingSource.appStoreWeb.rawValue else {
+            return .init(score: nil, confidence: nil, confidenceScore: nil,
+                         unavailableReason: "native_ranking_required", source: row.source,
+                         observedAt: row.observedAt, algorithmIdentifier: KeywordDifficultyEstimator.algorithmIdentifier,
+                         algorithmVersion: KeywordDifficultyEstimator.algorithmVersion, evidence: nil,
+                         notes: ["Fallback results cannot establish native App Store competition."])
+        }
+        let results = row.topApps.compactMap { app -> KeywordDifficultyRankedResult? in
+            guard let id = Int64(app.appStoreID) else { return nil }
+            return .init(position: app.position, appStoreID: id, title: app.name,
+                         subtitle: app.subtitle, ratingCount: app.ratingCount)
+        }
+        switch KeywordDifficultyEstimator.estimate(keyword: row.keyword, rankedResults: results) {
+        case .estimated(let value):
+            return .init(score: value.score, confidence: value.confidence.rawValue,
+                         confidenceScore: value.confidenceScore, unavailableReason: nil,
+                         source: row.source, observedAt: row.observedAt,
+                         algorithmIdentifier: value.algorithmIdentifier, algorithmVersion: value.algorithmVersion,
+                         evidence: value.evidence, notes: value.notes)
+        case .unavailable(let value):
+            return .init(score: nil, confidence: nil, confidenceScore: nil,
+                         unavailableReason: value.reason.rawValue, source: row.source,
+                         observedAt: row.observedAt, algorithmIdentifier: value.algorithmIdentifier,
+                         algorithmVersion: value.algorithmVersion, evidence: value.evidence, notes: value.notes)
+        }
+    }
 }
 
 struct KeywordTargetingAudit: Codable, Sendable {

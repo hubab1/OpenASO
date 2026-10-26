@@ -47,6 +47,7 @@ struct OpenASOMCPMutationSummary: Codable, Sendable, Equatable {
     var skipped: Int
     var refreshed: Int
     var failed: Int
+    var removed: Int = 0
 
     static let empty = OpenASOMCPMutationSummary(
         inserted: 0,
@@ -55,6 +56,20 @@ struct OpenASOMCPMutationSummary: Codable, Sendable, Equatable {
         refreshed: 0,
         failed: 0
     )
+}
+
+extension OpenASOMCPMutationSummary {
+    private enum CodingKeys: String, CodingKey { case inserted, updated, skipped, refreshed, failed, removed }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        inserted = try values.decode(Int.self, forKey: .inserted)
+        updated = try values.decode(Int.self, forKey: .updated)
+        skipped = try values.decode(Int.self, forKey: .skipped)
+        refreshed = try values.decode(Int.self, forKey: .refreshed)
+        failed = try values.decode(Int.self, forKey: .failed)
+        removed = try values.decodeIfPresent(Int.self, forKey: .removed) ?? 0
+    }
 }
 
 struct OpenASOMCPAppSummary: Codable, Identifiable, Sendable {
@@ -276,6 +291,18 @@ struct OpenASOMCPRankingCrawlSnapshot: Codable, Identifiable, Sendable {
 struct OpenASOMCPAddKeywordsResult: Codable, Sendable {
     let summary: OpenASOMCPMutationSummary
     let inserted: [OpenASOMCPKeywordSummary]
+    let skipped: [OpenASOMCPSkippedKeyword]
+}
+
+struct OpenASOMCPRemovedKeyword: Codable, Sendable, Equatable {
+    let keyword: String
+    let storefront: String
+    let platform: String
+}
+
+struct OpenASOMCPRemoveKeywordsResult: Codable, Sendable {
+    let summary: OpenASOMCPMutationSummary
+    let removed: [OpenASOMCPRemovedKeyword]
     let skipped: [OpenASOMCPSkippedKeyword]
 }
 

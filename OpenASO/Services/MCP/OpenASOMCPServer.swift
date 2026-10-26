@@ -301,6 +301,14 @@ struct OpenASOMCPServerFactory: Sendable {
             )
             return try Self.toolResult(result)
 
+        case "remove_keywords":
+            return try Self.toolResult(try await service.removeKeywords(
+                appStoreID: arguments.requiredInt64("appStoreID"),
+                keywords: arguments.requiredStringArray("keywords"),
+                storefronts: arguments.requiredStringArray("storefronts"),
+                platform: arguments.optionalString("platform")
+            ))
+
         case "update_keyword_notes":
             let result = try await service.updateKeywordNotes(
                 appStoreID: try arguments.requiredInt64("appStoreID"),
@@ -654,7 +662,7 @@ private extension OpenASOMCPServerFactory {
             tool("get_app_store_metadata", "Read owned title, subtitle and private keywords with saved App Store Connect credentials. Select exact locale, search platform and scope live/editable. Returns version/state, fields, source/time and contentHash; fails on ambiguous state or missing locale instead of substituting another version/language. Read-only; never publishes.", schema(
                 required: ["appStoreID"], optional: metadataFilters.filter { $0.key != "storefront" }
             ), readOnly: true, openWorld: true),
-            tool("audit_keyword_targeting", "Compare 1...50 candidate keywords with authenticated owned metadata, fresh market popularity, app-specific relevance and up to eight live rank samples (ranking_limit defaults to five; zero skips ranks). Distinguishes literal phrases, component/plural combinations, missing words and ranking gaps. Default candidates are tracked terms ordered by stored popularity; pass your discovery shortlist for broader opportunities. Coverage is not proof of indexing; fallback ranks are unverified native evidence. Review semantic fit, competitors, readability and existing winners before recommending edits.", schema(
+            tool("audit_keyword_targeting", "Compare 1...50 candidate keywords with authenticated owned metadata, fresh market popularity, app-specific relevance and up to eight live rank samples (ranking_limit defaults to five; zero skips ranks). Includes native-sample estimated competition, confidence, provenance and competitor evidence; fallback or insufficient ratings remain unknown. Distinguishes literal phrases, component/plural combinations, missing words and ranking gaps. Default candidates are tracked terms ordered by stored popularity; pass your discovery shortlist for broader opportunities. Coverage is not proof of indexing; fallback ranks are unverified native evidence. Review semantic fit, competitors, readability and existing winners before recommending edits.", schema(
                 required: ["appStoreID"], optional: metadataFilters.merging(["keywords": .stringArray, "ranking_limit": .integer]) { current, _ in current }
             ), readOnly: true, openWorld: true),
             tool("compare_metadata_draft", "Evaluate an agent-written proposed_title, proposed_subtitle and/or proposed_keywords against current owned metadata and a bounded keyword shortlist. Returns 30/30/100 validation, duplicates/filler, gained/lost coverage, visible phrase changes, protected native winner warnings and baseline hash. Ranking checks default to three, cap at eight; ranking_limit: 0 skips them. Pass expected_hash to reject a stale baseline. Generate conservative and broader alternatives while preserving brand and useful current targets; rank lift is a hypothesis. Does not save or publish drafts.", schema(
@@ -678,6 +686,10 @@ private extension OpenASOMCPServerFactory {
                 required: ["appStoreID", "keywords", "storefronts"],
                 optional: ["appStoreID": .integer, "keywords": .stringArray, "storefronts": .stringArray, "platform": .string]
             ), readOnly: false, destructive: false, idempotent: true),
+            tool("remove_keywords", "Untrack 1...50 explicitly selected keywords in 1...3 storefronts for one app/platform (default iPhone). Removes track-specific history and refresh status atomically, preserves shared ranking observations, popularity and other apps/markets/platforms. Missing tracks are skipped; returns persisted keyword text for re-adding. Use only when keyword removal is authorized; low popularity alone is not authorization to prune.", schema(
+                required: ["appStoreID", "keywords", "storefronts"],
+                optional: commonAppFilters.merging(["keywords": .stringArray]) { current, _ in current }
+            ), readOnly: false, destructive: true, idempotent: true),
             tool("update_keyword_notes", "Update notes for one tracked keyword.", schema(
                 required: ["appStoreID", "keyword", "storefront", "notes"],
                 optional: ["appStoreID": .integer, "keyword": .string, "storefront": .string, "platform": .string, "notes": .string]
@@ -873,7 +885,7 @@ private extension OpenASOMCPServerFactory {
             Filter brands, unrelated terms, unsupported features and wrong-language phrases before branching. Prefer relevant market-popularity scores above 5; retain low/unknown terms separately when they cover an important feature. Reuse promising terms as new seeds and explore suggestionPages.nextOffset with the same seed/limit. Deduplicate by keyword/storefront/platform and skip repeated seeds/pages. Use an explicit request budget; stop after two successive expansion calls yield no new relevant above-floor terms, or when the budget is reached. Return the unexplored frontier when stopping at the budget.
             Verify the strongest shortlist with get_ranked_apps_for_keyword, then weigh relevance, popularity, target rank, competition and evidence freshness. Rank evidence from iTunesFallback is weaker than native App Store ranking. Return a shortlist and coverage report with seeds/pages tried, new/tracked counts, provider errors and remaining gaps. Add keywords only within the user's authorized scope, then use refresh_keyword_metrics with a keywords filter to save their market popularity. Continue with partial results on verification_budget_exceeded or provider/ranking failures.
             Classify keywords as defend, attack, long-tail, brand, experimental, or noisy. Drop generic fragments and irrelevant phrases unless ranking evidence proves relevance.
-            Apply opportunity scoring as a rubric, not a substitute for evidence: weigh popularity, rankability/difficulty or result count, relevance, current rank, competitor overlap, and review-language support.
+            Use audit_keyword_targeting competition evidence when sampled, including confidence and missing-data reasons. This is an app-derived heuristic, not an Apple metric. Apply opportunity scoring as a rubric, not a substitute for evidence: weigh popularity, rankability/difficulty or result count, relevance, current rank, competitor overlap, and review-language support.
             Recommend keywords only after separating hypotheses from verified ranking/popularity evidence. Prioritize terms with direct download intent and avoid broad phrases that do not describe the app's core value.
             For iOS metadata recommendations, avoid repeating words across title, subtitle, and hidden keyword field, prefer singular keyword-field terms, use comma-separated values without spaces, and do not include competitor brands, app name, category names, or unsupported claims.
             """

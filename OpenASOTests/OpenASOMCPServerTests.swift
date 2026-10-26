@@ -52,6 +52,21 @@ struct OpenASOMCPServerTests {
         let appPage = try JSONDecoder.openASOMCP.decode(OpenASOMCPPage<OpenASOMCPAppSummary>.self, from: Data(toolJSON.utf8))
         #expect(appPage.items.map(\.appStoreID) == ["123"])
 
+        let removalTool = try #require(tools.first { $0.name == "remove_keywords" })
+        #expect(removalTool.annotations.readOnlyHint == false)
+        #expect(removalTool.annotations.destructiveHint == true)
+        #expect(removalTool.annotations.idempotentHint == true)
+        _ = try await client.callTool(name: "add_keywords", arguments: [
+            "appStoreID": 123, "keywords": ["voice notes"], "storefronts": ["us"]
+        ])
+        let removal = try await client.callTool(name: "remove_keywords", arguments: [
+            "appStoreID": 123, "keywords": ["VOICE NOTES"], "storefronts": ["us"]
+        ])
+        let removalJSON = try #require(removal.content.first?.textValue)
+        let removalResult = try JSONDecoder().decode(OpenASOMCPRemoveKeywordsResult.self, from: Data(removalJSON.utf8))
+        #expect(removalResult.summary.removed == 1)
+        #expect(removalResult.removed.first?.keyword == "voice notes")
+
         let resources = try await client.listResources().resources
         #expect(resources.map(\.uri).contains("openaso://workspace/summary"))
         let resourceContent = try await client.readResource(uri: "openaso://apps/123")

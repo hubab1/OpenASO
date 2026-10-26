@@ -1603,6 +1603,7 @@ final class OpenASOMCPService: Sendable {
             popularity: items[index].popularity, metadata: metadata, context: context,
             ranking: .init(rank: row.targetRank, source: row.source, observedAt: row.observedAt, sampledResults: row.resultCount)
           )
+          items[index].competition = KeywordTargetingCompetition.analyze(row)
         }
       } catch {
         try Task.checkCancellation()
@@ -1619,6 +1620,7 @@ final class OpenASOMCPService: Sendable {
         "Candidates are app-aware lexical hypotheses, not calibrated traffic or rank forecasts. Review semantic fit and competitor brands.",
         "Default candidates are the first 50 tracked terms ordered by stored popularity. Pass an explicit discovery shortlist to change this universe.",
         "Live rank checks sample ten results each; iTunes fallback never establishes native organic rank.",
+        "Competition is a bounded native-result heuristic with confidence and evidence, not an Apple metric or rank forecast. Missing evidence is not low competition.",
         "Title/subtitle/keyword word presence and plural variants do not prove indexing. No metadata is published by this audit.",
       ]
     )
@@ -1755,6 +1757,54 @@ final class OpenASOMCPService: Sendable {
         },
         skipped: skipped
       )
+    }
+  }
+
+  func removeKeywords(
+    appStoreID: Int64, keywords: [String], storefronts: [String], platform: String? = nil
+  ) async throws -> OpenASOMCPRemoveKeywordsResult {
+    let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let keywords = try OpenASOMCPValidation.keywords(keywords)
+    let storefronts = try OpenASOMCPValidation.storefronts(storefronts)
+    let platform = try OpenASOMCPValidation.platform(platform)
+    guard !keywords.isEmpty, keywords.count <= 50, !storefronts.isEmpty, storefronts.count <= 3 else {
+      throw OpenASOError.providerUnavailable("Provide 1...50 keywords and 1...3 explicit storefronts to untrack.")
+    }
+    return try await backgroundModelStore.write { modelContext in
+      guard let app = try Self.fetchTrackedApp(appStoreID: appStoreID, in: modelContext) else {
+        throw OpenASOError.appNotFound
+      }
+      var removed: [OpenASOMCPRemovedKeyword] = []
+      var skipped: [OpenASOMCPSkippedKeyword] = []
+      let tracks = Dictionary(uniqueKeysWithValues: app.keywordTracks.map { ($0.identityKey, $0) })
+      for storefront in storefronts {
+        for keyword in keywords {
+          try Task.checkCancellation()
+          let identity = TrackedAppKeyword.makeIdentityKey(appStoreID: appStoreID, term: keyword,
+                                                         storefront: storefront, platform: platform)
+          guard let track = tracks[identity] else {
+            skipped.append(.init(keyword: keyword, storefront: storefront, platform: platform.rawValue,
+                                 reason: "not_tracked"))
+            continue
+          }
+          removed.append(.init(keyword: track.term, storefront: track.storefront, platform: track.platformRaw))
+          // Sweep deterministic keys rather than relationships, which can omit
+          // orphaned legacy rows. Shared crawls/facts/query metrics are retained.
+          let prefix = identity + "::"
+          try modelContext.delete(model: TrackedKeywordRankedResult.self, where: #Predicate { $0.snapshotKey.starts(with: prefix) })
+          try modelContext.delete(model: TrackedRankingCrawlLink.self, where: #Predicate { $0.snapshotKey.starts(with: prefix) })
+          try modelContext.delete(model: TrackedKeywordDailyRanking.self, where: #Predicate { $0.trackIdentityKey == identity })
+          try modelContext.delete(model: TrackedKeywordRefreshStatus.self, where: #Predicate { $0.trackIdentityKey == identity })
+          try modelContext.delete(model: TrackedAppKeywordRefreshAttempt.self, where: #Predicate { $0.trackIdentityKey == identity })
+          app.keywordTracks.removeAll { $0.identityKey == identity }
+          modelContext.delete(track)
+        }
+      }
+      try Task.checkCancellation()
+      var summary = OpenASOMCPMutationSummary.empty
+      summary.removed = removed.count
+      summary.skipped = skipped.count
+      return .init(summary: summary, removed: removed, skipped: skipped)
     }
   }
 

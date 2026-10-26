@@ -14,6 +14,8 @@ Run the keyword-discovery workflow first, then pass a curated shortlist to `audi
 
 The audit combines fresh market popularity, app-specific metadata overlap, lexical coverage and up to eight bounded ranking samples. Its relevance score is a heuristic; review actual feature fit, search-result intent, brands, language and unsupported claims. A popular phrase with no app relevance is a review candidate rather than an automatic opportunity.
 
+For sampled keywords, inspect `competition`: its score is an OpenASO native-result heuristic with confidence, source/time and bounded competitor evidence. A missing score or fallback/insufficient-data reason means unknown competition. Compare demand and relevance with observed competitor authority and metadata saturation; do not treat a lower score as guaranteed rankability or an Apple metric. Audits calculate this evidence without persisting it.
+
 Distinguish literal phrase presence, word combinations across fields, English plural variants, and missing components. Apple advises avoiding filler such as "to" and "the" in the private keyword field. Token presence and variant combinations do not prove indexing. A well-covered term with weak rankings needs a different diagnosis from a term with missing metadata components.
 
 Use native App Store ranking evidence when available. Preserve source, observation time and sample size; iTunes fallback or an absent target in a bounded sample leaves native rank unknown. Do not turn a missing rank into a numeric position.
