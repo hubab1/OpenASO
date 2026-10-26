@@ -1356,36 +1356,13 @@ final class OpenASOMCPService: Sendable {
       let minimumDate = dateFrom ?? .distantPast
       let maximumDate = dateTo ?? .distantFuture
       let storefrontValues = Array(storefronts)
-      let filtersStorefront = !storefrontValues.isEmpty
-      let countPredicate = #Predicate<AppDailyRating> { rating in
-        rating.appStoreID == appStoreID
-          && (!filtersStorefront || storefrontValues.contains(rating.storefront))
-          && rating.observedAt >= minimumDate
-          && rating.observedAt <= maximumDate
-      }
-      let total = try modelContext.fetchCount(
-        FetchDescriptor<AppDailyRating>(predicate: countPredicate)
+      let cursor = historyCursor.map { RatingHistoryStore.Cursor(observedAt: $0.timestamp, identityKey: $0.tieKey) }
+      let history = try RatingHistoryStore.page(
+        appStoreID: appStoreID, storefronts: storefrontValues,
+        from: minimumDate, to: maximumDate, after: cursor, limit: page.limit + 1, in: modelContext
       )
-      let hasCursor = historyCursor != nil
-      let cursorTimestamp = historyCursor?.timestamp ?? .distantFuture
-      let cursorTieKey = historyCursor?.tieKey ?? ""
-      var descriptor = FetchDescriptor<AppDailyRating>(
-        predicate: #Predicate { rating in
-          rating.appStoreID == appStoreID
-            && (!filtersStorefront || storefrontValues.contains(rating.storefront))
-            && rating.observedAt >= minimumDate
-            && rating.observedAt <= maximumDate
-            && (!hasCursor
-              || rating.observedAt < cursorTimestamp
-              || (rating.observedAt == cursorTimestamp && rating.identityKey > cursorTieKey))
-        },
-        sortBy: [
-          SortDescriptor(\.observedAt, order: .reverse),
-          SortDescriptor(\.identityKey, comparator: .lexical, order: .forward),
-        ]
-      )
-      descriptor.fetchLimit = page.limit + 1
-      let ratingsWithLookahead = try modelContext.fetch(descriptor)
+      let total = history.total
+      let ratingsWithLookahead = history.records
       let pageSlice = try Self.historyPageFromLookahead(
         rowsWithLookahead: ratingsWithLookahead,
         kind: .ratings,
@@ -4363,7 +4340,7 @@ extension OpenASOMCPService {
     )
   }
 
-  fileprivate static func ratingSnapshot(_ rating: AppDailyRating) -> OpenASOMCPRatingSnapshot {
+  fileprivate static func ratingSnapshot(_ rating: RatingHistoryRecord) -> OpenASOMCPRatingSnapshot {
     OpenASOMCPRatingSnapshot(
       id: rating.identityKey,
       identityKey: rating.identityKey,

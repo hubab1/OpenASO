@@ -2801,9 +2801,16 @@ struct OpenASOMCPServiceTests {
         #expect(!traversedKeys.contains(insertedAfterFirstPage.observationKey))
     }
 
-    @Test
-    func ratingHistoryIsAppScopedFilteredAndKeysetPaginated() async throws {
-        let context = try MCPTestContext()
+    @Test(arguments: [false, true])
+    func ratingHistoryIsAppScopedFilteredAndKeysetPaginated(archived: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-MCP-Archive-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        let schema = ModelContainerFactory.schema
+        let container = try ModelContainer(for: schema, migrationPlan: OpenASOMigrationPlan.self,
+            configurations: ModelConfiguration(schema: schema, url: url))
+        let context = try MCPTestContext(modelContainer: container)
         let target = try context.insertStoreApp(appStoreID: 123, name: "Focus Timer")
         let other = try context.insertStoreApp(appStoreID: 999, name: "Other Timer")
         let tiedGB = try context.insertRatingSnapshot(
@@ -2848,6 +2855,8 @@ struct OpenASOMCPServiceTests {
             averageRating: 5
         )
         let tiedKeys = [tiedGB.identityKey, tiedUS.identityKey].sorted()
+        let oldUSKey = oldUS.identityKey
+        if archived { try StorageSchemaV7Migrator.migrateIfNeeded(at: url) }
 
         let first = try await context.service.listRatingHistory(
             appStoreID: 123,
@@ -2875,7 +2884,7 @@ struct OpenASOMCPServiceTests {
             appStoreID: 123,
             page: OpenASOMCPPageRequest(limit: 1, cursor: secondCursor)
         )
-        #expect(third.items.map(\.identityKey) == [oldUS.identityKey])
+        #expect(third.items.map(\.identityKey) == [oldUSKey])
         #expect(third.nextCursor == nil)
         #expect(![first, second, third].flatMap(\.items).contains {
             $0.identityKey == insertedAfterFirstPage.identityKey

@@ -29,10 +29,17 @@ final class AppStorefrontRatingService: Sendable {
             return []
         }
 
-        for outcome in outcomes {
-            persist(outcome, for: storeApp, in: modelContext)
+        do {
+            for outcome in outcomes {
+                try persist(outcome, for: storeApp, in: modelContext)
+            }
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            return outcomes.map {
+                AppStorefrontRatingRefreshOutcome(storefront: $0.storefront, result: nil, error: OpenASOError.map(error))
+            }
         }
-        try? modelContext.save()
         OpenASOLog.ratings.info(
             "Finished ratings refresh appStoreID=\(storeApp.appStoreID, privacy: .public) successes=\(outcomes.filter { $0.error == nil }.count, privacy: .public) failures=\(outcomes.filter { $0.error != nil }.count, privacy: .public)"
         )
@@ -132,8 +139,7 @@ final class AppStorefrontRatingService: Sendable {
                 storefront: storefront,
                 result: nil,
                 error: nil,
-                unavailabilityReason: unavailable.localizedDescription,
-                clearsStoredRatings: true
+                unavailabilityReason: unavailable.localizedDescription
             )
         } catch let mismatch as AppStorefrontRatingStorefrontMismatch {
             try Task.checkCancellation()
@@ -144,8 +150,7 @@ final class AppStorefrontRatingService: Sendable {
             return AppStorefrontRatingRefreshOutcome(
                 storefront: storefront,
                 result: nil,
-                error: mappedError,
-                clearsStoredRatings: true
+                error: mappedError
             )
         } catch {
             if Task.isCancelled {
@@ -167,21 +172,10 @@ final class AppStorefrontRatingService: Sendable {
         _ outcome: AppStorefrontRatingRefreshOutcome,
         for storeApp: StoreApp,
         in modelContext: ModelContext
-    ) {
+    ) throws {
         if let result = outcome.result {
-            upsert(
-                result,
-                ratingDate: nil,
-                submissionCount: 1,
-                winningCount: 1,
-                confidence: "single_source",
-                for: storeApp,
-                in: modelContext
-            )
-        }
-
-        if outcome.clearsStoredRatings {
-            clearRatings(appStoreID: storeApp.appStoreID, storefront: outcome.storefront, in: modelContext)
+            try RatingHistoryStore.ingest([.init(result)],
+                storeApps: [storeApp.appStoreID: storeApp], in: modelContext)
         }
     }
 
@@ -197,162 +191,6 @@ final class AppStorefrontRatingService: Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
         return Array(Set(normalizedStorefronts)).sorted()
-    }
-
-    private func upsert(
-        _ result: AppStorefrontRatingResult,
-        ratingDate: String?,
-        submissionCount: Int,
-        winningCount: Int,
-        confidence: String?,
-        for storeApp: StoreApp,
-        in modelContext: ModelContext
-    ) {
-        let resolvedRatingDate = ratingDate ?? LatestAppRating.ratingDateString(for: result.observedAt)
-        let snapshotKey = AppDailyRating.makeIdentityKey(
-            appStoreID: result.appStoreID,
-            storefront: result.storefront,
-            ratingDate: resolvedRatingDate
-        )
-        let snapshot: AppDailyRating
-        if let existing = try? fetchSnapshot(identityKey: snapshotKey, in: modelContext) {
-            snapshot = existing
-            guard result.observedAt >= existing.observedAt else {
-                return
-            }
-        } else {
-            snapshot = AppDailyRating(
-                appStoreID: result.appStoreID,
-                storefront: result.storefront,
-                ratingCount: result.ratingCount,
-                averageRating: result.averageRating,
-                oneStarRatingCount: result.ratingCounts?.oneStar,
-                twoStarRatingCount: result.ratingCounts?.twoStar,
-                threeStarRatingCount: result.ratingCounts?.threeStar,
-                fourStarRatingCount: result.ratingCounts?.fourStar,
-                fiveStarRatingCount: result.ratingCounts?.fiveStar,
-                ratingDate: resolvedRatingDate,
-                observedAt: result.observedAt,
-                submissionCount: submissionCount,
-                winningCount: winningCount,
-                confidence: confidence,
-                source: result.source,
-                storeApp: storeApp
-            )
-            modelContext.insert(snapshot)
-        }
-        snapshot.ratingCount = result.ratingCount
-        snapshot.averageRating = result.averageRating
-        if let ratingCounts = result.ratingCounts {
-            snapshot.oneStarRatingCount = ratingCounts.oneStar
-            snapshot.twoStarRatingCount = ratingCounts.twoStar
-            snapshot.threeStarRatingCount = ratingCounts.threeStar
-            snapshot.fourStarRatingCount = ratingCounts.fourStar
-            snapshot.fiveStarRatingCount = ratingCounts.fiveStar
-        }
-        snapshot.ratingDate = resolvedRatingDate
-        snapshot.observedAt = result.observedAt
-        snapshot.submissionCount = submissionCount
-        snapshot.winningCount = winningCount
-        snapshot.confidenceRaw = confidence
-        snapshot.source = result.source
-        snapshot.storeApp = storeApp
-
-        let identityKey = LatestAppRating.makeIdentityKey(
-            appStoreID: result.appStoreID,
-            storefront: result.storefront
-        )
-        let latest: LatestAppRating
-        if let existing = try? fetchLatest(identityKey: identityKey, in: modelContext) {
-            latest = existing
-            guard result.observedAt >= existing.observedAt else {
-                return
-            }
-        } else {
-            latest = LatestAppRating(
-                appStoreID: result.appStoreID,
-                storefront: result.storefront,
-                ratingCount: result.ratingCount,
-                averageRating: result.averageRating,
-                oneStarRatingCount: result.ratingCounts?.oneStar,
-                twoStarRatingCount: result.ratingCounts?.twoStar,
-                threeStarRatingCount: result.ratingCounts?.threeStar,
-                fourStarRatingCount: result.ratingCounts?.fourStar,
-                fiveStarRatingCount: result.ratingCounts?.fiveStar,
-                ratingDate: resolvedRatingDate,
-                observedAt: result.observedAt,
-                submissionCount: submissionCount,
-                winningCount: winningCount,
-                confidence: confidence,
-                source: result.source,
-                storeApp: storeApp
-            )
-            modelContext.insert(latest)
-        }
-
-        latest.ratingCount = result.ratingCount
-        latest.averageRating = result.averageRating
-        if let ratingCounts = result.ratingCounts {
-            latest.oneStarRatingCount = ratingCounts.oneStar
-            latest.twoStarRatingCount = ratingCounts.twoStar
-            latest.threeStarRatingCount = ratingCounts.threeStar
-            latest.fourStarRatingCount = ratingCounts.fourStar
-            latest.fiveStarRatingCount = ratingCounts.fiveStar
-        }
-        latest.ratingDate = resolvedRatingDate
-        latest.observedAt = result.observedAt
-        latest.submissionCount = submissionCount
-        latest.winningCount = winningCount
-        latest.confidenceRaw = confidence
-        latest.source = result.source
-        latest.storeApp = storeApp
-    }
-
-    private func fetchLatest(identityKey: String, in modelContext: ModelContext) throws -> LatestAppRating? {
-        let targetIdentityKey = identityKey
-        let descriptor = FetchDescriptor<LatestAppRating>(
-            predicate: #Predicate { latest in
-                latest.identityKey == targetIdentityKey
-            }
-        )
-        return try modelContext.fetch(descriptor).first
-    }
-
-    private func fetchSnapshot(identityKey: String, in modelContext: ModelContext) throws -> AppDailyRating? {
-        let targetIdentityKey = identityKey
-        let descriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.identityKey == targetIdentityKey
-            }
-        )
-        return try modelContext.fetch(descriptor).first
-    }
-
-    private func clearRatings(appStoreID: Int64, storefront: String, in modelContext: ModelContext) {
-        let targetAppStoreID = appStoreID
-        let targetStorefront = storefront
-        let latestDescriptor = FetchDescriptor<LatestAppRating>(
-            predicate: #Predicate { latest in
-                latest.appStoreID == targetAppStoreID && latest.storefront == targetStorefront
-            }
-        )
-        let snapshotDescriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.appStoreID == targetAppStoreID && snapshot.storefront == targetStorefront
-            }
-        )
-
-        let latest = (try? modelContext.fetch(latestDescriptor)) ?? []
-        let snapshots = (try? modelContext.fetch(snapshotDescriptor)) ?? []
-        for value in latest {
-            modelContext.delete(value)
-        }
-        for value in snapshots {
-            modelContext.delete(value)
-        }
-        OpenASOLog.ratings.info(
-            "Cleared ratings storefront=\(storefront, privacy: .public) appStoreID=\(appStoreID, privacy: .public) latest=\(latest.count, privacy: .public) snapshots=\(snapshots.count, privacy: .public)"
-        )
     }
 }
 

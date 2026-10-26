@@ -239,19 +239,15 @@ enum KeywordRankingListLoader {
         snapshotsByID.reserveCapacity(uniqueAppStoreIDs.count)
 
         guard !uniqueAppStoreIDs.isEmpty else { return [:] }
-        let descriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.storefront == targetStorefront
-                    && uniqueAppStoreIDs.contains(snapshot.appStoreID)
-                    && snapshot.ratingCount != nil
-            },
-            sortBy: [
-                SortDescriptor(\.appStoreID, order: .forward),
-                SortDescriptor(\.ratingDate, order: .reverse),
-                SortDescriptor(\.observedAt, order: .reverse)
-            ]
-        )
-        for (index, snapshot) in try modelContext.fetch(descriptor).enumerated() {
+        let snapshots = try RatingHistoryStore.recent(
+            appStoreIDs: uniqueAppStoreIDs, storefronts: [targetStorefront], limitPerApp: ratingSnapshotLimit,
+            order: .ratingDate, requiresRatingCount: true, in: modelContext
+        ).sorted {
+            if $0.appStoreID != $1.appStoreID { return $0.appStoreID < $1.appStoreID }
+            if $0.ratingDate != $1.ratingDate { return $0.ratingDate > $1.ratingDate }
+            return $0.observedAt > $1.observedAt
+        }
+        for (index, snapshot) in snapshots.enumerated() {
             if snapshotsByID[snapshot.appStoreID, default: []].count < ratingSnapshotLimit {
                 snapshotsByID[snapshot.appStoreID, default: []].append(
                     RatingSnapshotDisplayValue(snapshot)

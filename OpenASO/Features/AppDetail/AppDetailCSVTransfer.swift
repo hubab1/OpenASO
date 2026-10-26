@@ -50,6 +50,10 @@ struct AppDetailRatingSnapshotValue: Sendable {
     let observedAt: Date
 
     init(_ snapshot: AppDailyRating) {
+        self.init(RatingHistoryRecord(snapshot))
+    }
+
+    init(_ snapshot: RatingHistoryRecord) {
         self.appStoreID = snapshot.appStoreID
         self.storefront = snapshot.storefront
         self.ratingDate = snapshot.ratingDate
@@ -187,17 +191,11 @@ struct AppDetailRatingsCSVExporter {
             },
             sortBy: [SortDescriptor(\.storefront, order: .forward)]
         )
-        var snapshotDescriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.appStoreID == targetAppStoreID
-            },
-            sortBy: [SortDescriptor(\.observedAt, order: .reverse)]
-        )
-        snapshotDescriptor.fetchLimit = 1_000
+        let snapshots = try RatingHistoryStore.recent(appStoreIDs: [appStoreID], limitPerApp: 1_000, in: modelContext)
 
         return AppDetailRatingsExportData(
             latestRatings: try modelContext.fetch(latestDescriptor).map(AppDetailRatingLatestValue.init),
-            ratingSnapshots: try modelContext.fetch(snapshotDescriptor).map(AppDetailRatingSnapshotValue.init)
+            ratingSnapshots: snapshots.map(AppDetailRatingSnapshotValue.init)
         )
     }
 

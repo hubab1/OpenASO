@@ -1,7 +1,9 @@
 import CryptoKit
 import Darwin
 import Foundation
+import ObjectiveC
 import SwiftData
+import Synchronization
 
 enum PersistentStoreError: LocalizedError, Sendable {
     case locationUnavailable(diagnosticDescription: String)
@@ -53,6 +55,8 @@ enum PersistentStoreError: LocalizedError, Sendable {
 }
 
 enum ModelContainerFactory {
+    private static let writingContexts = Mutex<Set<ObjectIdentifier>>([])
+
     typealias ContainerOpener = (Schema, ModelConfiguration) throws -> ModelContainer
 
     static var schema: Schema {
@@ -62,7 +66,8 @@ enum ModelContainerFactory {
     static func makeModelContainer(
         isStoredInMemoryOnly: Bool,
         namespace: AppNamespace = .current,
-        opener: ContainerOpener = openModelContainer
+        opener: ContainerOpener = openModelContainer,
+        progress: (@Sendable (StoragePreparationProgress) -> Void)? = nil
     ) throws -> ModelContainer {
         let schema = Self.schema
         if isStoredInMemoryOnly {
@@ -70,7 +75,10 @@ enum ModelContainerFactory {
                 schema: schema,
                 isStoredInMemoryOnly: true
             )
-            return try opener(schema, configuration)
+            progress?(.opening)
+            let container = try opener(schema, configuration)
+            progress?(.ready)
+            return container
         }
 
         let persistentStoreURL: URL
@@ -84,20 +92,71 @@ enum ModelContainerFactory {
 
         return try makePersistentModelContainer(
             at: persistentStoreURL,
-            opener: opener
+            opener: opener, progress: progress
         )
     }
 
     static func makePersistentModelContainer(
         at storeURL: URL,
-        opener: ContainerOpener = openModelContainer
+        opener: ContainerOpener = openModelContainer,
+        compactStore: (URL) throws -> Void = PersistentStoreCompactor.compactIfNeeded,
+        progress: (@Sendable (StoragePreparationProgress) -> Void)? = nil
     ) throws -> ModelContainer {
         let schema = Self.schema
         let configuration = ModelConfiguration(schema: schema, url: storeURL)
         do {
-            return try withExclusiveMigrationLock(for: storeURL) {
+            progress?(.opening)
+            return try withMigrationAccess(for: storeURL, progress: progress) { canMigrate in
+                guard canMigrate else {
+                    let container = try opener(schema, configuration)
+                    let state = try ModelContext(container).fetch(FetchDescriptor<StorageMigrationState>()).first
+                    // A failed migration owner also releases its lock. Shared
+                    // access alone does not prove that the upgrade finished.
+                    guard state?.completed == true, state?.pendingDeletionPayload == nil else {
+                        throw NSError(domain: "OpenASO.StorageMigration", code: 2, userInfo: [
+                            NSLocalizedDescriptionKey: "The database upgrade is unfinished. Quit other OpenASO, refresh, or MCP processes and reopen to resume it."
+                        ])
+                    }
+                    progress?(.ready)
+                    return container
+                }
+                let prepared: ModelContainer? = try autoreleasepool {
+                    let container = try opener(schema, configuration)
+                    try RankingSchemaV6Migrator.migrateIfNeeded(in: container)
+                    let context = ModelContext(container)
+                    let prior = try context.fetch(FetchDescriptor<StorageMigrationState>()).first
+                    let needsUpgrade = prior?.completed != true || prior?.needsCompaction != false
+                    guard needsUpgrade else { return container }
+                    // No app consumer persists SwiftData history tokens. Research
+                    // observations live in model entities, not this change log.
+                    try PersistentHistoryMaintenance.prune(in: context)
+                    return nil
+                }
+                if let prepared {
+                    progress?(.ready)
+                    return prepared
+                }
+                try StorageSchemaV7Migrator.migrateIfNeeded(at: storeURL, progress: progress)
+                progress?(.compacting)
+                var compactionFinished = false
+                do {
+                    try compactStore(storeURL)
+                    compactionFinished = true
+                } catch {
+                    guard PersistentStoreCompactor.canRetryLater(error) else { throw error }
+                    // Logical migration has already verified all research data.
+                    // Reopening still has to succeed before returning a usable store.
+                    OpenASOLog.rankingMigration.error("Optional storage compaction deferred: \(String(reflecting: error), privacy: .public)")
+                }
                 let container = try opener(schema, configuration)
-                try RankingSchemaV6Migrator.migrateIfNeeded(in: container)
+                let context = ModelContext(container)
+                if let state = try context.fetch(FetchDescriptor<StorageMigrationState>()).first {
+                    if compactionFinished {
+                        state.needsCompaction = false
+                        try context.save()
+                    }
+                }
+                progress?(.ready)
                 return container
             }
         } catch {
@@ -106,6 +165,67 @@ enum ModelContainerFactory {
                 diagnosticDescription: String(reflecting: error)
             )
         }
+    }
+
+    /// Serialize complete worker transactions across app, MCP, and refresh
+    /// processes. Fresh contexts prevent cached chunks from overwriting a
+    /// different writer's committed days. No network await occurs under this lock.
+    static func withWriteTransaction<Value>(
+        in container: ModelContainer, _ operation: (ModelContext) throws -> Value
+    ) throws -> Value {
+        try withTransactionAccess(in: container, mode: LOCK_EX) {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            let identity = ObjectIdentifier(context)
+            writingContexts.withLock { _ = $0.insert(identity) }
+            defer { writingContexts.withLock { _ = $0.remove(identity) } }
+            do {
+                let result = try operation(context)
+                if context.hasChanges { try context.save() }
+                return result
+            } catch {
+                context.rollback()
+                throw error
+            }
+        }
+    }
+
+    /// A bounded history query reads live rows, chunk metadata, and payloads
+    /// under one shared lease. Fresh contexts avoid mixing cached generations.
+    /// Reads inside an existing write transaction reuse its exclusive lease.
+    static func withReadTransaction<Value>(
+        in context: ModelContext, _ operation: (ModelContext) throws -> Value
+    ) throws -> Value {
+        if writingContexts.withLock({ $0.contains(ObjectIdentifier(context)) }) {
+            return try operation(context)
+        }
+        return try withTransactionAccess(in: context.container, mode: LOCK_SH) {
+            if context.hasChanges { return try operation(context) }
+            let fresh = ModelContext(context.container)
+            fresh.autosaveEnabled = false
+            return try operation(fresh)
+        }
+    }
+
+    private static func withTransactionAccess<Value>(
+        in container: ModelContainer, mode: Int32, _ operation: () throws -> Value
+    ) throws -> Value {
+        let configuration = container.configurations.first!
+        let identity = configuration.isStoredInMemoryOnly
+            ? "memory:\(ObjectIdentifier(container))"
+            : configuration.url.standardizedFileURL.path
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("OpenASO-Writes", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(digest).lock")
+        let descriptor = url.path.withCString { Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR) }
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { Darwin.close(descriptor) }
+        while flock(descriptor, mode) != 0 {
+            guard errno == EINTR else { throw CocoaError(.fileLocking) }
+        }
+        defer { flock(descriptor, LOCK_UN) }
+        return try operation()
     }
 
     private static func storeURL(namespace: AppNamespace) throws -> URL {
@@ -126,10 +246,11 @@ enum ModelContainerFactory {
         )
     }
 
-    private static func withExclusiveMigrationLock<Value>(
+    private static func withMigrationAccess(
         for storeURL: URL,
-        _ operation: () throws -> Value
-    ) throws -> Value {
+        progress: (@Sendable (StoragePreparationProgress) -> Void)?,
+        _ operation: (Bool) throws -> ModelContainer
+    ) throws -> ModelContainer {
         let lockDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenASO-Migrations", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -146,14 +267,34 @@ enum ModelContainerFactory {
         guard descriptor >= 0 else {
             throw CocoaError(.fileWriteUnknown)
         }
-        defer { Darwin.close(descriptor) }
-
-        while flock(descriptor, LOCK_EX) != 0 {
-            guard errno == EINTR else {
-                throw CocoaError(.fileLocking)
+        let lease = PersistentStoreLease(descriptor: descriptor)
+        let exclusive = flock(descriptor, LOCK_EX | LOCK_NB) == 0
+        if !exclusive {
+            guard errno == EWOULDBLOCK || errno == EAGAIN else { throw CocoaError(.fileLocking) }
+            progress?(.waitingForClients)
+            while flock(descriptor, LOCK_SH) != 0 {
+                guard errno == EINTR else { throw CocoaError(.fileLocking) }
             }
+        } else if FileManager.default.fileExists(atPath: storeURL.path) {
+            try PersistentStoreCompactor.requireNoOlderClients(at: storeURL)
         }
-        defer { flock(descriptor, LOCK_UN) }
-        return try operation()
+        let container = try operation(exclusive)
+        if exclusive, flock(descriptor, LOCK_SH) != 0 { throw CocoaError(.fileLocking) }
+        // Hold shared access for the container's lifetime. Another app, MCP,
+        // or refresh process can read/write, but cannot compact a live store.
+        let key = UnsafeRawPointer(bitPattern: UInt(bitPattern: ObjectIdentifier(PersistentStoreLease.self)))!
+        objc_setAssociatedObject(container, key, lease, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return container
+    }
+}
+
+private final class PersistentStoreLease: Sendable {
+    let descriptor: Int32
+
+    init(descriptor: Int32) { self.descriptor = descriptor }
+
+    deinit {
+        flock(descriptor, LOCK_UN)
+        Darwin.close(descriptor)
     }
 }

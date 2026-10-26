@@ -8,6 +8,42 @@ import Testing
 @MainActor
 struct RankingRefreshCoordinatorTests {
     @Test
+    func rankingIngestionArchivesOnRolloverAndUpdatesOlderDaysInPlace() throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let tracked = TrackedApp(appStoreID: 100, bundleID: "example", name: "Target",
+                                 sellerName: nil, defaultPlatform: .iphone)
+        let track = try makeTrackedAppKeyword(term: "notes", platform: .iphone, trackedApp: tracked, in: context)
+        context.insert(tracked)
+        context.insert(track)
+        try context.save()
+        let coordinator = RankingRefreshCoordinator(
+            rankingProvider: StubRankingProvider(page: SearchRankingPage(items: [], source: .appStoreWeb)),
+            appCatalogService: AppCatalogService(appResolver: StubAppResolver())
+        )
+        let start = try Date("2026-12-31T15:00:00Z", strategy: .iso8601)
+        for (offset, seconds, count) in [(0, 0, 100), (1, 0, 200), (2, 0, 200), (0, 3_600, 150)] {
+            let date = start.addingTimeInterval(Double(offset * 86_400 + seconds))
+            _ = try coordinator.persistRankingPage(.init(
+                request: RankingRefreshRequest(track: track),
+                page: SearchRankingPage(items: [.init(position: 1, appStoreID: 200,
+                    bundleID: "competitor", name: "Competitor", sellerName: nil,
+                    ratingCount: count, averageRating: 4.5)], source: .appStoreWeb),
+                searchedAt: date, observedHour: nil, submissionCount: 1, winningCount: 1, confidence: "single_source"
+            ), in: context, scheduleMetadataEnrichment: false)
+        }
+        let history = try RatingHistoryStore.fetch(appStoreIDs: [200], in: context)
+        #expect(history.count == 3)
+        #expect(history.first { $0.ratingDate == "2026-12-31" }?.ratingCount == 150)
+        #expect(try context.fetchCount(FetchDescriptor<AppDailyRating>()) == 1)
+        #expect(try context.fetch(FetchDescriptor<AppDailyRating>()).first?.ratingDate == "2027-01-02")
+        #expect(try context.fetch(FetchDescriptor<LatestAppRating>()).first?.ratingCount == 200)
+        let chunks = try context.fetch(FetchDescriptor<RatingHistoryChunk>())
+        #expect(Set(chunks.map(\.year)) == ["2026", "2027"])
+        #expect(chunks.reduce(0) { $0 + $1.recordCount } == 2)
+    }
+
+    @Test
     func rankingRequestGroupsNormalizeEquivalentQueriesAndPreserveFanOutMetadata() throws {
         let requests = [
             RankingRefreshRequest(
@@ -3004,6 +3040,7 @@ private func makeInMemoryContainer() throws -> ModelContainer {
         AppKeywordStats.self,
         LatestAppRating.self,
         AppDailyRating.self,
+        RatingHistoryChunk.self,
         AppStorefrontReview.self,
         StoreApp.self,
         AppStorefrontMetadata.self,

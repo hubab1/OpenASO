@@ -1,4 +1,5 @@
 import Dispatch
+import Foundation
 import SwiftData
 
 @ModelActor
@@ -56,6 +57,7 @@ private actor BackgroundModelContextWorker {
     )
     private let modelContainer: ModelContainer
     private var context: ModelContext?
+    private var lastHistoryPruneAt: Date?
 
     nonisolated var unownedExecutor: UnownedSerialExecutor {
         executor.asUnownedSerialExecutor()
@@ -87,14 +89,21 @@ private actor BackgroundModelContextWorker {
     func write<Value: Sendable>(
         _ operation: @Sendable (ModelContext) throws -> Value
     ) throws -> Value {
-        let modelContext = prepareModelContext()
-        do {
+        // The dedicated queue may wait for another process's bounded save;
+        // never keep a cached context across independent write transactions.
+        defer { context = nil }
+        return try ModelContainerFactory.withWriteTransaction(in: modelContainer) { modelContext in
             let value = try operation(modelContext)
             try modelContext.save()
+            let now = Date.now
+            if now.timeIntervalSince(lastHistoryPruneAt ?? .distantPast) >= 3_600 {
+                lastHistoryPruneAt = now
+                do { try PersistentHistoryMaintenance.prune(in: modelContext) }
+                catch {
+                    OpenASOLog.rankingMigration.error("Internal history maintenance failed: \(String(reflecting: error), privacy: .public)")
+                }
+            }
             return value
-        } catch {
-            modelContext.rollback()
-            throw error
         }
     }
 

@@ -680,12 +680,8 @@ final class RankingRefreshCoordinator: Sendable {
             storefrontCode: pageResult.request.storefront,
             in: modelContext
         )
-        var ratingCache = try makeRatingPageCache(
-            items: catalogItems,
-            storefront: pageResult.request.storefront,
-            observedAt: pageResult.searchedAt,
-            in: modelContext
-        )
+        var ratingObservations: [RatingHistoryStore.Observation] = []
+        var ratingApps: [Int64: StoreApp] = [:]
         let currentObservationKey = observation.observationKey
         let existingObservationItems = try modelContext.fetch(
             FetchDescriptor<RankingFact>(
@@ -714,15 +710,14 @@ final class RankingRefreshCoordinator: Sendable {
                     in: modelContext,
                     cache: &catalogCache
                 )
-                upsertStorefrontRating(
-                    from: item,
-                    storefront: pageResult.request.storefront,
-                    observedAt: pageResult.searchedAt,
-                    source: storefrontRatingSource(for: pageResult.page.source),
-                    storeApp: storeApp,
-                    in: modelContext,
-                    cache: &ratingCache
-                )
+                if !observation.storefront.isEmpty && (item.ratingCount != nil || item.averageRating != nil) {
+                    ratingObservations.append(.init(.init(
+                        appStoreID: item.appStoreID, storefront: pageResult.request.storefront,
+                        ratingCount: item.ratingCount, averageRating: item.averageRating, ratingCounts: nil,
+                        observedAt: pageResult.searchedAt, source: storefrontRatingSource(for: pageResult.page.source)
+                    )))
+                    ratingApps[item.appStoreID] = storeApp
+                }
             }
             let revisionKey = RankingAppRevisionPayload(item).revisionKey
             guard let revision = revisionsByKey[revisionKey] else {
@@ -736,6 +731,8 @@ final class RankingRefreshCoordinator: Sendable {
                 itemsByAppStoreID: &observationItemsByAppStoreID
             )
         }
+        try RatingHistoryStore.ingest(ratingObservations, storeApps: ratingApps,
+                                      acceptsEqualTimestamps: false, in: modelContext)
         pruneObservationItems(
             Array(observationItemsByAppStoreID.values),
             keeping: pageResult.page.items.map(\.appStoreID),
@@ -1038,154 +1035,6 @@ final class RankingRefreshCoordinator: Sendable {
             .max { $0.observedAt < $1.observedAt }
     }
 
-    private struct RatingPageCache {
-        var latestByIdentityKey: [String: LatestAppRating]
-        var snapshotsByIdentityKey: [String: AppDailyRating]
-    }
-
-    private func makeRatingPageCache(
-        items: [SearchRankingItem],
-        storefront: String,
-        observedAt: Date,
-        in modelContext: ModelContext
-    ) throws -> RatingPageCache {
-        let normalizedStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedStorefront.isEmpty else {
-            return RatingPageCache(latestByIdentityKey: [:], snapshotsByIdentityKey: [:])
-        }
-
-        let ratingDate = LatestAppRating.ratingDateString(for: observedAt)
-        let appStoreIDs = Set(items.lazy.filter {
-            $0.ratingCount != nil || $0.averageRating != nil
-        }.map(\.appStoreID))
-        let latestKeys = appStoreIDs.map {
-            LatestAppRating.makeIdentityKey(appStoreID: $0, storefront: normalizedStorefront)
-        }
-        let snapshotKeys = appStoreIDs.map {
-            AppDailyRating.makeIdentityKey(appStoreID: $0, storefront: normalizedStorefront, ratingDate: ratingDate)
-        }
-
-        return RatingPageCache(
-            latestByIdentityKey: try fetchLatestRatings(identityKeys: latestKeys, in: modelContext),
-            snapshotsByIdentityKey: try fetchRatingSnapshots(identityKeys: snapshotKeys, in: modelContext)
-        )
-    }
-
-    private func upsertStorefrontRating(
-        from item: SearchRankingItem,
-        storefront: String,
-        observedAt: Date,
-        source: AppStorefrontSource,
-        storeApp: StoreApp,
-        in modelContext: ModelContext,
-        cache: inout RatingPageCache
-    ) {
-        guard item.ratingCount != nil || item.averageRating != nil else { return }
-
-        let normalizedStorefront = storefront.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedStorefront.isEmpty else { return }
-
-        let ratingDate = LatestAppRating.ratingDateString(for: observedAt)
-        let snapshotKey = AppDailyRating.makeIdentityKey(
-            appStoreID: item.appStoreID,
-            storefront: normalizedStorefront,
-            ratingDate: ratingDate
-        )
-        let existingSnapshot = cache.snapshotsByIdentityKey[snapshotKey]
-        let isNewSnapshot = existingSnapshot == nil
-        let snapshot = existingSnapshot ?? AppDailyRating(
-            appStoreID: item.appStoreID,
-            storefront: normalizedStorefront,
-            ratingCount: item.ratingCount,
-            averageRating: item.averageRating,
-            ratingDate: ratingDate,
-            observedAt: observedAt,
-            submissionCount: 1,
-            winningCount: 1,
-            confidence: "single_source",
-            source: source,
-            storeApp: storeApp
-        )
-        if !isNewSnapshot, observedAt <= snapshot.observedAt {
-            return
-        }
-        if isNewSnapshot {
-            modelContext.insert(snapshot)
-            cache.snapshotsByIdentityKey[snapshotKey] = snapshot
-        }
-        if snapshot.storeApp !== storeApp {
-            snapshot.storeApp = storeApp
-        }
-        let snapshotChanged = isNewSnapshot
-            || snapshot.observedAt != observedAt
-            || snapshot.ratingCount != item.ratingCount
-            || snapshot.averageRating != item.averageRating
-            || snapshot.ratingDate != ratingDate
-            || snapshot.submissionCount != 1
-            || snapshot.winningCount != 1
-            || snapshot.confidenceRaw != "single_source"
-            || snapshot.source != source
-        if snapshotChanged {
-            snapshot.ratingCount = item.ratingCount
-            snapshot.averageRating = item.averageRating
-            snapshot.ratingDate = ratingDate
-            snapshot.observedAt = observedAt
-            snapshot.submissionCount = 1
-            snapshot.winningCount = 1
-            snapshot.confidenceRaw = "single_source"
-            snapshot.source = source
-        }
-
-        let latestKey = LatestAppRating.makeIdentityKey(
-            appStoreID: item.appStoreID,
-            storefront: normalizedStorefront
-        )
-        let existingLatest = cache.latestByIdentityKey[latestKey]
-        let isNewLatest = existingLatest == nil
-        let latest = existingLatest ?? LatestAppRating(
-            appStoreID: item.appStoreID,
-            storefront: normalizedStorefront,
-            ratingCount: item.ratingCount,
-            averageRating: item.averageRating,
-            ratingDate: ratingDate,
-            observedAt: observedAt,
-            submissionCount: 1,
-            winningCount: 1,
-            confidence: "single_source",
-            source: source,
-            storeApp: storeApp
-        )
-        if !isNewLatest, observedAt <= latest.observedAt {
-            return
-        }
-        if isNewLatest {
-            modelContext.insert(latest)
-            cache.latestByIdentityKey[latestKey] = latest
-        }
-        if latest.storeApp !== storeApp {
-            latest.storeApp = storeApp
-        }
-        let latestChanged = isNewLatest
-            || latest.observedAt != observedAt
-            || latest.ratingCount != item.ratingCount
-            || latest.averageRating != item.averageRating
-            || latest.ratingDate != ratingDate
-            || latest.submissionCount != 1
-            || latest.winningCount != 1
-            || latest.confidenceRaw != "single_source"
-            || latest.source != source
-        if latestChanged {
-            latest.ratingCount = item.ratingCount
-            latest.averageRating = item.averageRating
-            latest.ratingDate = ratingDate
-            latest.observedAt = observedAt
-            latest.submissionCount = 1
-            latest.winningCount = 1
-            latest.confidenceRaw = "single_source"
-            latest.source = source
-        }
-    }
-
     private func storefrontRatingSource(for rankingSource: RankingSource) -> AppStorefrontSource {
         switch rankingSource {
         case .appStoreWeb:
@@ -1193,54 +1042,6 @@ final class RankingRefreshCoordinator: Sendable {
         case .iTunesFallback:
             return .iTunesSearch
         }
-    }
-
-    private func fetchLatestRating(identityKey: String, in modelContext: ModelContext) throws -> LatestAppRating? {
-        let targetIdentityKey = identityKey
-        var descriptor = FetchDescriptor<LatestAppRating>(
-            predicate: #Predicate { latest in
-                latest.identityKey == targetIdentityKey
-            }
-        )
-        descriptor.fetchLimit = 1
-        return try modelContext.fetch(descriptor).first
-    }
-
-    private func fetchRatingSnapshot(identityKey: String, in modelContext: ModelContext) throws -> AppDailyRating? {
-        let targetIdentityKey = identityKey
-        var descriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                snapshot.identityKey == targetIdentityKey
-            }
-        )
-        descriptor.fetchLimit = 1
-        return try modelContext.fetch(descriptor).first
-    }
-
-    private func fetchLatestRatings(identityKeys: [String], in modelContext: ModelContext) throws -> [String: LatestAppRating] {
-        guard !identityKeys.isEmpty else { return [:] }
-
-        let targetIdentityKeys = identityKeys
-        let descriptor = FetchDescriptor<LatestAppRating>(
-            predicate: #Predicate { latest in
-                targetIdentityKeys.contains(latest.identityKey)
-            }
-        )
-
-        return Dictionary(uniqueKeysWithValues: try modelContext.fetch(descriptor).map { ($0.identityKey, $0) })
-    }
-
-    private func fetchRatingSnapshots(identityKeys: [String], in modelContext: ModelContext) throws -> [String: AppDailyRating] {
-        guard !identityKeys.isEmpty else { return [:] }
-
-        let targetIdentityKeys = identityKeys
-        let descriptor = FetchDescriptor<AppDailyRating>(
-            predicate: #Predicate { snapshot in
-                targetIdentityKeys.contains(snapshot.identityKey)
-            }
-        )
-
-        return Dictionary(uniqueKeysWithValues: try modelContext.fetch(descriptor).map { ($0.identityKey, $0) })
     }
 
     @MainActor
