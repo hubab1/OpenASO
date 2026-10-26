@@ -66,20 +66,23 @@ struct AppDetailView: View {
                     refreshToken: ratingsRefreshToken
                 )
             } else {
-                AppKeywordsView(
-                    trackedApp: trackedApp,
-                    searchText: searchText,
-                    selectedStorefrontFilter: selectedStorefrontFilter,
-                    selectedDateRange: keywordWorkspaceState.selectedDateRange,
-                    selectedPlatformFilter: keywordWorkspaceState.selectedPlatformFilter,
-                    popularityFilterRange: keywordWorkspaceState.popularityFilterRange,
-                    difficultyFilterRange: keywordWorkspaceState.difficultyFilterRange,
-                    positionFilterRange: keywordWorkspaceState.positionFilterRange,
-                    changeFilterRange: keywordWorkspaceState.changeFilterRange,
-                    showsOnlyChangedKeywords: keywordWorkspaceState.showsOnlyChangedKeywords,
-                    refreshToken: keywordRefreshToken,
-                    reportError: setErrorMessage
-                )
+                KeywordWorkspaceTabs(selectedApp: trackedApp, trackedApps: trackedApps) { app, isActive in
+                    AppKeywordsView(
+                        trackedApp: app,
+                        isActive: isActive,
+                        searchText: searchText,
+                        selectedStorefrontFilter: selectedStorefrontFilter,
+                        selectedDateRange: keywordWorkspaceState.selectedDateRange,
+                        selectedPlatformFilter: keywordWorkspaceState.selectedPlatformFilter,
+                        popularityFilterRange: keywordWorkspaceState.popularityFilterRange,
+                        difficultyFilterRange: keywordWorkspaceState.difficultyFilterRange,
+                        positionFilterRange: keywordWorkspaceState.positionFilterRange,
+                        changeFilterRange: keywordWorkspaceState.changeFilterRange,
+                        showsOnlyChangedKeywords: keywordWorkspaceState.showsOnlyChangedKeywords,
+                        refreshToken: keywordRefreshToken,
+                        reportError: setErrorMessage
+                    )
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

@@ -271,6 +271,7 @@ struct AppsInRankingCell: View {
                     AppIconImageView(
                         appStoreID: result.appStoreID,
                         storefrontCode: row.track.storefront,
+                        preferredIconURLString: result.iconURLString,
                         size: 24,
                         cornerRadius: 6,
                         modelContext: modelContext,
@@ -332,7 +333,8 @@ struct KeywordNotesCell: View {
                         .lineLimit(2)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+            .contentShape(.rect)
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
             .background {

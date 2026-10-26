@@ -1,4 +1,3 @@
-import Charts
 import SwiftUI
 
 struct KeywordTrendSparklineView: View {
@@ -6,68 +5,76 @@ struct KeywordTrendSparklineView: View {
     let color: Color
 
     var body: some View {
-        let chartPoints = chartPoints
-        let areaGradient = LinearGradient(
-            gradient: Gradient(
-                colors: [
-                    color.opacity(isFlatTrend ? 0.08 : 0.28),
-                    color.opacity(isFlatTrend ? 0.02 : 0.06),
-                    color.opacity(0.0)
-                ]
-            ),
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        Canvas { context, size in
+            guard points.count > 1, size.width > 0, size.height > 0 else { return }
 
-        Chart {
-            ForEach(chartPoints) { point in
-                AreaMark(
-                    x: .value("Refresh", point.index),
-                    yStart: .value("Baseline", rankScaleUpperBound),
-                    yEnd: .value("Rank", point.rank)
+            let lowerBound = CGFloat(rankScaleLowerBound)
+            let span = CGFloat(rankScaleUpperBound) - lowerBound
+            let plotPoints = points.enumerated().map { index, rank in
+                CGPoint(
+                    x: CGFloat(index) / CGFloat(points.count - 1) * size.width,
+                    y: (CGFloat(rank) - lowerBound) / span * size.height
                 )
-                .interpolationMethod(.cardinal)
-                .foregroundStyle(areaGradient)
             }
+            let line = Self.cardinalPath(through: plotPoints)
+            var area = line
+            area.addLine(to: CGPoint(x: size.width, y: size.height))
+            area.addLine(to: CGPoint(x: 0, y: size.height))
+            area.closeSubpath()
 
-            ForEach(chartPoints) { point in
-                LineMark(
-                    x: .value("Refresh", point.index),
-                    y: .value("Rank", point.rank)
+            context.fill(
+                area,
+                with: .linearGradient(
+                    Gradient(colors: [
+                        color.opacity(isFlatTrend ? 0.08 : 0.28),
+                        color.opacity(isFlatTrend ? 0.02 : 0.06),
+                        color.opacity(0)
+                    ]),
+                    startPoint: .zero,
+                    endPoint: CGPoint(x: 0, y: size.height)
                 )
-                .interpolationMethod(.cardinal)
-                .lineStyle(
-                    StrokeStyle(
-                        lineWidth: isFlatTrend ? 1.5 : 3,
-                        lineCap: .round,
-                        lineJoin: .round
-                    )
+            )
+            context.stroke(
+                line,
+                with: .color(color.opacity(isFlatTrend ? 0.44 : 1)),
+                style: StrokeStyle(
+                    lineWidth: isFlatTrend ? 1.5 : 3,
+                    lineCap: .round,
+                    lineJoin: .round
                 )
-                .foregroundStyle(color.opacity(isFlatTrend ? 0.44 : 1))
-            }
-        }
-        .chartXScale(domain: 0 ... max(chartPoints.count - 1, 1))
-        .chartYScale(domain: [rankScaleUpperBound, rankScaleLowerBound])
-        .chartLegend(.hidden)
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .chartPlotStyle { plotArea in
-            plotArea
-                .background(.clear)
+            )
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Rank trend")
     }
 
+    private static func cardinalPath(through points: [CGPoint]) -> Path {
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        for index in 1..<points.count {
+            let previous = points[index - 1]
+            let current = points[index]
+            let before = points[max(0, index - 2)]
+            let after = points[min(points.count - 1, index + 1)]
+            path.addCurve(
+                to: current,
+                control1: CGPoint(
+                    x: previous.x + (current.x - before.x) / 6,
+                    y: previous.y + (current.y - before.y) / 6
+                ),
+                control2: CGPoint(
+                    x: current.x - (after.x - previous.x) / 6,
+                    y: current.y - (after.y - previous.y) / 6
+                )
+            )
+        }
+        return path
+    }
+
     private var isFlatTrend: Bool {
         guard let firstPoint = points.first else { return false }
         return points.allSatisfy { $0 == firstPoint }
-    }
-
-    private var chartPoints: [KeywordTrendChartPoint] {
-        points.enumerated().map { index, rank in
-            KeywordTrendChartPoint(index: index, rank: rank)
-        }
     }
 
     private var rankScaleLowerBound: Int {
@@ -89,13 +96,6 @@ struct KeywordTrendSparklineView: View {
 
         return isFlatTrend ? maxRank + 1 : maxRank
     }
-}
-
-private struct KeywordTrendChartPoint: Identifiable {
-    let index: Int
-    let rank: Int
-
-    var id: Int { index }
 }
 
 #Preview("Keyword Trend Sparkline") {

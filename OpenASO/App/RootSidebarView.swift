@@ -43,7 +43,9 @@ struct RootSidebarView: View {
     }
 
     private var keywordTrackCountsByAppStoreID: [Int64: Int] {
-        Dictionary(grouping: trackedKeywords, by: \.appStoreID).mapValues(\.count)
+        trackedKeywords.reduce(into: [:]) { counts, track in
+            counts[track.appStoreID, default: 0] += 1
+        }
     }
 
     var body: some View {
@@ -158,7 +160,8 @@ struct RootSidebarView: View {
     }
 
     private var appList: some View {
-        Group {
+        let keywordCounts = keywordTrackCountsByAppStoreID
+        return Group {
             if trackedApps.isEmpty && appFolders.isEmpty {
                 ContentUnavailableView(
                     "No Apps Yet",
@@ -178,7 +181,7 @@ struct RootSidebarView: View {
                             )
                         ) {
                             ForEach(sortedApps(in: folder)) { trackedApp in
-                                appRow(for: trackedApp)
+                                appRow(for: trackedApp, keywordTrackCount: keywordCounts[trackedApp.appStoreID, default: 0])
                             }
                         } label: {
                             folderLabel(for: folder)
@@ -200,7 +203,7 @@ struct RootSidebarView: View {
                     }
 
                     ForEach(unfiledApps) { trackedApp in
-                        appRow(for: trackedApp)
+                        appRow(for: trackedApp, keywordTrackCount: keywordCounts[trackedApp.appStoreID, default: 0])
                     }
                 }
                 .listStyle(.sidebar)
@@ -323,10 +326,9 @@ struct RootSidebarView: View {
         }
     }
 
-    private func appRow(for trackedApp: TrackedApp) -> some View {
+    private func appRow(for trackedApp: TrackedApp, keywordTrackCount: Int) -> some View {
         let appStoreID = trackedApp.appStoreID
         let draggableID = String(appStoreID)
-        let keywordTrackCount = keywordTrackCountsByAppStoreID[appStoreID, default: 0]
 
         return HStack(spacing: 12) {
             AppIconView(

@@ -8,6 +8,7 @@ struct AppKeywordsView: View {
     @Query private var tracks: [TrackedAppKeyword]
 
     let trackedApp: TrackedApp
+    let isActive: Bool
     let searchText: String
     let selectedStorefrontFilter: StorefrontFilter
     let selectedDateRange: TrendDateRange
@@ -24,6 +25,7 @@ struct AppKeywordsView: View {
 
     init(
         trackedApp: TrackedApp,
+        isActive: Bool = true,
         searchText: String,
         selectedStorefrontFilter: StorefrontFilter,
         selectedDateRange: TrendDateRange,
@@ -37,6 +39,7 @@ struct AppKeywordsView: View {
         reportError: @escaping (String) -> Void
     ) {
         self.trackedApp = trackedApp
+        self.isActive = isActive
         self.searchText = searchText
         self.selectedStorefrontFilter = selectedStorefrontFilter
         self.selectedDateRange = selectedDateRange
@@ -86,7 +89,8 @@ struct AppKeywordsView: View {
             dateRangeID: selectedDateRange.id,
             tracks: tracks.map { track in
                 KeywordWorkspaceProjection.MaterializationID.TrackIdentity(
-                    identityKey: track.identityKey
+                    identityKey: track.identityKey,
+                    notes: track.notes
                 )
             }
         )
@@ -146,6 +150,7 @@ struct AppKeywordsView: View {
         let storefronts = storefrontDefinitions
         KeywordWorkspaceContent(
             workspaceModel: workspaceModel,
+            isActive: isActive,
             targetMaterializationID: targetMaterializationID,
             filters: filters,
             hasTrackedKeywords: !queriedTracks.isEmpty,
@@ -156,7 +161,8 @@ struct AppKeywordsView: View {
             reportError: reportError
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: targetMaterializationID) {
+        .task(id: isActive ? targetMaterializationID : nil) {
+            guard isActive else { return }
             await materializeKeywordRows(
                 for: targetMaterializationID,
                 tracks: queriedTracks
@@ -168,6 +174,10 @@ struct AppKeywordsView: View {
         for targetMaterializationID: KeywordWorkspaceProjection.MaterializationID,
         tracks: [TrackedAppKeyword]
     ) async {
+        if workspaceModel.reuseMaterialization(for: targetMaterializationID, filters: filters) {
+            return
+        }
+
         let platformTracks = tracks.filter { selectedPlatformFilter.matches($0.platform) }
         let storefrontLookup = Dictionary(
             uniqueKeysWithValues: storefrontDefinitions.map { ($0.code, $0) }
@@ -217,6 +227,7 @@ private struct KeywordWorkspaceContent: View {
     @Environment(AppServices.self) private var services
 
     let workspaceModel: KeywordWorkspaceModel
+    let isActive: Bool
     let targetMaterializationID: KeywordWorkspaceProjection.MaterializationID
     let filters: KeywordWorkspaceProjection.Filters
     let hasTrackedKeywords: Bool
@@ -263,14 +274,17 @@ private struct KeywordWorkspaceContent: View {
             }
         }
         .background {
-            KeywordDataUpdateListener(
-                workspaceModel: workspaceModel,
-                appStoreID: trackedAppStoreID,
-                dateRange: selectedDateRange,
-                reportError: reportError
-            )
+            if isActive {
+                KeywordDataUpdateListener(
+                    workspaceModel: workspaceModel,
+                    appStoreID: trackedAppStoreID,
+                    dateRange: selectedDateRange,
+                    reportError: reportError
+                )
+            }
         }
-        .task(id: filterID) {
+        .task(id: isActive ? filterID : nil) {
+            guard isActive else { return }
             await workspaceModel.updateFilter(id: filterID) { rows, filters in
                 try await KeywordWorkspaceProjection.debouncedRows(
                     rows,
@@ -531,6 +545,52 @@ private extension Array {
         guard size > 0 else { return [self] }
         return stride(from: 0, to: count, by: size).map {
             Array(self[$0 ..< Swift.min($0 + size, count)])
+        }
+    }
+}
+
+// Keep the current app and two recent apps mounted so sidebar navigation does
+// not reconstruct hundreds of table cells. Evicted views release their state.
+private struct KeywordWorkspacePage<Content: View>: View {
+    let isActive: Bool
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            // Opaque pages stay mounted behind the active one. Opacity zero
+            // lets SwiftUI discard their native table views.
+            .background(.background)
+            .allowsHitTesting(isActive)
+            .accessibilityHidden(!isActive)
+            .zIndex(isActive ? 1 : 0)
+    }
+}
+
+struct KeywordWorkspaceTabs<Content: View>: View {
+    let selectedApp: TrackedApp
+    let trackedApps: [TrackedApp]
+    @ViewBuilder let content: (TrackedApp, Bool) -> Content
+
+    @State private var recentAppIDs: [Int64] = []
+
+    var body: some View {
+        let selectedID = selectedApp.appStoreID
+        let recentApps = recentAppIDs
+            .filter { $0 != selectedID }
+            .compactMap { id in trackedApps.first { $0.appStoreID == id } }
+            .prefix(2)
+        let pages = ([selectedApp] + recentApps).sorted { $0.appStoreID < $1.appStoreID }
+
+        ZStack {
+            ForEach(pages) { app in
+                let isActive = app.appStoreID == selectedID
+                KeywordWorkspacePage(isActive: isActive) {
+                    content(app, isActive)
+                }
+            }
+        }
+        .onChange(of: selectedID, initial: true) {
+            recentAppIDs = [selectedID] + recentAppIDs.filter { $0 != selectedID }.prefix(2)
         }
     }
 }

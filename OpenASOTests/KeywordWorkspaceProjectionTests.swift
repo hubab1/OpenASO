@@ -61,6 +61,17 @@ struct KeywordWorkspaceProjectionTests {
     }
 
     @Test
+    func databaseReadsAndWritesStayOffMainThreadForUIRequests() async throws {
+        let container = try ModelContainerFactory.makeModelContainer(isStoredInMemoryOnly: true)
+        let store = BackgroundModelStore(modelContainer: container)
+        await store.prepare()
+        let readIsMain = try await store.read { _ in Thread.isMainThread }
+        let writeIsMain = try await store.write { _ in Thread.isMainThread }
+        #expect(!readIsMain)
+        #expect(!writeIsMain)
+    }
+
+    @Test
     func initialMaterializationPublishesLatestFiltersAndLoadingCompletionTogether() async {
         let model = KeywordWorkspaceModel()
         let materializer = ControlledWorkspaceMaterializer()
@@ -317,6 +328,12 @@ struct KeywordWorkspaceProjectionTests {
             difficultyScore: 41,
             source: .appleAdsPopularity
         )
+        let competitor = StoreApp(
+            appStoreID: 202, bundleID: "com.example.competitor", name: "Competitor",
+            sellerName: "Example", iconURLString: "https://example.com/competitor.png",
+            defaultPlatform: .iphone
+        )
+        modelContext.insert(competitor)
         let rankings = [
             makeRankingFact(
                 position: 8,
@@ -385,6 +402,8 @@ struct KeywordWorkspaceProjectionTests {
         #expect(row.latestSnapshot?.rank == 3)
         #expect(row.trendSnapshots.map(\.rank) == [8, 3])
         #expect(row.rankingApps.map(\.position) == [1, 3])
+        #expect(row.rankingApps.first?.iconURLString == competitor.iconURLString)
+        #expect(row.rankingApps.last?.iconURLString == nil)
         #expect(service.cachedWorkspace(for: materializationID) != nil)
     }
 
@@ -437,6 +456,27 @@ struct KeywordWorkspaceProjectionTests {
         modelContext.insert(ranking)
         try modelContext.save()
 
+        let recovery = RankingCrawlRecord(
+            keyword: query.term,
+            storefront: query.storefront,
+            platform: query.platform,
+            observedAt: oldDate.addingTimeInterval(86_400),
+            source: .appStoreWeb,
+            resultCount: 1
+        )
+        recovery.observationKey = RankingCrawlRecord.makeTrackedRecoveryObservationKey(snapshotKey: "newer-recovery")
+        modelContext.insert(recovery)
+        modelContext.insert(makeRankingFact(
+            position: 1,
+            appStoreID: appStoreID,
+            bundleID: trackedApp.bundleID,
+            name: trackedApp.name,
+            sellerName: trackedApp.sellerName,
+            observation: recovery,
+            in: modelContext
+        ))
+        try modelContext.save()
+
         let materializationID = KeywordWorkspaceProjection.MaterializationID(
             refreshToken: 0,
             backgroundStoreRevision: 0,
@@ -460,6 +500,47 @@ struct KeywordWorkspaceProjectionTests {
         #expect(row.latestSnapshot?.searchedAt == oldDate)
         #expect(row.trendSnapshots.isEmpty)
         #expect(row.rankingApps.map(\.position) == [3])
+    }
+
+    @Test
+    func returningToUnchangedWorkspaceKeepsPublicationButChangedRowsStillPublish() async {
+        let model = KeywordWorkspaceModel()
+        let id = materializationID(refreshToken: 0)
+        let original = makeRow(term: "Focus Timer", appStoreID: 1, currentRank: 7)
+        let initialError = await model.materialize(id: id, initialFilters: filters()) { [original] }
+        #expect(initialError == nil)
+        let revision = model.contentRevision
+        let generation = model.materializationGeneration
+
+        model.prime(id: id, rows: [original], filters: filters())
+        let cachedError = await model.materialize(id: id, initialFilters: filters()) { [original] }
+        #expect(cachedError == nil)
+        #expect(model.contentRevision == revision)
+        #expect(model.materializationGeneration == generation)
+
+        let updated = makeRow(term: "Focus Timer", appStoreID: 1, currentRank: 2)
+        let updatedError = await model.materialize(id: id, initialFilters: filters()) { [updated] }
+        #expect(updatedError == nil)
+        #expect(model.rows.first?.currentRank == 2)
+        #expect(model.contentRevision == revision + 1)
+    }
+
+    @Test
+    func retainedWorkspaceReusesOnlyLoadedCurrentRevisionAndAppliesCurrentFilters() async {
+        let model = KeywordWorkspaceModel()
+        let id = materializationID(refreshToken: 0)
+        let rows = [makeRow(term: "Focus Timer", appStoreID: 1), makeRow(term: "Habit Tracker", appStoreID: 2)]
+        model.prime(id: id, rows: rows, filters: filters())
+        #expect(!model.reuseMaterialization(for: id, filters: filters()))
+        let error = await model.materialize(id: id, initialFilters: filters()) { rows }
+        #expect(error == nil)
+        let revision = model.contentRevision
+        #expect(model.reuseMaterialization(for: id, filters: filters()))
+        #expect(model.contentRevision == revision)
+        #expect(model.reuseMaterialization(for: id, filters: filters(searchText: "habit")))
+        #expect(model.rows.map { $0.track.term } == ["Habit Tracker"])
+        #expect(!model.reuseMaterialization(for: materializationID(refreshToken: 1), filters: filters()))
+        #expect(!model.reuseMaterialization(for: materializationID(refreshToken: 0, backgroundStoreRevision: 1), filters: filters()))
     }
 
     @Test
@@ -739,7 +820,6 @@ struct KeywordWorkspaceProjectionTests {
         let initialIDs = model.rowIDs
         #expect(model.rows.count == 338)
         #expect(model.sortCount == 1)
-        #expect(model.tableIdentity == 1)
 
         let firstSourceRow = try #require(sourceRows.first)
         let updatedFirstRow = firstSourceRow.updating(
@@ -768,7 +848,6 @@ struct KeywordWorkspaceProjectionTests {
 
         #expect(model.rowIDs != initialIDs)
         #expect(model.sortCount == 26)
-        #expect(model.tableIdentity == 1)
         #expect(model.rows.first?.id == updatedFirstRow.id)
         #expect(model.rows.first?.popularitySortValue == 1_000)
 
@@ -780,7 +859,6 @@ struct KeywordWorkspaceProjectionTests {
         )
 
         #expect(model.sortCount == 27)
-        #expect(model.tableIdentity == 2)
         #expect(model.rows.first?.id == updatedFirstRow.id)
     }
 

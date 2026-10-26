@@ -4,6 +4,12 @@ enum KeywordWorkspaceProjection {
     struct MaterializationID: Hashable, Sendable {
         struct TrackIdentity: Hashable, Sendable {
             let identityKey: String
+            let notes: String
+
+            init(identityKey: String, notes: String = "") {
+                self.identityKey = identityKey
+                self.notes = notes
+            }
         }
 
         let refreshToken: Int

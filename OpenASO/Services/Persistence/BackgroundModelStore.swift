@@ -1,12 +1,12 @@
+import Dispatch
 import SwiftData
-
 
 @ModelActor
 actor BackgroundModelStore {
     private var worker: BackgroundModelContextWorker?
 
     func prepare() async {
-        _ = await contextWorker()
+        await contextWorker().prepare()
     }
 
     func read<Value: Sendable>(
@@ -34,26 +34,47 @@ actor BackgroundModelStore {
         try await contextWorker().fetchCount(descriptor)
     }
 
-    private func contextWorker() async -> BackgroundModelContextWorker {
+    private func contextWorker() -> BackgroundModelContextWorker {
         if let worker {
             return worker
         }
 
-        let modelContainer = modelContainer
-        let worker = await Task.detached(priority: .utility) {
-            BackgroundModelContextWorker(modelContainer: modelContainer)
-        }.value
+        let worker = BackgroundModelContextWorker(modelContainer: modelContainer)
 
         self.worker = worker
         return worker
     }
 }
 
-@ModelActor
 private actor BackgroundModelContextWorker {
+    // SwiftData's default executor can run synchronous jobs on the caller's
+    // thread. Own a serial queue so database I/O cannot borrow the UI thread.
+    private nonisolated let executor = DispatchSerialQueue(
+        label: "com.thirdtech.openaso.persistence",
+        qos: .userInitiated,
+        target: .global(qos: .userInitiated)
+    )
+    private let modelContainer: ModelContainer
+    private var context: ModelContext?
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        executor.asUnownedSerialExecutor()
+    }
+
+    init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+    }
+
+    func prepare() {
+        _ = prepareModelContext()
+    }
+
     private func prepareModelContext() -> ModelContext {
-        modelContext.autosaveEnabled = false
-        return modelContext
+        if let context { return context }
+        let context = ModelContext(modelContainer)
+        context.autosaveEnabled = false
+        self.context = context
+        return context
     }
 
     func read<Value: Sendable>(
