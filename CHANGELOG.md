@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.6 - 2026-10-26
+
+OpenASO 0.4.6 improves keyword discovery, metadata targeting, and responsiveness for large research workspaces.
+
+- Discover more relevant keywords with Apple Ads suggestions, seeded expansion, pagination, and fresh market popularity when credentials are available.
+- Audit App Store title, subtitle, and private keywords against demand and relevance, compare metadata drafts, and save local release baselines.
+- Include estimated competition, confidence, and native competitor evidence in keyword targeting audits.
+- Retire selected keyword tracks through MCP while preserving shared ranking and popularity research.
+- Stop manual refreshes, skip remaining apps, and preserve queued keyword additions without starting another refresh.
+- Switch between apps and keyword tables more quickly with retained workspaces, background database reads, and faster ranking and sparkline rendering.
+- Compact existing rating history and database storage while preserving historical research data, with resumable upgrades and visible progress.
+- Keep rating history when a provider temporarily misses an app or reports a different storefront.
+
 ## 0.4.5 - 2026-08-16
 
 OpenASO 0.4.5 restores keyword popularity when Apple’s official API omits a search term and improves Apple Ads web session reliability.
