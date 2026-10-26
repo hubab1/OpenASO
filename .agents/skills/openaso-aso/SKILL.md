@@ -21,13 +21,21 @@ Use OpenASO as the evidence layer for ASO recommendations. Do not copy generic A
 4. Keep refreshes bounded. Prefer narrow storefronts, small limits, and partial results over broad crawls.
 5. Separate verified evidence from hypotheses. Label unsupported or missing inputs instead of inventing them.
 
+## Keyword Discovery
+
+For keyword research, expansion, or high-impact opportunities, follow [references/keyword-discovery.md](references/keyword-discovery.md). Use fresh popularity to choose branches, explore distinct feature seeds and additional pages, then verify a relevant shortlist. Report coverage and the remaining frontier so a bounded search is not mistaken for exhaustive market coverage.
+
+## Metadata Targeting
+
+For title, subtitle, private keyword-field audits, drafts, or release comparisons, follow [references/metadata-targeting.md](references/metadata-targeting.md). Read owned metadata with saved App Store Connect access, compare a relevant discovery shortlist, and validate alternatives before any publishing step.
+
 ## Unsupported Or User-Provided Data
 
 OpenASO public/local evidence does not prove:
 
 - Downloads, revenue, LTV, retention, or paid campaign performance.
 - Exact App Store Connect impressions, product page views, conversion rate, or test results.
-- The current hidden App Store keyword field unless the user provides it.
+- The current hidden App Store keyword field unless authenticated metadata tools return it or the user provides it.
 - Exact competitor conversion rates or revenue.
 
 Ask for these inputs when required, or mark them as missing.
@@ -35,7 +43,7 @@ Ask for these inputs when required, or mark them as missing.
 ## ASO Rubrics To Apply
 
 - Title and subtitle are 30 characters each.
-- Hidden iOS keyword field is 100 characters when user-provided.
+- Hidden iOS keyword field is 100 characters when available from authenticated reads or user input.
 - Promotional text is 170 characters; description and release notes are 4000 characters.
 - Avoid repeating keyword words across title, subtitle, and keyword field.
 - Prefer comma-separated keyword-field terms without spaces.

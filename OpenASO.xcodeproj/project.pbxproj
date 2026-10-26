@@ -349,10 +349,19 @@
 		F008A0000000000000000001 /* Networking/ProviderRequestGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F008A0000000000000000011 /* Networking/ProviderRequestGate.swift */; };
 		F008A0000000000000000002 /* ProviderRequestGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F008A0000000000000000012 /* ProviderRequestGateTests.swift */; };
 		F008B0000000000000000001 /* Networking/ProviderHTTPClientPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F008B0000000000000000011 /* Networking/ProviderHTTPClientPipeline.swift */; };
+		B4AA3442D89B4D80A20E9975 /* AppStoreConnect/AppStoreConnectMetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 890F24E654014FC982B31117 /* AppStoreConnect/AppStoreConnectMetadataService.swift */; };
+		CF4F50E477D94EDB82CDC893 /* AppStoreConnect/AppStoreConnectMetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 890F24E654014FC982B31117 /* AppStoreConnect/AppStoreConnectMetadataService.swift */; };
+		2A64179D162340B9972B7620 /* MCP/KeywordTargetingAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0103F7D80DA84290B2497908 /* MCP/KeywordTargetingAnalysis.swift */; };
+		49D3E2B90078465ABC5F5C34 /* MCP/KeywordTargetingAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0103F7D80DA84290B2497908 /* MCP/KeywordTargetingAnalysis.swift */; };
+		B2C70B453F624EA08C697A5C /* Persistence/MetadataBaselineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FB0FE05C81D4B6CA56EA3BD /* Persistence/MetadataBaselineStore.swift */; };
+		F241DBBDCE904A65BD3D0887 /* Persistence/MetadataBaselineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FB0FE05C81D4B6CA56EA3BD /* Persistence/MetadataBaselineStore.swift */; };
+		4C9E597C5496436BAC2878AE /* AppStoreConnect/AppStoreConnectCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A5C00000000000000000002 /* AppStoreConnect/AppStoreConnectCredentials.swift */; };
+		180607995081435EBFEB3F76 /* KeywordTargetingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B977F79EB964A5F8B069EED /* KeywordTargetingTests.swift */; };
 		40A7F458B27249B89EDDCC41 /* Persistence/RatingHistoryStore+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */; };
 		D45DEBF8843440B384689D6A /* Persistence/RatingHistoryStore+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */; };
 		04FE3BB52BA4436A8E8A7B36 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
 		195FABB04F3A4F39925CFA43 /* Persistence/StoragePreparationProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */; };
+		37EFA674B49B4F7C95F2435E /* SearchRanking/KeywordDifficultyEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20A00000000000000000011 /* SearchRanking/KeywordDifficultyEstimator.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -641,6 +650,10 @@
 		F008A0000000000000000011 /* Networking/ProviderRequestGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/ProviderRequestGate.swift; sourceTree = "<group>"; };
 		F008A0000000000000000012 /* ProviderRequestGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderRequestGateTests.swift; sourceTree = "<group>"; };
 		F008B0000000000000000011 /* Networking/ProviderHTTPClientPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/ProviderHTTPClientPipeline.swift; sourceTree = "<group>"; };
+		890F24E654014FC982B31117 /* AppStoreConnect/AppStoreConnectMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreConnect/AppStoreConnectMetadataService.swift; sourceTree = "<group>"; };
+		0103F7D80DA84290B2497908 /* MCP/KeywordTargetingAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCP/KeywordTargetingAnalysis.swift; sourceTree = "<group>"; };
+		4FB0FE05C81D4B6CA56EA3BD /* Persistence/MetadataBaselineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/MetadataBaselineStore.swift; sourceTree = "<group>"; };
+		7B977F79EB964A5F8B069EED /* KeywordTargetingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordTargetingTests.swift; sourceTree = "<group>"; };
 		E182C2554EA7417792642340 /* Persistence/RatingHistoryStore+Reading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Persistence/RatingHistoryStore+Reading.swift"; sourceTree = "<group>"; };
 		382A12B0A246434D826A43F9 /* Persistence/StoragePreparationProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Persistence/StoragePreparationProgress.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -733,6 +746,7 @@
 				B7000000000000000000001B /* KeywordWorkspaceProjectionTests.swift */,
 				B7000000000000000000001C /* KeywordRankingListLoaderTests.swift */,
 				4D4350545345525600000001 /* OpenASOMCPServerTests.swift */,
+				7B977F79EB964A5F8B069EED /* KeywordTargetingTests.swift */,
 				4D4350544553545300000001 /* OpenASOMCPServiceTests.swift */,
 				A0BEEF000000000000000015 /* ScreenshotDownloadServiceTests.swift */,
 				A63CBBCCA79CA32CCB5BFE4F /* TrackedAppKeywordIdentityTests.swift */,
@@ -856,6 +870,9 @@
 				E25000000000000000000011 /* SearchRanking/VisibleProductPricingService.swift */,
 				5C5530D41B3742698F02134C /* Credentials/KeychainService.swift */,
 				C0DEFACE0000000000000101 /* MCP/OpenASOMCPDTOs.swift */,
+				890F24E654014FC982B31117 /* AppStoreConnect/AppStoreConnectMetadataService.swift */,
+				0103F7D80DA84290B2497908 /* MCP/KeywordTargetingAnalysis.swift */,
+				4FB0FE05C81D4B6CA56EA3BD /* Persistence/MetadataBaselineStore.swift */,
 				C0DEFACE0000000000000103 /* MCP/OpenASOMCPService.swift */,
 				C0DEFACE0000000000000105 /* MCP/OpenASOMCPValidation.swift */,
 				C0DEFACE0000000000000107 /* MCP/OpenASOMCPServer.swift */,
@@ -1414,6 +1431,9 @@
 				A30000000000000000000003 /* Persistence/ModelContainerFactory.swift in Sources */,
 				C0DEFACE0000000000000102 /* MCP/OpenASOMCPDTOs.swift in Sources */,
 				C0DEC0DE0000000000000012 /* MCPServerSheet.swift in Sources */,
+				B4AA3442D89B4D80A20E9975 /* AppStoreConnect/AppStoreConnectMetadataService.swift in Sources */,
+				2A64179D162340B9972B7620 /* MCP/KeywordTargetingAnalysis.swift in Sources */,
+				B2C70B453F624EA08C697A5C /* Persistence/MetadataBaselineStore.swift in Sources */,
 				C0DEFACE0000000000000104 /* MCP/OpenASOMCPService.swift in Sources */,
 				C0DEFACE0000000000000106 /* MCP/OpenASOMCPValidation.swift in Sources */,
 				C0DEFACE0000000000000108 /* MCP/OpenASOMCPServer.swift in Sources */,
@@ -1527,6 +1547,7 @@
 				B7000000000000000000000B /* KeywordWorkspaceProjectionTests.swift in Sources */,
 				B7000000000000000000000C /* KeywordRankingListLoaderTests.swift in Sources */,
 				4D4350545345525600000002 /* OpenASOMCPServerTests.swift in Sources */,
+				180607995081435EBFEB3F76 /* KeywordTargetingTests.swift in Sources */,
 				4D4350544553545300000002 /* OpenASOMCPServiceTests.swift in Sources */,
 				A0BEEF000000000000000014 /* ScreenshotDownloadServiceTests.swift in Sources */,
 				FE86E03B40393EF38C032A45 /* TrackedAppKeywordIdentityTests.swift in Sources */,
@@ -1549,6 +1570,11 @@
 				AD5100000000000000000002 /* AppleAds/AppleAdsPlatformService.swift in Sources */,
 				C15A0000000000000000000A /* MCP/OpenASOMCPMain.swift in Sources */,
 				C15A00000000000000000101 /* MCP/OpenASOMCPDTOs.swift in Sources */,
+				CF4F50E477D94EDB82CDC893 /* AppStoreConnect/AppStoreConnectMetadataService.swift in Sources */,
+				49D3E2B90078465ABC5F5C34 /* MCP/KeywordTargetingAnalysis.swift in Sources */,
+				37EFA674B49B4F7C95F2435E /* SearchRanking/KeywordDifficultyEstimator.swift in Sources */,
+				F241DBBDCE904A65BD3D0887 /* Persistence/MetadataBaselineStore.swift in Sources */,
+				4C9E597C5496436BAC2878AE /* AppStoreConnect/AppStoreConnectCredentials.swift in Sources */,
 				C15A00000000000000000102 /* MCP/OpenASOMCPService.swift in Sources */,
 				C15A00000000000000000103 /* MCP/OpenASOMCPValidation.swift in Sources */,
 				C15A00000000000000000104 /* MCP/OpenASOMCPServer.swift in Sources */,
@@ -1655,7 +1681,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 85BF4D5D6B;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1674,7 +1700,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				POSTHOG_HOST = "";
 				POSTHOG_PROJECT_TOKEN = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso.dev;
@@ -1884,7 +1910,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 85BF4D5D6B;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1904,7 +1930,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				POSTHOG_HOST = "";
 				POSTHOG_PROJECT_TOKEN = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.thirdtech.openaso;

@@ -1809,6 +1809,25 @@ struct AppDetailRefreshServiceQueueTests {
     }
 
     @Test
+    func manualStopReturnsCancellationWithoutARefreshFailure() async throws {
+        let progress = AppRefreshProgressStore()
+        let recorder = RefreshMetricsRecorder(clock: .appDetailTestConstant)
+        let http = ControlledRatingsHTTPClient()
+        let fixture = try makeAppDetailRefreshQueueFixture(appStoreIDs: [1], httpClient: http,
+                                                         progressStore: progress, recorder: recorder)
+        let task = Task { await fixture.service.refresh(Self.request(appStoreID: 1)) }
+        defer { task.cancel() }
+        try await http.waitForRequestCount(1)
+        task.cancel()
+        let result = await task.value
+        #expect(result.wasCancelled)
+        #expect(result.firstError == nil)
+        #expect(progress.activeRefresh == nil)
+        #expect(progress.pendingAppRefreshCount == 0)
+        #expect(await http.cancellationCount() == 1)
+    }
+
+    @Test
     func activeCancellationCancelsTransportAndCleansProgressAndObservation() async throws {
         let progressStore = AppRefreshProgressStore()
         let recorder = RefreshMetricsRecorder(clock: .appDetailTestConstant)

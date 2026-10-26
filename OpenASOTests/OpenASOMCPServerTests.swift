@@ -52,6 +52,21 @@ struct OpenASOMCPServerTests {
         let appPage = try JSONDecoder.openASOMCP.decode(OpenASOMCPPage<OpenASOMCPAppSummary>.self, from: Data(toolJSON.utf8))
         #expect(appPage.items.map(\.appStoreID) == ["123"])
 
+        let removalTool = try #require(tools.first { $0.name == "remove_keywords" })
+        #expect(removalTool.annotations.readOnlyHint == false)
+        #expect(removalTool.annotations.destructiveHint == true)
+        #expect(removalTool.annotations.idempotentHint == true)
+        _ = try await client.callTool(name: "add_keywords", arguments: [
+            "appStoreID": 123, "keywords": ["voice notes"], "storefronts": ["us"]
+        ])
+        let removal = try await client.callTool(name: "remove_keywords", arguments: [
+            "appStoreID": 123, "keywords": ["VOICE NOTES"], "storefronts": ["us"]
+        ])
+        let removalJSON = try #require(removal.content.first?.textValue)
+        let removalResult = try JSONDecoder().decode(OpenASOMCPRemoveKeywordsResult.self, from: Data(removalJSON.utf8))
+        #expect(removalResult.summary.removed == 1)
+        #expect(removalResult.removed.first?.keyword == "voice notes")
+
         let resources = try await client.listResources().resources
         #expect(resources.map(\.uri).contains("openaso://workspace/summary"))
         let resourceContent = try await client.readResource(uri: "openaso://apps/123")
@@ -578,6 +593,88 @@ struct OpenASOMCPServerTests {
         #expect(result.summary.failed == 0)
         #expect(result.outcomes.first?.track.popularityScore == 73)
         #expect(result.outcomes.first?.error == nil)
+    }
+
+    @Test
+    func suggestKeywordsUsesSavedCredentialsOverMCPAndPreservesUnverifiedAppleSuggestions() async throws {
+        let context = try AppServicesMCPTestContext(
+            httpClient: MockHTTPClient { _ in throw OpenASOError.networkUnavailable },
+            appleAdsPlatformAPI: StaticAppleAdsPlatformAPI(apps: [], popularityRows: [
+                .init(searchTerm: "focus session", countryOrRegion: "US", genre: "Productivity",
+                      week: "2026-05-02", month: nil, rankInGenre: nil, popularityInGenre: nil,
+                      popularity1to100: 73, popularity1to5: nil)
+            ], keywordSuggestionRows: [
+                "us": [.init(keyword: "focus session", suggestionScore: 0)]
+            ])
+        )
+        try context.insertTrackedKeyword(appStoreID: 123, keyword: "focus timer")
+        try context.configureAppleAds(contextAppStoreID: 987)
+        let server = try await context.services.mcpServerProvider.makeServer()
+        let client = Client(name: "Suggestion integration test", version: "1.0")
+        let transports = await InMemoryTransport.createConnectedPair()
+        try await server.start(transport: transports.server)
+        do {
+            _ = try await client.connect(transport: transports.client)
+            let response = try await client.callTool(name: "suggest_keywords", arguments: [
+                "appStoreID": 123,
+                "storefronts": ["us"],
+                "seed_keyword": "focus",
+                "limit": 5
+            ])
+            let text = try #require(response.content.first?.textValue)
+            let result = try JSONDecoder.openASOMCP.decode(
+                OpenASOMCPKeywordSuggestionResult.self, from: Data(text.utf8)
+            )
+            #expect(result.appleAdsSuggestions.first?.keyword == "focus session")
+            #expect(result.appleAdsSuggestions.first?.suggestionScore == 0)
+            #expect(result.appleAdsSuggestions.first?.popularity?.popularityScore == 73)
+            #expect(result.appleAdsSuggestions.first?.seedKeyword == "focus")
+            #expect(result.providerErrors.isEmpty)
+            #expect(!result.errors.isEmpty)
+            #expect(try context.modelContext.fetchCount(FetchDescriptor<TrackedAppKeyword>()) == 1)
+            let lookupResponse = try await client.callTool(name: "get_keyword_popularity", arguments: [
+                "keywords": ["focus session", "unavailable phrase"], "storefronts": ["us"]
+            ])
+            let lookupText = try #require(lookupResponse.content.first?.textValue)
+            let lookup = try JSONDecoder.openASOMCP.decode(
+                OpenASOMCPKeywordPopularityResult.self, from: Data(lookupText.utf8)
+            )
+            #expect(lookup.items.first?.popularityScore == 73)
+            #expect(lookup.items.first?.source == "apple_ads_platform")
+            #expect(lookup.items.last?.popularityScore == nil)
+            let compactResponse = try await client.callTool(name: "suggest_keywords", arguments: [
+                "appStoreID": 123, "storefronts": ["us"], "ranking_limit": 0, "offset": 0
+            ])
+            let compactText = try #require(compactResponse.content.first?.textValue)
+            let compact = try JSONDecoder.openASOMCP.decode(
+                OpenASOMCPKeywordSuggestionResult.self, from: Data(compactText.utf8)
+            )
+            #expect(compact.candidates.isEmpty)
+            #expect(compact.errors.isEmpty)
+            #expect(compact.appleAdsSuggestions.first?.popularity?.popularityScore == 73)
+            #expect(try context.modelContext.fetchCount(FetchDescriptor<KeywordDailyMetric>()) == 0)
+            _ = try await client.callTool(name: "add_keywords", arguments: [
+                "appStoreID": 123, "keywords": ["focus session"], "storefronts": ["us"]
+            ])
+            let refreshResponse = try await client.callTool(name: "refresh_keyword_metrics", arguments: [
+                "appStoreID": 123, "keywords": ["FOCUS SESSION"], "storefronts": ["us"], "platform": "iphone"
+            ])
+            let refreshText = try #require(refreshResponse.content.first?.textValue)
+            let refresh = try JSONDecoder.openASOMCP.decode(
+                OpenASOMCPKeywordRefreshResult.self, from: Data(refreshText.utf8)
+            )
+            #expect(refresh.summary.refreshed == 1)
+            #expect(refresh.summary.failed == 0)
+            #expect(refresh.outcomes.map(\.track.keyword) == ["focus session"])
+            #expect(refresh.outcomes.first?.track.popularityScore == 73)
+            #expect(try context.modelContext.fetchCount(FetchDescriptor<KeywordDailyMetric>()) == 1)
+            await client.disconnect()
+            await server.stop()
+        } catch {
+            await client.disconnect()
+            await server.stop()
+            throw error
+        }
     }
 
     @Test

@@ -79,6 +79,36 @@ final class KeywordMetricsService: Sendable {
         try await fetchResolvedPopularityMetrics(for: targets, now: now)
     }
 
+    /// Looks up untracked discovery terms without creating tracks or persisting metrics.
+    /// Keeps the official API and authenticated web fallback distinguishable.
+    func lookupPopularity(
+        for terms: [String],
+        storefront: String,
+        now: @Sendable () -> Date = { Date() }
+    ) async throws -> [KeywordPopularityLookup] {
+        let terms = Self.orderedUniqueTerms(terms)
+        let resolution = try await fetchPopularityScores(
+            for: terms,
+            countryOrRegion: storefront,
+            credentials: await preferredAppleAdsCredentials(),
+            asOf: now()
+        )
+        try Task.checkCancellation()
+        let observedAt = now()
+        return terms.map { term in
+            let key = AppleAdsSearchTermPopularity.normalized(term)
+            return KeywordPopularityLookup(
+                keyword: term,
+                popularityScore: resolution.scores[key],
+                source: resolution.sources[key],
+                observedAt: observedAt,
+                unavailableReason: resolution.scores[key] == nil
+                    ? resolution.missingTermErrorMessage ?? "Apple returned no popularity for this keyword."
+                    : nil
+            )
+        }
+    }
+
     /// Compatibility entry point for callers that still carry the retired
     /// browser-session context in their refresh request.
     func fetchPopularityMetrics(
@@ -194,8 +224,9 @@ final class KeywordMetricsService: Sendable {
         let missingTerms = Self.orderedUniqueTerms(searchTerms).filter { term in
             officialScores[AppleAdsSearchTermPopularity.normalized(term)] == nil
         }
+        let officialSources = officialScores.mapValues { _ in "apple_ads_platform" }
         guard !missingTerms.isEmpty else {
-            return AppleAdsPopularityResolution(scores: officialScores)
+            return AppleAdsPopularityResolution(scores: officialScores, sources: officialSources)
         }
 
         let fallbackAccess = await campaignManagementAccess()
@@ -206,11 +237,13 @@ final class KeywordMetricsService: Sendable {
         case .requiresReconnect:
             return AppleAdsPopularityResolution(
                 scores: officialScores,
+                sources: officialSources,
                 missingTermErrorMessage: AppleAdsWebSessionExpiredError.message
             )
         case .unconfigured:
             return AppleAdsPopularityResolution(
                 scores: officialScores,
+                sources: officialSources,
                 missingTermErrorMessage: AppleAdsPopularityFallbackMessaging.webConnectionRequired
             )
         }
@@ -223,16 +256,19 @@ final class KeywordMetricsService: Sendable {
             )
 
             var scores = officialScores
+            var sources = officialSources
             for (term, score) in fallbackScores where scores[term] == nil {
                 scores[term] = score
+                sources[term] = "apple_ads_web"
             }
-            return AppleAdsPopularityResolution(scores: scores)
+            return AppleAdsPopularityResolution(scores: scores, sources: sources)
         } catch {
             if Self.isCancellation(error) {
                 throw error
             }
             return AppleAdsPopularityResolution(
                 scores: officialScores,
+                sources: officialSources,
                 missingTermErrorMessage: OpenASOError.map(error).localizedDescription
             )
         }
@@ -271,7 +307,10 @@ final class KeywordMetricsService: Sendable {
             countryOrRegion: countryOrRegion,
             context: context
         )
-        return AppleAdsPopularityResolution(scores: scores)
+        return AppleAdsPopularityResolution(
+            scores: scores,
+            sources: scores.mapValues { _ in "apple_ads_web" }
+        )
     }
 
     private func fetchCampaignManagementPopularityScores(
@@ -1365,7 +1404,16 @@ private enum CampaignManagementAccess: Sendable {
 
 private struct AppleAdsPopularityResolution: Sendable {
     let scores: [String: Int]
+    var sources: [String: String] = [:]
     var missingTermErrorMessage: String? = nil
+}
+
+struct KeywordPopularityLookup: Sendable {
+    let keyword: String
+    let popularityScore: Int?
+    let source: String?
+    let observedAt: Date
+    let unavailableReason: String?
 }
 
 private struct KeywordMetricsPayload: Sendable {

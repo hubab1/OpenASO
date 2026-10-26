@@ -4,6 +4,43 @@ import Testing
 
 struct AppleAdsPlatformServiceTests {
     @Test
+    func keywordSuggestionRequestKeepsAppMarketAndSeedWithoutRejectedSorting() throws {
+        let request = OfficialAppleAdsPlatformAPI.keywordSuggestionsRequest(
+            appStoreID: 123,
+            countryCode: "GB",
+            seedKeyword: " speech to text ",
+            limit: 500,
+            offset: 50
+        )
+        let object = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(request)
+        ) as? [String: Any])
+        let filters = try #require(object["filters"] as? [[String: Any]])
+        let byField = Dictionary(uniqueKeysWithValues: filters.compactMap { filter -> (String, [String])? in
+            guard let field = filter["field"] as? String, let value = filter["value"] as? [String] else { return nil }
+            return (field, value)
+        })
+
+        #expect(byField["promotedObjectId"] == ["123"])
+        #expect(byField["promotedObjectType"] == ["APPSTORE_APP"])
+        #expect(byField["countriesOrRegions"] == ["GB"])
+        #expect(byField["terms"] == ["speech to text"])
+        #expect(object["sorting"] == nil)
+        #expect((object["pagination"] as? [String: Int])?["pageSize"] == 50)
+        #expect((object["pagination"] as? [String: Int])?["offset"] == 50)
+    }
+
+    @Test
+    func appBasedKeywordSuggestionsDoNotInventASeed() throws {
+        let request = OfficialAppleAdsPlatformAPI.keywordSuggestionsRequest(
+            appStoreID: 123,
+            countryCode: "US",
+            seedKeyword: nil,
+            limit: 10
+        )
+        #expect(request.filters?.contains { $0.field == "terms" } == false)
+    }
+    @Test
     func coverageAccountsForEveryGeneratedOperation() {
         let coverage = AppleAdsPlatformCoverage.current
 

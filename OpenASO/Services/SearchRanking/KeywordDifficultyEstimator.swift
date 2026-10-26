@@ -67,7 +67,7 @@ struct KeywordDifficultyUnavailable: Equatable, Sendable {
     let notes: [String]
 }
 
-struct KeywordDifficultyResultEvidence: Equatable, Sendable {
+struct KeywordDifficultyResultEvidence: Codable, Equatable, Sendable {
     let position: Int
     let appStoreID: Int64
     let title: String
@@ -81,7 +81,7 @@ struct KeywordDifficultyResultEvidence: Equatable, Sendable {
     let exactSubtitlePhraseMatch: Bool
 }
 
-struct KeywordDifficultyEvidence: Equatable, Sendable {
+struct KeywordDifficultyEvidence: Codable, Equatable, Sendable {
     let consideredResultCount: Int
     let ratedResultCount: Int
     let weightedRatingCoveragePercentage: Int
