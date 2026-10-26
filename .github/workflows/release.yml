@@ -418,6 +418,16 @@ jobs:
             --content-type "text/markdown; charset=utf-8" \
             --cache-control "public, max-age=31536000, immutable"
 
+          # Upload every generated patch before the feed can advertise it.
+          aws s3 sync \
+            "$R2_RELEASES_DIR/$R2_RELEASE_OBJECT_PREFIX/" \
+            "s3://$CLOUDFLARE_R2_BUCKET/$R2_RELEASE_OBJECT_PREFIX/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --exclude "*" \
+            --include "*.delta" \
+            --content-type "application/octet-stream" \
+            --cache-control "public, max-age=31536000, immutable"
+
           aws s3 cp \
             "$RELEASE_DIR/$R2_APPCAST_OBJECT_KEY" \
             "s3://$CLOUDFLARE_R2_BUCKET/$R2_APPCAST_OBJECT_KEY" \
