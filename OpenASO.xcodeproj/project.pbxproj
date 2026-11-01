@@ -25,7 +25,6 @@
 		04E8C4E18F1A4D519C0A1104 /* AppIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1108 /* AppIconView.swift */; };
 		04E8C4E18F1A4D519C0A110A /* AppleAds/AppleAdsCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A110C /* AppleAds/AppleAdsCredentials.swift */; };
 		04E8C4E18F1A4D519C0A110B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A110D /* SettingsView.swift */; };
-		04E8C4E18F1A4D519C0A110E /* AppleAds/AppleSearchAdsJWT.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A110F /* AppleAds/AppleSearchAdsJWT.swift */; };
 		04E8C4E18F1A4D519C0A1110 /* KeywordMetricsSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1114 /* KeywordMetricsSource.swift */; };
 		04E8C4E18F1A4D519C0A1111 /* AppleAds/KeywordMetricsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */; };
 		04E8C4E18F1A4D519C0A1112 /* SearchRanking/KeywordSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */; };
@@ -392,7 +391,6 @@
 		04E8C4E18F1A4D519C0A1108 /* AppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconView.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A110C /* AppleAds/AppleAdsCredentials.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleAdsCredentials.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A110D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		04E8C4E18F1A4D519C0A110F /* AppleAds/AppleSearchAdsJWT.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/AppleSearchAdsJWT.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1114 /* KeywordMetricsSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeywordMetricsSource.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1115 /* AppleAds/KeywordMetricsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAds/KeywordMetricsService.swift; sourceTree = "<group>"; };
 		04E8C4E18F1A4D519C0A1116 /* SearchRanking/KeywordSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRanking/KeywordSuggestionService.swift; sourceTree = "<group>"; };
@@ -837,7 +835,6 @@
 				A0BEEF000000000000000012 /* Storefront/ScreenshotDownloadService.swift */,
 				FA05C59C087130E05FF3D085 /* SearchRanking/AppResolver.swift */,
 				04E8C4E18F1A4D519C0A110C /* AppleAds/AppleAdsCredentials.swift */,
-				04E8C4E18F1A4D519C0A110F /* AppleAds/AppleSearchAdsJWT.swift */,
 				ADF000000000000000000002 /* AppleAds/AppleAdsPopularityFallbackMessaging.swift */,
 				04E8C4E18F1A4D519C0A1124 /* AppleAds/AppleAdsWebSession.swift */,
 				B9A0000000000000000004 /* AppleAds/AppleAdsPastedSession.swift */,
@@ -1322,7 +1319,6 @@
 				ADF000000000000000000001 /* AppleAds/AppleAdsPopularityFallbackMessaging.swift in Sources */,
 				B9A0000000000000000003 /* AppleAds/AppleAdsPastedSession.swift in Sources */,
 				B9A0000000000000000001 /* AppleAds/AppleAdsWebLoginController.swift in Sources */,
-				04E8C4E18F1A4D519C0A110E /* AppleAds/AppleSearchAdsJWT.swift in Sources */,
 				A0D71B4C0000000000000009 /* AppDetailSupportTypes.swift in Sources */,
 				A0D71B4C0000000000000019 /* AppDetailPreviewFixtures.swift in Sources */,
 				A0D71B4C000000000000001B /* AppDetailCSVTransfer.swift in Sources */,

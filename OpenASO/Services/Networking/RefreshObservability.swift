@@ -431,7 +431,7 @@ struct RefreshRequestClassification: Sendable {
         case "app-ads.apple.com":
             provider = .appleAdsWeb
             endpoint = path.contains("/keywords/popularities") ? .appleAdsPopularity : .other
-        case "api.searchads.apple.com":
+        case "api.ads.apple.com":
             provider = .appleAdsAPI
             endpoint = .appleAdsAPI
         case "appleid.apple.com":
