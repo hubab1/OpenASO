@@ -102,7 +102,7 @@ enum OpenASOMCPRuntime {
                 namespace: namespace
             )
         }
-        let appleAdsPlatformAPI = OfficialAppleAdsPlatformAPI()
+        let appleAdsPlatformAPI = OfficialAppleAdsPlatformAPI(httpClient: httpClient)
         let mcpService = OpenASOMCPService(
             backgroundModelStore: backgroundModelStore,
             keywordResearchProjectStore: keywordResearchProjectStore,

@@ -435,6 +435,50 @@ struct ProviderRequestGateTests {
     }
 
     @Test
+    func appleAdsPlatformQueryPostsRetryButOtherPlatformPostsDoNot() async throws {
+        let queries = [
+            "https://api.ads.apple.com/v1/campaigns/query",
+            "https://api.ads.apple.com/v1/insights/apps/search-term-popularity/query",
+            "https://api.ads.apple.com/v1/suggestions/keywords/query",
+        ]
+        for url in queries {
+            let transport = ScriptedProviderHTTPClient(
+                steps: [.response(statusCode: 503), .response(statusCode: 200)]
+            )
+            let clock = AdvancingProviderClock()
+            let gate = makeGate(
+                base: transport,
+                policy: makePolicy(maximumAttempts: 2),
+                clock: clock.clock
+            )
+            let output = try await gate.data(for: request(url, method: "POST"))
+
+            #expect((output.1 as? HTTPURLResponse)?.statusCode == 200)
+            #expect(await transport.requestCount() == 2)
+        }
+
+        let writes = [
+            "https://api.ads.apple.com/v1/campaigns",
+            "https://api.ads.apple.com/v1/campaigns/query/delete",
+            "https://api.ads.apple.com/v1/campaigns/query?unexpected=1",
+            "http://api.ads.apple.com/v1/campaigns/query",
+        ]
+        for url in writes {
+            let transport = ScriptedProviderHTTPClient(
+                steps: [.response(statusCode: 503), .response(statusCode: 200)]
+            )
+            let gate = makeGate(
+                base: transport,
+                policy: makePolicy(maximumAttempts: 2)
+            )
+            let output = try await gate.data(for: request(url, method: "POST"))
+
+            #expect((output.1 as? HTTPURLResponse)?.statusCode == 503)
+            #expect(await transport.requestCount() == 1)
+        }
+    }
+
+    @Test
     func nearMatchPopularityAndIdentityPostsRemainPaceOnly() async throws {
         let nearMatches = [
             "https://app-ads.apple.com/cm/api/v2/keywords/popularities/delete?adamId=1",
@@ -871,7 +915,7 @@ struct ProviderRequestGateTests {
             )
 
             let output = try await gate.data(
-                for: request("https://api.searchads.apple.com/api/v5/campaigns")
+                for: request("https://api.ads.apple.com/v1/me")
             )
 
             #expect((output.1 as? HTTPURLResponse)?.statusCode == statusCode)

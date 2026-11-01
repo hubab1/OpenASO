@@ -841,6 +841,13 @@ actor ProviderRequestGate: HTTPClient {
         return .permanent
     }
 
+    /// Read-only Platform API queries that OpenASO sends as POST requests.
+    private static let appleAdsPlatformQueryPaths = [
+        "/v1/campaigns/query",
+        "/v1/insights/apps/search-term-popularity/query",
+        "/v1/suggestions/keywords/query",
+    ]
+
     private static func behavior(for request: URLRequest) -> RequestBehavior {
         guard request.httpBodyStream == nil else {
             return .paceOnly
@@ -862,6 +869,15 @@ actor ProviderRequestGate: HTTPClient {
             path: "/auth/oauth2/token",
             requiresAdamIDQuery: false
         ):
+            return .retryOnly
+        case "POST" where appleAdsPlatformQueryPaths.contains(where: { path in
+            isHTTPSRequest(
+                request,
+                host: "api.ads.apple.com",
+                path: path,
+                requiresAdamIDQuery: false
+            )
+        }):
             return .retryOnly
         default:
             return .paceOnly

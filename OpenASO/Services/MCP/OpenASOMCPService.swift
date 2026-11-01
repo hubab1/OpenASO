@@ -912,6 +912,7 @@ final class OpenASOMCPService: Sendable {
 
   func getAppOverview(appStoreID: Int64) async throws -> OpenASOMCPAppOverview {
     let appStoreID = try OpenASOMCPValidation.appStoreID(appStoreID)
+    let asOf = now()
     return try await backgroundModelStore.read { modelContext in
       guard let storeApp = try Self.fetchStoreApp(appStoreID: appStoreID, in: modelContext) else {
         throw OpenASOError.appNotFound
@@ -943,6 +944,7 @@ final class OpenASOMCPService: Sendable {
         storefronts: [],
         platform: nil,
         lookbackDays: 180,
+        asOf: asOf,
         limit: ResponseLimits.overviewCompetitors,
         evidenceLimit: ResponseLimits.overviewCompetitorEvidence,
         in: modelContext
@@ -2314,12 +2316,14 @@ final class OpenASOMCPService: Sendable {
       default: ResponseLimits.defaultCompetitorEvidence,
       maximum: ResponseLimits.maximumCompetitorEvidence
     )
+    let asOf = now()
     return try await backgroundModelStore.read { modelContext in
       try Self.deriveCompetitors(
         appStoreID: appStoreID,
         storefronts: storefronts,
         platform: platform,
         lookbackDays: lookbackDays,
+        asOf: asOf,
         limit: limit,
         evidenceLimit: evidenceLimit,
         in: modelContext
@@ -5473,6 +5477,7 @@ extension OpenASOMCPService {
     storefronts: [String],
     platform: AppPlatform?,
     lookbackDays: Int,
+    asOf: Date,
     limit: Int,
     evidenceLimit: Int,
     in modelContext: ModelContext
@@ -5481,7 +5486,7 @@ extension OpenASOMCPService {
     let queryKeys = trackedApp.map { Set($0.keywordTracks.map(\.queryKey)) } ?? []
     guard !queryKeys.isEmpty else { return [] }
 
-    let cutoff = Date().addingTimeInterval(-Double(max(1, lookbackDays)) * 86_400)
+    let cutoff = asOf.addingTimeInterval(-Double(max(1, lookbackDays)) * 86_400)
     let storefrontSet = Set(storefronts)
     let descriptor = FetchDescriptor<RankingFact>(
       predicate: #Predicate { ranking in

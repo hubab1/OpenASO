@@ -85,7 +85,7 @@ struct RefreshObservabilityTests {
             ("https://apps.apple.com/us/app/private-app/id1", 302, .appStoreWeb, .ratingsPage, .redirect),
             ("https://api.appstoreconnect.apple.com/v1/apps/1/customerReviews", 401, .appStoreConnect, .appStoreConnectReviews, .authenticationFailure),
             ("https://app-ads.apple.com/cm/api/v4/searchads/keywords/popularities", 404, .appleAdsWeb, .appleAdsPopularity, .notFound),
-            ("https://api.searchads.apple.com/api/v5/campaigns", 429, .appleAdsAPI, .appleAdsAPI, .rateLimited),
+            ("https://api.ads.apple.com/v1/campaigns/query", 429, .appleAdsAPI, .appleAdsAPI, .rateLimited),
             ("https://appleid.apple.com/auth/oauth2/token", 500, .appleIdentity, .appleIdentity, .serverFailure),
             ("https://example.invalid/private/path", 418, .unknown, .other, .clientFailure),
         ]

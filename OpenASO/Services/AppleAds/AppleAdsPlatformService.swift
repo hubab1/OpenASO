@@ -1,5 +1,6 @@
 import AppleAdsClient
 import Foundation
+import HTTPTypes
 import OpenAPIRuntime
 
 struct AppleAdsPlatformAccount: Codable, Equatable, Identifiable, Sendable {
@@ -170,8 +171,72 @@ protocol AppleAdsPlatformAPI: Sendable {
     ) async throws -> [AppleAdsKeywordSuggestion]
 }
 
+/// Sends generated client requests through the provider pipeline, so Platform API
+/// calls share its pacing, retry, and refresh observation behavior.
+struct AppleAdsHTTPClientTransport: ClientTransport {
+    private static let maximumRequestBodyBytes = 5_000_000
+
+    let httpClient: any HTTPClient
+
+    func send(
+        _ request: HTTPRequest,
+        body: HTTPBody?,
+        baseURL: URL,
+        operationID: String
+    ) async throws -> (HTTPResponse, HTTPBody?) {
+        var urlRequest = try await Self.urlRequest(for: request, body: body, baseURL: baseURL)
+        urlRequest.cachePolicy = .reloadIgnoringLocalCacheData
+        urlRequest.httpShouldHandleCookies = false
+
+        let (data, response) = try await httpClient.data(for: urlRequest)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenASOError.unexpectedResponse
+        }
+        return (Self.response(from: httpResponse), HTTPBody(data))
+    }
+
+    private static func urlRequest(
+        for request: HTTPRequest,
+        body: HTTPBody?,
+        baseURL: URL
+    ) async throws -> URLRequest {
+        guard let url = URL(string: baseURL.absoluteString + (request.path ?? "")) else {
+            throw OpenASOError.unexpectedResponse
+        }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = request.method.rawValue
+        for field in request.headerFields {
+            urlRequest.addValue(field.value, forHTTPHeaderField: field.name.rawName)
+        }
+        if let body {
+            urlRequest.httpBody = try await Data(collecting: body, upTo: maximumRequestBodyBytes)
+        }
+        return urlRequest
+    }
+
+    private static func response(from response: HTTPURLResponse) -> HTTPResponse {
+        var headerFields = HTTPFields()
+        for (name, value) in response.allHeaderFields {
+            guard let name = name as? String,
+                  let value = value as? String,
+                  let fieldName = HTTPField.Name(name) else { continue }
+            headerFields.append(HTTPField(name: fieldName, value: value))
+        }
+        return HTTPResponse(
+            status: HTTPResponse.Status(code: response.statusCode),
+            headerFields: headerFields
+        )
+    }
+}
+
 struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
     let coverage = AppleAdsPlatformCoverage.current
+    private let httpClient: any HTTPClient
+
+    init(httpClient: any HTTPClient = URLSessionHTTPClient()) {
+        self.httpClient = httpClient
+    }
 
     func keywordSuggestions(
         appStoreID: Int64,
@@ -547,11 +612,15 @@ struct OfficialAppleAdsPlatformAPI: AppleAdsPlatformAPI {
         do {
             return try await AppleAdsClient.withClient(
                 configuration: configuration,
+                transport: AppleAdsHTTPClientTransport(httpClient: httpClient),
                 body: operation
             )
         } catch let error as OpenASOError {
             throw error
         } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             throw OpenASOError.providerUnavailable(
                 "Apple Ads Platform API: \(error.localizedDescription)"
             )

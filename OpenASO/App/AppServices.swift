@@ -124,7 +124,9 @@ final class AppServices {
             namespace: namespace,
             loadsEnvironmentCredentials: loadsEnvironmentCredentials
         )
-        let appleAdsPlatformAPI = appleAdsPlatformAPI ?? OfficialAppleAdsPlatformAPI()
+        let appleAdsPlatformAPI = appleAdsPlatformAPI ?? OfficialAppleAdsPlatformAPI(
+            httpClient: httpClient
+        )
         let settingsStore = AppSettingsStore(defaults: defaults)
         let backgroundRefreshAgentController = BackgroundRefreshAgentController(
             defaults: defaults

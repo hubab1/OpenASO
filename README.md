@@ -39,7 +39,7 @@ The hosted docs are the canonical guide for using OpenASO:
 1. Clone the repository.
 2. Open `OpenASO.xcodeproj` in Xcode, or build from the command line.
 3. Use `.env.example` as a reference if you want to export Apple Ads API credentials as process environment variables.
-4. Connect Apple Ads from the app Settings window. Sign-in opens in a WebKit window inside OpenASO, so 2FA and passkeys behave like they do in Safari. If you would rather sign in with the browser you already use, expand "Sign In With My Own Browser" and paste the cookie header from an Apple Ads page.
+4. Connect Apple Ads from the app Settings window. Enter Apple Ads Platform API credentials for Apple's supported keyword popularity data. Web Access is optional: it fills in terms the API does not return, or supplies all popularity when the API is not connected. Its sign-in opens in a WebKit window inside OpenASO, so 2FA and passkeys behave like they do in Safari. If you would rather sign in with the browser you already use, expand "Sign In With My Own Browser" and paste the cookie header from an Apple Ads page.
 5. Enter App Store Connect credentials in the app Settings window when needed.
 
 Anonymous analytics are enabled by default and can be disabled at any time in Settings. OpenASO uses anonymous product usage events to understand which features are used and how often; it does not collect identifying information or details about your apps, keywords, reviews, replies, credentials, search text, or countries.

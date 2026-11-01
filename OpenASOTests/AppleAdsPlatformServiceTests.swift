@@ -1,8 +1,59 @@
 import Foundation
+import HTTPTypes
+import OpenAPIRuntime
 import Testing
 @testable import OpenASO
 
 struct AppleAdsPlatformServiceTests {
+    @Test
+    func transportSendsPlatformRequestsThroughTheHTTPClient() async throws {
+        let client = RecordingAppleAdsHTTPClient(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json", "RateLimit-Remaining": "9"],
+            body: Data(#"{"result":[]}"#.utf8)
+        )
+        let transport = AppleAdsHTTPClientTransport(httpClient: client)
+        var request = HTTPRequest(method: .post, scheme: nil, authority: nil, path: "/campaigns/query?limit=1")
+        request.headerFields[.authorization] = "Bearer token"
+        request.headerFields[try #require(HTTPField.Name("X-AP-Context"))] = "adAccountId=42"
+
+        let (response, body) = try await transport.send(
+            request,
+            body: HTTPBody(#"{"pagination":{}}"#),
+            baseURL: try #require(URL(string: "https://api.ads.apple.com/v1")),
+            operationID: "postCampaignsQuery"
+        )
+
+        let sent = try #require(client.recordedRequest)
+        #expect(sent.url?.absoluteString == "https://api.ads.apple.com/v1/campaigns/query?limit=1")
+        #expect(sent.httpMethod == "POST")
+        #expect(sent.httpBody == Data(#"{"pagination":{}}"#.utf8))
+        #expect(sent.httpBodyStream == nil)
+        #expect(sent.value(forHTTPHeaderField: "Authorization") == "Bearer token")
+        #expect(sent.value(forHTTPHeaderField: "X-AP-Context") == "adAccountId=42")
+        #expect(sent.httpShouldHandleCookies == false)
+        #expect(response.status == .ok)
+        #expect(response.headerFields[try #require(HTTPField.Name("RateLimit-Remaining"))] == "9")
+        let responseBody = try await Data(collecting: try #require(body), upTo: 1_000)
+        #expect(responseBody == Data(#"{"result":[]}"#.utf8))
+    }
+
+    @Test
+    func transportReturnsErrorStatusesForTheGeneratedClientToHandle() async throws {
+        let client = RecordingAppleAdsHTTPClient(statusCode: 429, headers: [:], body: Data())
+        let transport = AppleAdsHTTPClientTransport(httpClient: client)
+
+        let (response, _) = try await transport.send(
+            HTTPRequest(method: .get, scheme: nil, authority: nil, path: "/me"),
+            body: nil,
+            baseURL: try #require(URL(string: "https://api.ads.apple.com/v1")),
+            operationID: "getMe"
+        )
+
+        #expect(response.status.code == 429)
+        #expect(client.recordedRequest?.httpBody == nil)
+    }
+
     @Test
     func keywordSuggestionRequestKeepsAppMarketAndSeedWithoutRejectedSorting() throws {
         let request = OfficialAppleAdsPlatformAPI.keywordSuggestionsRequest(
@@ -306,5 +357,34 @@ struct AppleAdsPlatformServiceTests {
         #expect(names.contains("apple_ads_platform_search_apps"))
         #expect(names.contains("apple_ads_platform_list_campaigns"))
         #expect(names.contains("apple_ads_search_term_popularity"))
+    }
+}
+
+private final class RecordingAppleAdsHTTPClient: HTTPClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private let statusCode: Int
+    private let headers: [String: String]
+    private let body: Data
+    private var storedRequest: URLRequest?
+
+    init(statusCode: Int, headers: [String: String], body: Data) {
+        self.statusCode = statusCode
+        self.headers = headers
+        self.body = body
+    }
+
+    var recordedRequest: URLRequest? {
+        lock.withLock { storedRequest }
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        lock.withLock { storedRequest = request }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: statusCode,
+            httpVersion: nil,
+            headerFields: headers
+        )!
+        return (body, response)
     }
 }
